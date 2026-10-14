@@ -83,7 +83,7 @@ else
 fi
 if command -v curl >/dev/null 2>&1; then
   printf 'Local /api/health: '
-  if ! curl --silent --show-error --connect-timeout 3 --max-time 5 --output /dev/null \
+  if ! curl --disable --noproxy '*' --request GET --silent --show-error --connect-timeout 3 --max-time 5 --output /dev/null \
     --write-out 'HTTP %{http_code}; content type %{content_type}\n' \
     "http://127.0.0.1:$app_port/api/health"; then
     printf 'Local application health request failed.\n'
