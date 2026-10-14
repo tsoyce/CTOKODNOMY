@@ -1,0 +1,54 @@
+name: BrainyCP server check (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: SSH server hostname or IP
+        required: true
+        type: string
+      ssh_user:
+        description: SSH user authorized for DEPLOY_SSH_KEY
+        required: true
+        default: root
+        type: string
+      app_root:
+        description: Application directory created by BrainyCP
+        required: true
+        type: string
+      app_user:
+        description: Unix user running this application
+        required: true
+        type: string
+      port:
+        description: Internal application port
+        required: true
+        type: string
+      domain:
+        description: Application hostname without http or https
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect the application server over verified SSH
+        env:
+          DEPLOY_HOST: ${{ inputs.server }}
+          DEPLOY_USER: ${{ inputs.ssh_user }}
+          APP_ROOT: ${{ inputs.app_root }}
+          APP_USER: ${{ inputs.app_user }}
+          APP_PORT: ${{ inputs.port }}
+          APP_DOMAIN: ${{ inputs.domain }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: bash scripts/check-brainycp-ssh.sh
