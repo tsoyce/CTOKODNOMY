@@ -1,0 +1,147 @@
+name: Deploy (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ctokodnomy-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ctokodnomy
+          POSTGRES_PASSWORD: ctokodnomy
+          POSTGRES_DB: ctokodnomy_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U ctokodnomy -d ctokodnomy_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ctokodnomy:ctokodnomy@127.0.0.1:5432/ctokodnomy_test
+      DATABASE_URL_TEST: postgresql://ctokodnomy:ctokodnomy@127.0.0.1:5432/ctokodnomy_test
+      APP_ORIGIN: http://127.0.0.1:3000
+      HOST: 127.0.0.1
+      PORT: 3000
+      MEDIA_DIR: ${{ runner.temp }}/ctokodnomy-uploads
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NODE_ENV: production
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Package the checked commit
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/ctokodnomy-release.tar.gz" "$GITHUB_SHA"
+      - name: Upload and deploy over verified SSH
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo 'Set a valid DEPLOY_HOST variable.'; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Set a valid DEPLOY_USER variable.'; exit 1; }
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9_/-]+$ && "$DEPLOY_PATH" != / && "$DEPLOY_PATH" != */ ]] || { echo 'Set an absolute DEPLOY_PATH without spaces or a trailing slash.'; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'DEPLOY_SSH_KEY and SSH_KNOWN_HOSTS secrets are required.'; exit 1; }
+          auth_dir="$(mktemp -d "$RUNNER_TEMP/ctokodnomy-ssh.XXXXXX")"
+          chmod 700 "$auth_dir"
+          cleanup() { ssh-agent -k >/dev/null 2>&1 || true; rm -rf "$auth_dir"; }
+          trap cleanup EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$auth_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$auth_dir/known_hosts"
+          chmod 600 "$auth_dir/key" "$auth_dir/known_hosts"
+          cat > "$auth_dir/askpass" <<'ASKPASS'
+          #!/usr/bin/env bash
+          printf '%s\n' "$DEPLOY_SSH_PASSPHRASE"
+          ASKPASS
+          chmod 700 "$auth_dir/askpass"
+          eval "$(ssh-agent -s)" >/dev/null
+          export SSH_ASKPASS="$auth_dir/askpass" SSH_ASKPASS_REQUIRE=force DISPLAY=ctokodnomy-deploy
+          ssh-add "$auth_dir/key" </dev/null
+          ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$auth_dir/known_hosts" -o IdentitiesOnly=yes -i "$auth_dir/key")
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          # Preflight requires a prepared dedicated folder and existing configuration.
+          ssh "${ssh_opts[@]}" "$target" "bash -s -- '$DEPLOY_PATH' '$GITHUB_SHA'" <<'PREFLIGHT'
+          set -euo pipefail
+          base="$1"; sha="$2"
+          command -v docker >/dev/null
+          command -v curl >/dev/null
+          docker compose version >/dev/null
+          docker info >/dev/null
+          [[ -d "$base" && -f "$base/shared/.env" && ! -L "$base/shared/.env" ]] || { echo 'Prepare DEPLOY_PATH/shared/.env first; see docs/DEPLOYMENT.md.'; exit 1; }
+          mode="$(stat -c '%a' "$base/shared/.env")"
+          [[ "$mode" == 600 || "$mode" == 400 ]] || { echo 'The server .env must have permissions 600 or 400.'; exit 1; }
+          [[ ! -e "$base/current" || -L "$base/current" ]] || { echo 'current must be a release symlink; existing files were left intact.'; exit 1; }
+          [[ ! -e "$base/releases/$sha" ]] || { echo 'This release already exists. Inspect it before retrying.'; exit 1; }
+          mkdir -p "$base/releases" "$base/backups" "$base/incoming"
+          chmod 700 "$base/backups" "$base/incoming"
+          [[ ! -e "$base/incoming/$sha.tar.gz" ]] || { echo 'The incoming artifact already exists. Inspect it before retrying.'; exit 1; }
+          PREFLIGHT
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/ctokodnomy-release.tar.gz" "$target:$DEPLOY_PATH/incoming/$GITHUB_SHA.tar.gz"
+          ssh "${ssh_opts[@]}" "$target" "bash -s -- '$DEPLOY_PATH' '$GITHUB_SHA'" <<'DEPLOY'
+          set -euo pipefail
+          umask 077
+          set -o noclobber
+          base="$1"; sha="$2"
+          release="$base/releases/$sha"
+          mkdir "$release"
+          tar -xzf "$base/incoming/$sha.tar.gz" -C "$release"
+          rm "$base/incoming/$sha.tar.gz"
+          export APP_IMAGE_TAG="$sha"
+          unset DATABASE_URL DATABASE_URL_TEST APP_ORIGIN NODE_ENV HOST PORT MEDIA_DIR
+          compose=(docker compose --env-file "$base/shared/.env" -f "$release/compose.yaml")
+          "${compose[@]}" config --quiet
+          "${compose[@]}" build app
+          "${compose[@]}" up -d --wait db
+          # Back up before application startup applies migrations. Credentials remain inside db.
+          "${compose[@]}" exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$base/backups/before-$sha.dump"
+          [[ -s "$base/backups/before-$sha.dump" ]] || { echo 'Database backup is empty; deployment stopped.'; exit 1; }
+          "${compose[@]}" up -d --wait --wait-timeout 120 app
+          "${compose[@]}" exec -T app node -e "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+          "${compose[@]}" exec -T app node --input-type=module <<'CHECK_APP'
+          const base = 'http://127.0.0.1:3000';
+          const response = await fetch(`${base}/api/site`);
+          if (!response.ok) throw new Error('Public API check failed');
+          const site = await response.json();
+          if (typeof site.initialized !== 'boolean' || typeof site.brand?.title !== 'string' || !Array.isArray(site.games)) {
+            throw new Error('Public API returned an unexpected structure');
+          }
+          const page = await fetch(base);
+          const html = await page.text();
+          if (!page.ok || !html.includes('id="root"')) throw new Error('Frontend HTML check failed');
+          const script = html.match(/<script[^>]*src="([^"]+)"/);
+          if (!script) throw new Error('Frontend script was not found');
+          const asset = await fetch(new URL(script[1], base));
+          if (!asset.ok || !/javascript|ecmascript/.test(asset.headers.get('content-type') ?? '')) {
+            throw new Error('Frontend asset check failed');
+          }
+          console.log('Public API, frontend HTML and JavaScript checks passed.');
+          CHECK_APP
+          ln -s "$release" "$base/current.next"
+          mv -Tf "$base/current.next" "$base/current"
+          echo 'Deployment complete. The existing server .env was preserved.'
+          DEPLOY

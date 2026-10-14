@@ -1,0 +1,44 @@
+name: ${COMPOSE_PROJECT_NAME:-ctokodnomy}
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ctokodnomy}
+      POSTGRES_DB: ${POSTGRES_DB:-ctokodnomy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: ctokodnomy:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ctokodnomy}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ctokodnomy}
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to the HTTPS address of your site}
+      MEDIA_DIR: /app/data/uploads
+      TRUST_PROXY: '1'
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - uploads:/app/data/uploads
+
+volumes:
+  pgdata:
+  uploads:

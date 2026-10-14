@@ -1,0 +1,50 @@
+{
+  "name": "ctokodnomy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host 0.0.0.0\"",
+    "build": "node scripts/build.mjs",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "db:migrate": "tsx server/cli.ts migrate",
+    "setup:token": "tsx server/cli.ts setup-token",
+    "account:reset": "tsx server/cli.ts reset-password"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/multipart": "^9.2.1",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.6",
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.6.0",
+    "lucide-react": "^0.468.0",
+    "pg": "^8.16.3",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.0",
+    "vitest": "^5.0.4"
+  }
+}
