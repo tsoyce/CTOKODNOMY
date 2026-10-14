@@ -4,6 +4,15 @@ set -Eeuo pipefail
 trap 'printf "Activation failed at line %s.\n" "$LINENO" >&2' ERR
 trap 'result=$?; if (( result != 0 )); then printf "Activation aborted at line %s (exit %s).\n" "$LINENO" "$result" >&2; fi' EXIT
 umask 077
+nginx_test() {
+  local check_output
+  if check_output=$(nginx -t 2>&1); then
+    printf '%s\n' "$check_output" | tail -n 2
+  else
+    printf '%s\n' "$check_output" >&2
+    return 1
+  fi
+}
 [[ $# -eq 9 && $(id -u) == 0 ]] || { echo 'Activation needs nine arguments and root.'; exit 2; }
 base=$1 app_user=$2 port=$3 domain=$4 sha=$5 node_version=$6 node_digest=$7 app_digest=$8 incoming=$9
 [[ $base =~ ^/[A-Za-z0-9_/-]+$ && $base != / && $(readlink -e "$base") == "$base" ]] || { echo 'Application path is not physical.'; exit 2; }
@@ -73,7 +82,7 @@ rollback() {
     systemctl start "$unit" || true
     echo 'The previous application service was restored; database/configuration were retained.'
   fi
-  if (( result != 0 )); then cp -p "$backup/nginx.conf" "$site"; nginx -t && systemctl reload nginx || true; fi
+  if (( result != 0 )); then cp -p "$backup/nginx.conf" "$site"; nginx_test && systemctl reload nginx || true; fi
   exit "$result"
 }
 trap rollback EXIT
@@ -90,7 +99,7 @@ server {
     }
 }
 NGINX
-nginx -t
+nginx_test
 systemctl reload nginx
 cert_name="ctokodnomy-$port"
 (umask 022; certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
@@ -141,7 +150,7 @@ server {
     }
 }
 NGINX
-nginx -t
+nginx_test
 systemctl daemon-reload
 systemctl start "$unit"
 systemctl enable "$unit"

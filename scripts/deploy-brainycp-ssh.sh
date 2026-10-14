@@ -69,7 +69,9 @@ else
   report_type=error
 fi
 printf '%s\n' "$report"
-escaped=${report//%/%25}
+# GitHub limits annotation messages; keep the final result and error details.
+annotation_report=${report: -3500}
+escaped=${annotation_report//%/%25}
 escaped=${escaped//$'\r'/%0D}
 escaped=${escaped//$'\n'/%0A}
 printf '::%s title=BrainyCP deployment report::%s\n' "$report_type" "$escaped"
