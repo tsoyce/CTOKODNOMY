@@ -70,7 +70,8 @@ else
 fi
 printf '%s\n' "$report"
 # GitHub limits annotation messages; keep the final result and error details.
-annotation_report=${report: -3500}
+annotation_report=$report
+if (( ${#report} > 3500 )); then annotation_report=${report: -3500}; fi
 escaped=${annotation_report//%/%25}
 escaped=${escaped//$'\r'/%0D}
 escaped=${escaped//$'\n'/%0A}
