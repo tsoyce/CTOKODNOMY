@@ -164,6 +164,12 @@ curl --disable --noproxy '*' --fail --silent "http://127.0.0.1:$port/api/health"
 [[ $(systemctl show "$unit" -p User --value) == "$app_user" ]]
 systemctl reload nginx
 tls_address=${bind_ip:-127.0.0.1}
+for attempt in $(seq 1 30); do
+  if curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent "https://$domain/api/health" | grep -q '"ok":true'; then break; fi
+  sleep 1
+done
+echo 'Expected public certificate:'
+openssl x509 -in "/etc/letsencrypt/live/$cert_name/fullchain.pem" -noout -subject -issuer -dates
 curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/api/health" | grep -q '"ok":true'
 curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/" | grep -q 'id="root"'
 activated=1
