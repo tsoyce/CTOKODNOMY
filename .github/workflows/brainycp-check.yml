@@ -32,6 +32,11 @@ on:
         description: Verified public known_hosts entry (optional if SSH_KNOWN_HOSTS is configured)
         required: false
         type: string
+      details:
+        description: Inspect the identified Node systemd unit and public certificate metadata
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -52,6 +57,7 @@ jobs:
           APP_USER: ${{ inputs.app_user }}
           APP_PORT: ${{ inputs.port }}
           APP_DOMAIN: ${{ inputs.domain }}
+          CHECK_DETAILS: ${{ inputs.details }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
           SSH_KNOWN_HOSTS: ${{ inputs.known_hosts || secrets.SSH_KNOWN_HOSTS }}

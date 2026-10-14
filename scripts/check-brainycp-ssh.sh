@@ -50,9 +50,13 @@ ssh_opts=(
   -o ClearAllForwardings=yes
   -i "$auth_dir/key"
 )
+inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-preflight.sh"
+if [[ ${CHECK_DETAILS:-false} == true ]]; then
+  inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-details.sh"
+fi
 if report=$(ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
     "bash -s -- '$APP_ROOT' '$APP_USER' '$APP_PORT' '$APP_DOMAIN'" \
-    < "$(dirname "${BASH_SOURCE[0]}")/brainycp-preflight.sh" 2>&1); then
+    < "$inspection_script" 2>&1); then
   report_type=notice
 else
   report_type=error
