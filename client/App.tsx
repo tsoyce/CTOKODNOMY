@@ -9,6 +9,7 @@ const gamePage = (name: keyof typeof import("./pages/Game")) =>
 const adminPage = (name: keyof typeof import("./pages/Admin")) =>
   lazy(async () => ({ default: (await import("./pages/Admin"))[name] }));
 const ResultsPage = lazy(() => import("./pages/Results"));
+const QuestionImportPage = lazy(() => import("./pages/QuestionImport"));
 const HomePage = publicPage("HomePage"),
   SetupPage = publicPage("SetupPage"),
   LoginPage = publicPage("LoginPage"),
@@ -48,6 +49,7 @@ export default function App() {
               <Route path="games/new" element={<NewGamePage />} />
               <Route path="games/:gameId" element={<GameSettingsPage />} />
               <Route path="questions" element={<QuestionsPage />} />
+              <Route path="questions/import" element={<QuestionImportPage />} />
               <Route path="questions/new" element={<QuestionEditorPage />} />
               <Route
                 path="questions/:questionId"

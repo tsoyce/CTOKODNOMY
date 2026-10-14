@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 import {
@@ -8,7 +8,8 @@ import {
   type Locator,
 } from "@playwright/test";
 import { issueSetupToken } from "../server/db";
-import type { HostGame } from "../shared/types";
+import { parseQuestionPack } from "../shared/questionImport";
+import type { HostGame, Question } from "../shared/types";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const schema = process.env.E2E_DATABASE_SCHEMA;
@@ -55,6 +56,336 @@ test.beforeEach(async () => {
 });
 test.afterAll(async () => {
   await pool.end();
+});
+
+test("organizer checks a complete JSON pack before saving, explicitly updates matching questions or imports copies", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const importRequests: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/questions/import"
+    )
+      importRequests.push(request.url());
+  });
+
+  const grant = await issueSetupToken(pool);
+  await page.goto("/setup");
+  await fillSecret(page.getByLabel("Код первого запуска"), grant);
+  await page.getByLabel("Логин организатора").fill("organizer");
+  await fillSecret(page.getByLabel(/^Пароль/), PASSWORD);
+  await fillSecret(page.getByLabel("Повторите пароль"), PASSWORD);
+  await page.getByRole("button", { name: "Далее: мероприятие" }).click();
+  await page.getByRole("button", { name: "Проектор", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Предпросмотр", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Завершить настройку" }).click();
+  await expect(page).toHaveURL(/\/admin$/);
+
+  const library = async (): Promise<Question[]> => {
+    const response = await page.request.get("/api/questions");
+    expect(response.ok()).toBe(true);
+    return response.json();
+  };
+  await page.goto("/admin/questions");
+  await page.getByRole("link", { name: "Импорт JSON", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/questions\/import$/);
+  await expect(
+    page.getByRole("heading", { name: "Импорт вопросов", exact: true }),
+  ).toBeVisible();
+  const jsonInput = page.getByLabel("Готовый JSON", { exact: true });
+  const check = page.getByRole("button", {
+    name: "Проверить вопросы",
+    exact: true,
+  });
+  const save = page.getByRole("button", {
+    name: "Сохранить вопросы",
+    exact: true,
+  });
+  const preview = page.getByRole("region", {
+    name: "Предпросмотр вопросов",
+    exact: true,
+  });
+  const replaceConsent = page.getByRole("checkbox", {
+    name: /^Заменить совпадающие вопросы в библиотеке/,
+  });
+  await expect(save).toBeDisabled();
+
+  const surveyHelp = page.getByText("Как подготовить опрос через ИИ", {
+    exact: true,
+  });
+  await surveyHelp.click();
+  const downloadEvent = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Скачать пример JSON", exact: true })
+    .click();
+  const download = await downloadEvent;
+  const downloadPath = await download.path();
+  expect(downloadPath).toBeTruthy();
+  const exampleText = await readFile(downloadPath!, "utf8");
+  const checkedExample = parseQuestionPack(exampleText);
+  expect(checkedExample.success).toBe(true);
+  if (!checkedExample.success)
+    throw new Error("The downloadable example is invalid");
+  const example = checkedExample.data;
+  expect(example.questions.length).toBeGreaterThan(0);
+  for (const question of example.questions) {
+    expect(question.prompt.trim()).not.toBe("");
+    expect(question.isDemo).toBe(true);
+    expect(question.answers.length).toBeGreaterThan(0);
+    for (const answer of question.answers) {
+      expect(answer.text.trim()).not.toBe("");
+      expect(Number.isInteger(answer.points)).toBe(true);
+      expect(answer.points).toBeGreaterThanOrEqual(0);
+      expect(answer.points).toBeLessThanOrEqual(1000);
+    }
+  }
+  await surveyHelp.click();
+
+  await page
+    .getByLabel("JSON-файл с вопросами", { exact: true })
+    .setInputFiles({
+      name: download.suggestedFilename(),
+      mimeType: "application/json",
+      buffer: Buffer.from(exampleText),
+    });
+  await expect(jsonInput).toHaveValue(exampleText);
+  await check.click();
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(example.questions[0]!.prompt);
+  await expect(preview).toContainText(example.questions[0]!.answers[0]!.text);
+  await expect(preview).toContainText(/Демо|вымышлен/);
+  expect(importRequests).toHaveLength(0);
+  expect(await library()).toEqual([]);
+
+  await jsonInput.fill('{"format":');
+  await expect(preview).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  await check.click();
+  await expect(
+    page.getByRole("heading", { name: "Исправьте ошибки", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("JSON");
+  await expect(preview).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  expect(importRequests).toHaveLength(0);
+  expect(await library()).toEqual([]);
+
+  const importedQuestion = {
+    prompt: "Что помогает отдохнуть после занятий?",
+    answers: [
+      { text: "Прогулка", points: 42, aliases: ["Погулять"] },
+      { text: "Музыка", points: 17, aliases: [] },
+    ],
+    source: "Учебный опрос для проверки мастера",
+    surveyDate: "2026-10-14",
+    respondentCount: 59,
+    notes: "Ответы и очки вымышлены для E2E.",
+    isDemo: true,
+    pack: "Проверка мастера",
+  };
+  const invalidPack = {
+    format: "ctokodnomy-questions-v1",
+    questions: [
+      importedQuestion,
+      {
+        ...importedQuestion,
+        prompt: "Этот вопрос содержит неверное число очков",
+        answers: [{ text: "Неверный ответ", points: 1001 }],
+      },
+    ],
+  };
+  await jsonInput.fill(JSON.stringify(invalidPack));
+  await check.click();
+  await expect(page.getByRole("alert")).toContainText(/1000/);
+  await expect(page.getByRole("alert")).toContainText(/2/);
+  await expect(preview).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  expect(importRequests).toHaveLength(0);
+  expect(await library()).toEqual([]);
+
+  const validPack = {
+    format: "ctokodnomy-questions-v1",
+    questions: [{
+      ...importedQuestion,
+      id: "fc551222-9756-4a93-ae90-7b3e6da02bfa",
+    }],
+  };
+  await jsonInput.fill(JSON.stringify(validPack, null, 2));
+  await check.click();
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(importedQuestion.prompt);
+  await expect(preview).toContainText("Прогулка");
+  await expect(preview).toContainText("42");
+  await expect(preview).toContainText("Музыка");
+  await expect(preview).toContainText("17");
+  await expect(preview).toContainText(importedQuestion.source);
+  await expect(preview).toContainText(/Демо|вымышлен/);
+  await expect(page.locator("body")).toContainText("Новых: 1");
+  await expect(page.locator("body")).toContainText("Обновляемых: 0");
+  await expect(save).toBeEnabled();
+  // Checking and rendering the complete preview must never save to the server.
+  expect(importRequests).toHaveLength(0);
+  expect(await library()).toEqual([]);
+
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({
+    path: "test-results/import-preview-desktop.png",
+    fullPage: true,
+  });
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    await expect(save).toBeEnabled();
+    await save.scrollIntoViewIfNeeded();
+    const box = await save.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    if (width === 390)
+      await page.screenshot({
+        path: "test-results/import-preview-mobile.png",
+        fullPage: true,
+      });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // Editing even a previously valid input invalidates its preview and save action.
+  await jsonInput.fill(JSON.stringify({ ...validPack, questions: [] }));
+  await expect(preview).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  expect(importRequests).toHaveLength(0);
+  await jsonInput.fill(JSON.stringify(validPack));
+  await check.click();
+  await expect(preview).toBeVisible();
+  // Another tab can add a previously new UUID after this preview. Saving must
+  // preserve that row until the organizer reviews and confirms the replacement.
+  const concurrentPrompt = "Вопрос из соседней вкладки, который нельзя затереть";
+  const concurrent = await page.request.post("/api/questions/import", {
+    data: {
+      ...validPack,
+      questions: [{ ...validPack.questions[0]!, prompt: concurrentPrompt }],
+    },
+  });
+  expect(concurrent.ok()).toBe(true);
+  const conflictingImport = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/questions/import") &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  expect((await conflictingImport).status()).toBe(409);
+  await expect(page.getByRole("alert")).toContainText("Библиотека изменилась");
+  await expect(preview).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  await expect(jsonInput).toHaveValue(JSON.stringify(validPack));
+  expect((await library())[0]!.prompt).toBe(concurrentPrompt);
+  expect(importRequests).toHaveLength(1);
+  await check.click();
+  await expect(preview).toBeVisible();
+  await expect(page.locator("body")).toContainText("Обновляемых: 1");
+  await expect(replaceConsent).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await replaceConsent.check();
+  const firstImport = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/questions/import") &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  expect((await firstImport).ok()).toBe(true);
+  await expect(page.getByRole("status")).toContainText(
+    "Сохранено вопросов: 1.",
+  );
+  const saved = await library();
+  expect(saved).toHaveLength(1);
+  expect(saved[0]).toMatchObject(importedQuestion);
+  expect(importRequests).toHaveLength(2);
+
+  const updatedQuestion = {
+    ...saved[0]!,
+    prompt: "Обновлённый вопрос: что помогает отдохнуть?",
+    answers: saved[0]!.answers.map((answer, index) => ({
+      ...answer,
+      points: index === 0 ? 43 : answer.points,
+    })),
+  };
+  const updatedPack = { ...validPack, questions: [updatedQuestion] };
+  await jsonInput.fill(JSON.stringify(updatedPack));
+  await check.click();
+  await expect(preview).toContainText(updatedQuestion.prompt);
+  await expect(page.locator("body")).toContainText("Обновляемых: 1");
+  await expect(
+    page.getByRole("radio", { name: /^Обновить совпадающие/ }),
+  ).toBeChecked();
+  await expect(replaceConsent).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  expect((await library())[0]!.prompt).toBe(importedQuestion.prompt);
+  expect(importRequests).toHaveLength(2);
+  await replaceConsent.check();
+  await expect(save).toBeEnabled();
+  const updateImport = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/questions/import") &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  expect((await updateImport).ok()).toBe(true);
+  await expect(page.getByRole("status")).toContainText(
+    "Сохранено вопросов: 1.",
+  );
+  const updated = await library();
+  expect(updated).toHaveLength(1);
+  expect(updated[0]!.id).toBe(saved[0]!.id);
+  expect(updated[0]!.prompt).toBe(updatedQuestion.prompt);
+  expect(updated[0]!.answers[0]!.points).toBe(43);
+  expect(importRequests).toHaveLength(3);
+
+  await jsonInput.fill(JSON.stringify(updatedPack));
+  await check.click();
+  await page.getByRole("radio", { name: /^Добавить все как новые/ }).check();
+  await expect(save).toBeEnabled();
+  await expect(page.locator("body")).toContainText("Новых: 1");
+  await expect(page.locator("body")).toContainText("Обновляемых: 0");
+  const copyImport = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/questions/import") &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  expect((await copyImport).ok()).toBe(true);
+  await expect(page.getByRole("status")).toContainText(
+    "Сохранено вопросов: 1.",
+  );
+  const copied = await library();
+  expect(copied).toHaveLength(2);
+  const copy = copied.find((question) => question.id !== saved[0]!.id)!;
+  expect(copy).toBeDefined();
+  expect(copy.prompt).toBe(updatedQuestion.prompt);
+  const originalAnswerIds = new Set(
+    updated[0]!.answers.map((answer) => answer.id),
+  );
+  expect(copy.answers.every((answer) => !originalAnswerIds.has(answer.id))).toBe(
+    true,
+  );
+  expect(copied.find((question) => question.id === saved[0]!.id)).toEqual(
+    updated[0],
+  );
+  expect(importRequests).toHaveLength(4);
+  await page
+    .getByRole("link", { name: "Открыть библиотеку", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/admin\/questions$/);
+  await expect(page.locator(".question-library-row")).toHaveCount(2);
+  expect(pageErrors).toEqual([]);
 });
 
 test("organizer installs and brands the event; independent phones collaborate while guests see only opened answers", async ({

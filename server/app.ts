@@ -25,6 +25,12 @@ import {
   type Question,
 } from "../shared/types.js";
 import {
+  IMPORT_MAX_BYTES,
+  questionSchema,
+  questionPackSchema,
+  questionImportIssues,
+} from "../shared/questionImport.js";
+import {
   createGame,
   applyCommand,
   publicView,
@@ -56,6 +62,16 @@ class ApiError extends Error {
   }
 }
 const idSchema = z.uuid();
+const questionImportRequestSchema = questionPackSchema.safeExtend({
+  replaceIds: z
+    .array(
+      z.uuid({ error: "Используйте корректный UUID для подтверждения замены" })
+        .transform((value) => value.toLowerCase()),
+      { error: "Передайте идентификаторы подтверждённых замен списком" },
+    )
+    .max(500, "Можно подтвердить не больше 500 замен")
+    .optional(),
+});
 const color = z
   .string()
   .regex(/^#[a-fA-F0-9]{6}$/, "Используйте цвет в формате #RRGGBB");
@@ -98,46 +114,6 @@ const normalizeBrand = (brand: Partial<Brand>): Brand => ({
   ...brand,
 });
 const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
-const answerSchema = z.object({
-  id: idSchema.optional(),
-  text: z.string().trim().min(1).max(200),
-  points: z.number().int().min(0).max(1000),
-  aliases: z.array(z.string().trim().min(1).max(200)).max(30).default([]),
-});
-const questionSchema = z
-  .object({
-    id: idSchema.optional(),
-    prompt: z.string().trim().min(1).max(500),
-    answers: z.array(answerSchema).min(1).max(12),
-    source: z.string().max(1000).default(""),
-    surveyDate: z.string().max(40).default(""),
-    respondentCount: z
-      .number()
-      .int()
-      .min(1)
-      .max(1_000_000)
-      .nullable()
-      .default(null),
-    notes: z.string().max(4000).default(""),
-    isDemo: z.boolean().default(false),
-    pack: z.string().max(100).default(""),
-  })
-  .superRefine((q, ctx) => {
-    const ids = q.answers.map((a) => a.id).filter(Boolean);
-    if (new Set(ids).size !== ids.length)
-      ctx.addIssue({
-        code: "custom",
-        message: "Идентификаторы ответов должны отличаться",
-        path: ["answers"],
-      });
-    const texts = q.answers.map((a) => a.text.toLocaleLowerCase("ru"));
-    if (new Set(texts).size !== texts.length)
-      ctx.addIssue({
-        code: "custom",
-        message: "Ответы должны отличаться",
-        path: ["answers"],
-      });
-  });
 const rulesSchema = z.object({
   multipliers: z.array(z.number().int().min(1).max(100)).min(1).max(20),
   stealAddsPoints: z.boolean(),
@@ -238,7 +214,7 @@ export async function buildApp(
   if (options.migrate !== false) await migrate(pool);
   const app = Fastify({
     logger: options.logger ?? false,
-    bodyLimit: 3 * 1024 * 1024,
+    bodyLimit: IMPORT_MAX_BYTES,
     trustProxy: process.env.TRUST_PROXY === "1",
     logController: new LogController({ disableRequestLogging: true }),
   });
@@ -683,7 +659,7 @@ export async function buildApp(
   });
   app.put("/api/questions/:id", async (request) => {
     await requireAdmin(request);
-    const id = gameId(request);
+    const id = gameId(request).toLowerCase();
     const question = { ...mapQuestion(request.body), id };
     const result = await pool.query(
       "UPDATE questions SET data=$2::jsonb WHERE id=$1",
@@ -702,24 +678,38 @@ export async function buildApp(
   });
   app.post("/api/questions/import", async (request) => {
     await requireAdmin(request);
-    const body = z
-      .object({
-        format: z.literal("ctokodnomy-questions-v1"),
-        questions: z.array(questionSchema).min(1).max(500),
-      })
-      .parse(request.body);
-    const questions = body.questions.map(mapQuestion);
-    if (new Set(questions.map((q) => q.id)).size !== questions.length)
+    const parsed = questionImportRequestSchema.safeParse(request.body);
+    if (!parsed.success)
       throw new ApiError(
         400,
-        "Файл содержит повторяющиеся идентификаторы вопросов",
+        questionImportIssues(parsed.error.issues)
+          .map((issue) => `${issue.path}: ${issue.message}`)
+          .join("; "),
+        "VALIDATION",
       );
+    const body = parsed.data;
+    const questions = body.questions.map(mapQuestion);
     await transaction(pool, async (client) => {
-      for (const question of questions)
-        await client.query(
-          "INSERT INTO questions(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-          [question.id, JSON.stringify(question)],
-        );
+      for (const question of questions) {
+        const values = [question.id, JSON.stringify(question)];
+        // The wizard's confirmation applies only to these UUIDs. Checking in
+        // the upsert also covers another tab inserting a UUID after preview.
+        const result = body.replaceIds === undefined
+          ? await client.query(
+              "INSERT INTO questions(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data RETURNING id",
+              values,
+            )
+          : await client.query(
+              "INSERT INTO questions(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE questions.id=ANY($3::uuid[]) OR questions.data=excluded.data RETURNING id",
+              [...values, body.replaceIds],
+            );
+        if (!result.rowCount)
+          throw new ApiError(
+            409,
+            "Библиотека изменилась. Проверьте вопросы ещё раз перед сохранением.",
+            "IMPORT_CONFLICT",
+          );
+      }
     });
     return { count: questions.length };
   });
@@ -728,7 +718,10 @@ export async function buildApp(
     const body = z
       .object({
         title: z.string().trim().min(1).max(120),
-        questionIds: z.array(idSchema).min(1).max(20),
+        questionIds: z
+          .array(idSchema.transform((value) => value.toLowerCase()))
+          .min(1)
+          .max(20),
         teams: z.tuple([teamSchema, teamSchema]),
         rules: rulesSchema.optional(),
       })

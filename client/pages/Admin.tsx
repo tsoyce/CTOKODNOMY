@@ -1377,13 +1377,6 @@ export function QuestionsPage() {
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
   const [demoConfirm, setDemoConfirm] = useState(false);
-  const [pendingImport, setPendingImport] = useState<{
-    data: unknown;
-    count: number;
-    updating: number;
-    filename: string;
-  } | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const packs = [
     ...new Set(
       (questions || []).map((question) => question.pack).filter(Boolean),
@@ -1433,67 +1426,6 @@ export function QuestionsPage() {
       setBusy(false);
     }
   };
-  const prepareImport = async (file: File) => {
-    setBusy(true);
-    setActionError("");
-    setNotice("");
-    setPendingImport(null);
-    try {
-      if (file.size > 3 * 1024 * 1024)
-        throw new Error("Файл слишком большой. Максимум для импорта — 3 МБ.");
-      const data = JSON.parse(await file.text());
-      if (
-        data?.format !== "ctokodnomy-questions-v1" ||
-        !Array.isArray(data.questions) ||
-        !data.questions.length ||
-        data.questions.length > 500
-      )
-        throw new Error(
-          "Нужен файл ctokodnomy-questions-v1 с 1–500 вопросами. Используйте файл экспорта библиотеки.",
-        );
-      const existing = new Set(
-        (questions || []).map((question) => question.id),
-      );
-      const updating = data.questions.filter(
-        (question: { id?: string } | null) =>
-          question && existing.has(question.id || ""),
-      ).length;
-      setPendingImport({
-        data,
-        count: data.questions.length,
-        updating,
-        filename: file.name,
-      });
-      setDemoConfirm(false);
-    } catch (err) {
-      setActionError(
-        err instanceof SyntaxError
-          ? "Файл не содержит корректный JSON. Используйте файл экспорта библиотеки."
-          : messageOf(err),
-      );
-    } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
-  const importQuestions = async () => {
-    if (!pendingImport) return;
-    setBusy(true);
-    setActionError("");
-    try {
-      const result = await api<{ count: number }>(
-        "/questions/import",
-        json("POST", pendingImport.data),
-      );
-      await refresh();
-      setPendingImport(null);
-      setNotice(`Импортировано вопросов: ${result.count}.`);
-    } catch (err) {
-      setActionError(messageOf(err));
-    } finally {
-      setBusy(false);
-    }
-  };
   const addDemos = async () => {
     setBusy(true);
     setActionError("");
@@ -1529,15 +1461,13 @@ export function QuestionsPage() {
       />
       <div className="library-toolbar">
         <div className="actions">
-          <button
-            type="button"
+          <Link
+            to="/admin/questions/import"
             className="button button-secondary"
-            disabled={busy}
-            onClick={() => fileInput.current?.click()}
           >
             <Upload size={17} />
             Импорт JSON
-          </button>
+          </Link>
           <button
             type="button"
             className="button button-secondary"
@@ -1547,16 +1477,6 @@ export function QuestionsPage() {
             <Download size={17} />
             Экспорт
           </button>
-          <input
-            ref={fileInput}
-            hidden
-            type="file"
-            accept=".json,application/json"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void prepareImport(file);
-            }}
-          />
           <button
             type="button"
             className="button button-ghost"
@@ -1568,41 +1488,6 @@ export function QuestionsPage() {
         </div>
         <span className="muted">{questions?.length || 0} вопросов</span>
       </div>
-      {pendingImport && (
-        <div className="notice demo-confirm">
-          <Upload size={24} />
-          <div>
-            <strong>
-              Импортировать {pendingImport.count} вопросов из «
-              {pendingImport.filename}»?
-            </strong>
-            <p>
-              {pendingImport.updating
-                ? `Существующих вопросов с совпадающими идентификаторами: ${pendingImport.updating}. Их содержимое будет заменено данными из файла.`
-                : "Новые вопросы будут добавлены в библиотеку."}{" "}
-              Снимки уже созданных партий сохранятся.
-            </p>
-            <div className="actions">
-              <button
-                type="button"
-                disabled={busy}
-                className="button button-secondary"
-                onClick={() => void importQuestions()}
-              >
-                {busy ? "Импортируем…" : "Импортировать вопросы"}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                className="button button-ghost"
-                onClick={() => setPendingImport(null)}
-              >
-                Отмена
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {demoConfirm && (
         <div className="notice demo-confirm">
           <FileQuestion size={24} />
@@ -1782,10 +1667,9 @@ export function QuestionsPage() {
         </EmptyState>
       )}
       <p className="muted library-note">
-        Импорт принимает файл формата <code>ctokodnomy-questions-v1</code>,
-        который создаётся кнопкой «Экспорт». Вопросы проверяются и сохраняются
-        целиком. Совпадающие идентификаторы обновляют вопросы библиотеки; уже
-        созданные партии сохраняют свои снимки.
+        В мастере импорта можно загрузить файл или вставить JSON, проверить
+        ошибки и просмотреть ответы перед сохранением. Экспорт сохраняет всю
+        библиотеку в формате <code>ctokodnomy-questions-v1</code>.
       </p>
     </>
   );

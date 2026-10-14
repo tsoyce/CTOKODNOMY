@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { buildApp } from "../server/app";
 import { issueSetupToken, tokenHash } from "../server/db";
+import { IMPORT_MAX_BYTES, questionPackSchema } from "../shared/questionImport";
 import {
   defaultBrand,
   type Brand,
@@ -573,6 +574,176 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
         )
       ).statusCode,
     ).toBe(400);
+  });
+
+  test("question import is admin-only, canonicalizes upserts, and rejects duplicate identities atomically", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Участник");
+    const originalState = (
+      await pool.query("SELECT state FROM games WHERE id=$1", [game.id])
+    ).rows[0].state;
+    const replacement = {
+      ...questions[0]!,
+      id: questions[0]!.id.toUpperCase(),
+      prompt: "Обновлено только в библиотеке",
+      answers: questions[0]!.answers.map((answer) => ({
+        ...answer,
+        id: answer.id.toUpperCase(),
+      })),
+    };
+    const payload = {
+      format: "ctokodnomy-questions-v1",
+      questions: [replacement],
+    };
+    for (const visitor of [undefined, member.cookie]) {
+      expect((await call("POST", "/questions/import", payload, visitor)).statusCode).toBe(401);
+      expect((await call("GET", "/questions/export", undefined, visitor)).statusCode).toBe(401);
+    }
+    expect((await call("POST", "/questions/import", payload, cookie, "https://other.example")).statusCode).toBe(403);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toHaveLength(2);
+
+    const newQuestion = {
+      ...question("Новый вопрос", "Третий", "Четвёртый"),
+      id: "aabbccdd-1234-4123-8123-123456789abc",
+    };
+    const imported = await call("POST", "/questions/import", {
+      ...payload,
+      questions: [newQuestion, replacement],
+    }, cookie);
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json()).toEqual({ count: 2 });
+    const edited = await call("PUT", `/questions/${questions[0]!.id.toUpperCase()}`, replacement, cookie);
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json().id).toBe(questions[0]!.id);
+    const library = (await call("GET", "/questions", undefined, cookie)).json<Question[]>();
+    expect(library).toHaveLength(3);
+    expect(library.find((item) => item.id === questions[0]!.id)).toEqual({
+      ...replacement,
+      id: questions[0]!.id,
+      answers: questions[0]!.answers,
+    });
+    const exported = (await call("GET", "/questions/export", undefined, cookie)).json();
+    expect(questionPackSchema.safeParse(exported).success).toBe(true);
+    const gamePayload = {
+      title: "Вопросы с UUID в верхнем регистре",
+      questionIds: [newQuestion.id.toUpperCase()],
+      teams: [
+        { name: "Первая", color: "#1646a0" },
+        { name: "Вторая", color: "#8b2a16" },
+      ],
+    };
+    const upperCaseGame = await call("POST", "/games", gamePayload, cookie);
+    expect(upperCaseGame.statusCode).toBe(200);
+    expect(upperCaseGame.json<HostGame>().questions).toEqual([newQuestion]);
+    const duplicateGameQuestions = await call("POST", "/games", {
+      ...gamePayload,
+      questionIds: [newQuestion.id, newQuestion.id.toUpperCase()],
+    }, cookie);
+    expect(duplicateGameQuestions.statusCode).toBe(400);
+    expect(duplicateGameQuestions.json().message).toBe("Выберите разные вопросы для раундов");
+
+    for (const duplicateId of [questions[0]!.id, questions[0]!.id.toUpperCase()]) {
+      const rejected = await call("POST", "/questions/import", {
+        ...payload,
+        questions: [
+          question("Не сохранять частично", "Один", "Два"),
+          questions[0],
+          { ...replacement, id: duplicateId },
+        ],
+      }, cookie);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().code).toBe("VALIDATION");
+      expect(rejected.json().message).toContain("Вопрос 3 → идентификатор");
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+    }
+    const duplicateAnswer = await call("POST", "/questions/import", {
+      ...payload,
+      questions: [
+        question("Тоже не сохранять", "Один", "Два"),
+        {
+          ...replacement,
+          answers: [
+            { ...questions[0]!.answers[0], text: "Повтор" },
+            { ...questions[0]!.answers[0], id: questions[0]!.answers[0]!.id.toUpperCase(), text: "  ПОВТОР  " },
+          ],
+        },
+      ],
+    }, cookie);
+    expect(duplicateAnswer.statusCode).toBe(400);
+    expect(duplicateAnswer.json().message).toContain("Вопрос 2 → ответ 2 → идентификатор");
+    expect(duplicateAnswer.json().message).toContain("Ответы должны отличаться");
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+
+    const raw = JSON.stringify(payload);
+    const atLimit = raw + " ".repeat(IMPORT_MAX_BYTES - Buffer.byteLength(raw));
+    const injectRaw = (text: string) => app.inject({
+      method: "POST",
+      url: "/api/questions/import",
+      headers: { origin: ORIGIN, cookie, "content-type": "application/json" },
+      payload: text,
+    });
+    expect((await injectRaw(atLimit)).statusCode).toBe(200);
+    expect((await injectRaw(atLimit + "я")).statusCode).toBe(413);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+    expect((await call("GET", `/games/${game.id}/host`, undefined, cookie)).json<HostGame>().questions).toEqual(game.questions);
+    expect((await pool.query("SELECT state FROM games WHERE id=$1", [game.id])).rows[0].state).toEqual(originalState);
+  });
+
+  test("guarded import replaces only confirmed UUIDs and retries cannot overwrite later edits", async () => {
+    const cookie = await initialize();
+    const { questions } = await createFixture(cookie);
+    const original = questions[0]!;
+    const replacement = { ...original, prompt: "Подтверждённая замена" };
+    const fresh = question("Новый из той же пачки", "Первый", "Второй");
+    const payload = {
+      format: "ctokodnomy-questions-v1",
+      questions: [fresh, replacement],
+      replaceIds: [] as string[],
+    };
+    const unconfirmed = await call("POST", "/questions/import", payload, cookie);
+    expect(unconfirmed.statusCode).toBe(409);
+    expect(unconfirmed.json()).toEqual({
+      code: "IMPORT_CONFLICT",
+      message: "Библиотека изменилась. Проверьте вопросы ещё раз перед сохранением.",
+    });
+    expect((await call("GET", "/questions", undefined, cookie)).json<Question[]>())
+      .toEqual(expect.arrayContaining(questions));
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toHaveLength(2);
+
+    const confirmed = await call("POST", "/questions/import", {
+      ...payload,
+      replaceIds: [original.id.toUpperCase()],
+    }, cookie);
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toEqual({ count: 2 });
+    const saved = (await call("GET", "/questions", undefined, cookie)).json<Question[]>();
+    expect(saved).toHaveLength(3);
+    expect(saved).toEqual(expect.arrayContaining([fresh, replacement, questions[1]]));
+
+    // A response may have been lost. The stable UUIDs make the same body safe
+    // to retry without renewed consent, as long as stored data still matches.
+    const retry = await call("POST", "/questions/import", payload, cookie);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toEqual({ count: 2 });
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(saved);
+
+    const changed = { ...replacement, prompt: "Позже изменено в другой вкладке" };
+    expect((await call("PUT", `/questions/${original.id}`, changed, cookie)).statusCode).toBe(200);
+    const afterEdit = (await call("GET", "/questions", undefined, cookie)).json<Question[]>();
+    const unsafeRetry = await call("POST", "/questions/import", payload, cookie);
+    expect(unsafeRetry.statusCode).toBe(409);
+    expect(unsafeRetry.json().code).toBe("IMPORT_CONFLICT");
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(afterEdit);
+
+    // Omitting the wizard-only guard preserves the established API contract.
+    const legacy = await call("POST", "/questions/import", {
+      format: payload.format,
+      questions: [replacement],
+    }, cookie);
+    expect(legacy.statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json<Question[]>())
+      .toEqual(expect.arrayContaining([replacement]));
   });
 
   test("branding uploads validate image signatures and limits and serve data without path traversal", async () => {
