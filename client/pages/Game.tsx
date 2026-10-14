@@ -217,10 +217,9 @@ export function BoardPage() {
               src={game.brand.gameLogoUrl || game.brand.logoUrl}
               alt={game.brand.title}
             />
-          ) : (
-            <strong>{game.brand.title}</strong>
-          )}
-          <span>{game.brand.organizer}</span>
+          ) : null}
+          <strong>{game.brand.title}</strong>
+          {game.brand.organizer && <span>{game.brand.organizer}</span>}
         </Link>
         <div className="board-header-actions">
           <Connection connected={connected} error={error} refresh={refresh} />
@@ -255,7 +254,13 @@ export function BoardPage() {
           <section className="board-lobby">
             <p className="eyebrow">{game.title}</p>
             <div className="board-lobby-mark">
-              100<span>к</span>1
+              {game.brand.gameLogoUrl ? (
+                <img src={game.brand.gameLogoUrl} alt="Логотип игры" />
+              ) : (
+                <>
+                  100<span>к</span>1
+                </>
+              )}
             </div>
             <h1>Собираем команды</h1>
             <p>
@@ -267,6 +272,17 @@ export function BoardPage() {
             <p className="board-guest-note">
               Игроки входят по приглашению ведущего. Гости — болеют за своих!
             </p>
+            {game.brand.partnerLogoUrls.length > 0 && (
+              <div className="partner-logos">
+                {game.brand.partnerLogoUrls.map((url, index) => (
+                  <img
+                    key={`${url}-${index}`}
+                    src={url}
+                    alt="Партнёр мероприятия"
+                  />
+                ))}
+              </div>
+            )}
           </section>
         ) : game.phase === "finished" ? (
           <section className="board-finale">
@@ -385,8 +401,17 @@ export function BoardPage() {
         </div>
       )}
       <footer className="board-footer">
-        <span>{game.brand.organizer || game.title}</span>
-        <span>Играем вместе · {game.brand.title}</span>
+        <span className="board-organizer">
+          {game.brand.logoUrl && (
+            <img src={game.brand.logoUrl} alt="Логотип организатора" />
+          )}
+          {game.brand.organizer || game.title}
+        </span>
+        <span>
+          {[game.brand.footerText, game.brand.title]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
       </footer>
     </main>
   );
@@ -526,7 +551,15 @@ export function TeamPage() {
     <main className="team-page" style={brandStyle(game.brand)}>
       <header className="team-header container">
         <Link className="text-link" to="/">
-          <ArrowLeft size={17} /> {game.brand.title}
+          <ArrowLeft size={17} />
+          {(game.brand.gameLogoUrl || game.brand.logoUrl) && (
+            <img
+              className="team-game-logo"
+              src={game.brand.gameLogoUrl || game.brand.logoUrl}
+              alt=""
+            />
+          )}
+          {game.brand.title}
         </Link>
         <Connection connected={connected} error={error} refresh={refresh} />
       </header>
@@ -763,6 +796,7 @@ export function TeamPage() {
           </div>
         )}
         <footer className="team-footer">
+          {game.brand.footerText && <span>{game.brand.footerText}</span>}
           <Link to="/help">Правила и помощь</Link>
           <Link
             to={`/board/${game.id}`}

@@ -2,6 +2,9 @@ export interface Brand {
   title: string;
   description: string;
   organizer: string;
+  heroTitle: string;
+  heroNote: string;
+  footerText: string;
   primary: string;
   accent: string;
   background: string;
@@ -13,8 +16,12 @@ export interface Brand {
 }
 export const defaultBrand: Brand = {
   title: "100 к 1",
-  description: "День социолога · игра о нас и нашем обществе",
-  organizer: "День социолога",
+  description:
+    "Один вопрос. Множество мнений. Соберите команду и угадайте самые популярные ответы.",
+  organizer: "",
+  heroTitle: "Вместе знаем больше.",
+  heroNote: "Для игроков и гостей. Прямо в браузере.",
+  footerText: "Играем вместе",
   primary: "#7559ff",
   accent: "#edff7a",
   background: "#111222",

@@ -65,6 +65,9 @@ const brandSchema = z.object({
   title: z.string().trim().min(1).max(150),
   description: z.string().max(1000),
   organizer: z.string().max(150),
+  heroTitle: z.string().max(200).default(defaultBrand.heroTitle),
+  heroNote: z.string().max(300).default(defaultBrand.heroNote),
+  footerText: z.string().max(300).default(defaultBrand.footerText),
   primary: color,
   accent: color,
   background: color,
@@ -81,10 +84,11 @@ const usernameSchema = z
   .max(64)
   .regex(/^[a-zA-Z0-9_.@-]+$/)
   .transform((v) => v.toLowerCase());
-const passwordSchema = z
-  .string()
-  .min(8, "Пароль должен содержать не менее 8 символов")
-  .max(128);
+const passwordSchema = z.string().min(1, "Введите пароль").max(128);
+const normalizeBrand = (brand: Partial<Brand>): Brand => ({
+  ...defaultBrand,
+  ...brand,
+});
 const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
 const answerSchema = z.object({
   id: idSchema.optional(),
@@ -200,7 +204,8 @@ async function loadGame(
     [id],
   );
   if (!result.rowCount) throw new ApiError(404, "Игра не найдена", "NOT_FOUND");
-  return result.rows[0].state as GameState;
+  const state = result.rows[0].state as GameState;
+  return { ...state, brand: normalizeBrand(state.brand) };
 }
 const saveGame = (db: Transaction, state: GameState) =>
   db.query("UPDATE games SET state=$2::jsonb,updated_at=now() WHERE id=$1", [
@@ -296,14 +301,12 @@ export async function buildApp(
   });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
-      return reply
-        .code(400)
-        .send({
-          message: error.issues
-            .map((e) => `${e.path.join(".")}: ${e.message}`)
-            .join("; "),
-          code: "VALIDATION",
-        });
+      return reply.code(400).send({
+        message: error.issues
+          .map((e) => `${e.path.join(".")}: ${e.message}`)
+          .join("; "),
+        code: "VALIDATION",
+      });
     }
     const typed = error as Error & { statusCode?: number; code?: string };
     if (typed.code === "23505")
@@ -317,13 +320,11 @@ export async function buildApp(
     // Do not log request bodies, cookies, tokens, connection strings or database error parameters.
     if (status === 500)
       request.log.error({ errorType: typed.name }, "Request failed");
-    return reply
-      .code(status)
-      .send({
-        message:
-          status === 500 ? "Ошибка сервера. Повторите запрос." : typed.message,
-        ...(typed.code && status !== 500 ? { code: typed.code } : {}),
-      });
+    return reply.code(status).send({
+      message:
+        status === 500 ? "Ошибка сервера. Повторите запрос." : typed.message,
+      ...(typed.code && status !== 500 ? { code: typed.code } : {}),
+    });
   });
   async function getAdmin(request: FastifyRequest): Promise<Me["admin"]> {
     const token = request.cookies[adminCookie];
@@ -394,7 +395,9 @@ export async function buildApp(
     const initialized = settings.rows[0].initialized;
     return {
       initialized,
-      brand: initialized ? settings.rows[0].brand : defaultBrand,
+      brand: initialized
+        ? normalizeBrand(settings.rows[0].brand)
+        : defaultBrand,
       games: games.rows.map(({ state }: { state: GameState }) => ({
         id: state.id,
         title: state.title,
@@ -535,8 +538,10 @@ export async function buildApp(
   });
   app.get("/api/settings", async (request) => {
     await requireAdmin(request);
-    return (await pool.query("SELECT brand FROM app_settings WHERE id=1"))
-      .rows[0].brand as Brand;
+    return normalizeBrand(
+      (await pool.query("SELECT brand FROM app_settings WHERE id=1")).rows[0]
+        .brand,
+    );
   });
   app.put("/api/settings", async (request) => {
     await requireAdmin(request);
@@ -546,8 +551,7 @@ export async function buildApp(
     ]);
     return brand;
   });
-  app.post("/api/media", async (request) => {
-    await requireAdmin(request);
+  async function uploadImage(request: FastifyRequest) {
     const file = await request.file();
     if (!file || file.fieldname !== "file")
       throw new ApiError(400, "Выберите изображение в поле file");
@@ -591,7 +595,44 @@ export async function buildApp(
       mode: 0o640,
     });
     return { url: `/media/${name}` };
+  }
+  app.post("/api/media", async (request) => {
+    await requireAdmin(request);
+    return uploadImage(request);
   });
+  app.post(
+    "/api/setup/media",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request) => {
+      const token = request.headers["x-setup-token"];
+      if (typeof token !== "string" || token.length < 20 || token.length > 200)
+        throw new ApiError(
+          403,
+          "Введите действующий код установки",
+          "SETUP_TOKEN",
+        );
+      return transaction(pool, async (client) => {
+        // Hold the installation lock until the upload finishes so setup cannot
+        // close or rotate its grant between authorization and storing a logo.
+        const settings = await client.query(
+          "SELECT initialized FROM app_settings WHERE id=1 FOR SHARE",
+        );
+        if (settings.rows[0].initialized)
+          throw new ApiError(409, "Приложение уже настроено", "INITIALIZED");
+        const grant = await client.query(
+          "SELECT token_hash FROM setup_grants WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR SHARE",
+          [tokenHash(token)],
+        );
+        if (!grant.rowCount)
+          throw new ApiError(
+            403,
+            "Код установки неверен или истёк. Создайте новый в консоли сервера.",
+            "SETUP_TOKEN",
+          );
+        return uploadImage(request);
+      });
+    },
+  );
   app.get("/api/questions", async (request) => {
     await requireAdmin(request);
     return (
@@ -692,9 +733,10 @@ export async function buildApp(
       );
       if (byId.size !== body.questionIds.length)
         throw new ApiError(400, "Один из вопросов больше не существует");
-      const brand = (
-        await client.query("SELECT brand FROM app_settings WHERE id=1")
-      ).rows[0].brand as Brand;
+      const brand = normalizeBrand(
+        (await client.query("SELECT brand FROM app_settings WHERE id=1"))
+          .rows[0].brand,
+      );
       const state = createGame({
         title: body.title,
         questions: body.questionIds.map((id) => byId.get(id)!),
@@ -747,6 +789,7 @@ export async function buildApp(
         if (rows.rowCount !== 1)
           throw new ApiError(404, "Код команды не найден", "JOIN_CODE");
         const state = rows.rows[0].state as GameState;
+        state.brand = normalizeBrand(state.brand);
         const team = state.teams.find((t) => t.joinCode === body.code)!;
         if (!team.joinOpen || state.phase === "finished")
           throw new ApiError(409, "Вход в эту команду закрыт", "JOIN_CLOSED");

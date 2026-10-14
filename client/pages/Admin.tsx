@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -29,7 +28,6 @@ import {
   FileQuestion,
   Flag,
   Gamepad2,
-  ImagePlus,
   LayoutDashboard,
   LogOut,
   Palette,
@@ -46,6 +44,7 @@ import {
 import QRCode from "qrcode";
 import { api, useMe, useSite } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
+import { BrandEditor, BrandPreview } from "../components/Branding";
 import type {
   Answer,
   Brand,
@@ -450,12 +449,13 @@ export function GamesPage() {
 
 export function NewGamePage() {
   const navigate = useNavigate();
+  const { site } = useSite();
   const {
     value: questions,
     loading,
     error,
   } = useResource<Question[]>("/questions");
-  const [title, setTitle] = useState("День социолога");
+  const [title, setTitle] = useState(site?.brand.title || "100 к 1");
   const [teams, setTeams] = useState([
     { name: "Команда 1", color: "#7559ff" },
     { name: "Команда 2", color: "#edff7a" },
@@ -546,7 +546,7 @@ export function NewGamePage() {
               maxLength={120}
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="Например, День социолога · финал"
+              placeholder="Например, Наш праздник · финал"
             />
           </label>
           <div className="form-grid">
@@ -1709,7 +1709,7 @@ export function QuestionEditorPage() {
               value={question.pack}
               maxLength={100}
               onChange={(event) => update("pack", event.target.value)}
-              placeholder="Например, День социолога · основной тур"
+              placeholder="Например, Наш праздник · основной тур"
             />
             <small className="muted">
               Набор помогает находить и группировать вопросы в библиотеке.
@@ -1929,168 +1929,6 @@ export function QuestionEditorPage() {
   );
 }
 
-function ImageField({
-  label,
-  value,
-  busy,
-  onUpload,
-  onRemove,
-}: {
-  label: string;
-  value: string;
-  busy: boolean;
-  onUpload: (file: File) => void;
-  onRemove: () => void;
-}) {
-  const input = useRef<HTMLInputElement>(null);
-  return (
-    <div className="image-field">
-      <span className="field-label">{label}</span>
-      <div className="image-upload-box">
-        {value ? <img src={value} alt={label} /> : <ImagePlus size={30} />}
-        <div>
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={busy}
-            onClick={() => input.current?.click()}
-          >
-            <Upload size={15} />
-            {value ? "Заменить" : "Загрузить"}
-          </button>
-          {value && (
-            <button
-              type="button"
-              className="button button-ghost"
-              disabled={busy}
-              onClick={onRemove}
-            >
-              Убрать
-            </button>
-          )}
-          <p className="muted">PNG, JPEG или WebP · до 2 МБ</p>
-        </div>
-        <input
-          ref={input}
-          type="file"
-          hidden
-          accept="image/png,image/jpeg,image/webp"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) onUpload(file);
-            event.target.value = "";
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function BrandPreview({ brand }: { brand: Brand }) {
-  const style = {
-    background: brand.background,
-    color: brand.textColor,
-    "--preview-primary": brand.primary,
-    "--preview-accent": brand.accent,
-  } as CSSProperties;
-  const contrast = (first: string, second: string) => {
-    const luminance = (hex: string) => {
-      const values = hex
-        .replace("#", "")
-        .match(/.{2}/g)
-        ?.map((value) => {
-          const channel = parseInt(value, 16) / 255;
-          return channel <= 0.04045
-            ? channel / 12.92
-            : ((channel + 0.055) / 1.055) ** 2.4;
-        }) || [0, 0, 0];
-      return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
-    };
-    const a = luminance(first);
-    const b = luminance(second);
-    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  };
-  const ratio = contrast(brand.background, brand.textColor);
-  return (
-    <section className="brand-preview-section">
-      <div className="section-heading">
-        <h2>Предпросмотр</h2>
-        <span className="badge badge-demo">Демонстрация</span>
-      </div>
-      <p className="muted">
-        Посмотрите, как мероприятие выглядит на общем экране и телефоне.
-      </p>
-      <div className="brand-preview-board" style={style}>
-        <div className="preview-brand-row">
-          {brand.logoUrl && (
-            <img
-              src={brand.logoUrl}
-              alt="Логотип организатора в предпросмотре"
-            />
-          )}
-          <span>{brand.organizer}</span>
-        </div>
-        {brand.gameLogoUrl ? (
-          <img
-            className="preview-game-logo"
-            src={brand.gameLogoUrl}
-            alt="Логотип игры в предпросмотре"
-          />
-        ) : (
-          <strong className="preview-game-title">
-            {brand.title || "100 к 1"}
-          </strong>
-        )}
-        <p>{brand.description}</p>
-        <div className="preview-answer">
-          1<span>Открытый ответ</span>
-          <strong>36</strong>
-        </div>
-        <div className="preview-hidden-answer">
-          2 <span>••••••</span>
-        </div>
-        <div className="preview-score-row">
-          <span>
-            Команда 1 <strong>120</strong>
-          </span>
-          <span>
-            Команда 2 <strong>85</strong>
-          </span>
-        </div>
-        {brand.partnerLogoUrls.length > 0 && (
-          <div className="preview-partners">
-            {brand.partnerLogoUrls.map((url, index) => (
-              <img
-                key={`${url}-${index}`}
-                src={url}
-                alt={`Партнёр ${index + 1}`}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="brand-preview-phone" style={style}>
-        <div className="preview-phone-speaker" />
-        <small>{brand.organizer}</small>
-        <h3>{brand.title || "100 к 1"}</h3>
-        <span className="preview-role">Вы в команде</span>
-        <h4>Ваш ход. Есть идея?</h4>
-        <div className="preview-phone-input">Напишите свой вариант…</div>
-        <span className="preview-phone-button">
-          Предложить ответ <ArrowRight size={15} />
-        </span>
-        <small>Демонстрационный экран</small>
-      </div>
-      <p className={`contrast-note ${ratio < 4.5 ? "contrast-warning" : ""}`}>
-        {ratio >= 4.5
-          ? "✓ Текст и фон имеют достаточный контраст."
-          : "Контраст текста и фона низкий. Выберите более светлый текст или более тёмный фон."}{" "}
-        <span>Соотношение: {ratio.toFixed(1)}:1</span>
-      </p>
-    </section>
-  );
-}
-
 export function SettingsPage() {
   const { value: loaded, loading, error } = useResource<Brand>("/settings");
   const { refresh } = useSite();
@@ -2099,28 +1937,12 @@ export function SettingsPage() {
   const [uploading, setUploading] = useState(false);
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
-  const partnerInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (loaded) setBrand(loaded);
   }, [loaded]);
-  const update = <K extends keyof Brand>(key: K, value: Brand[K]) => {
-    setBrand((current) => (current ? { ...current, [key]: value } : current));
-    setNotice("");
-  };
-  const upload = async (
-    file: File,
-    target: "logoUrl" | "gameLogoUrl" | "faviconUrl" | "partnerLogoUrls",
-  ) => {
+  const uploadImage = async (file: File): Promise<string> => {
     setActionError("");
     setNotice("");
-    if (file.size > 2 * 1024 * 1024) {
-      setActionError("Изображение слишком большое. Выберите файл до 2 МБ.");
-      return;
-    }
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-      setActionError("Допустимые форматы: PNG, JPEG и WebP.");
-      return;
-    }
     setUploading(true);
     try {
       const body = new FormData();
@@ -2129,19 +1951,7 @@ export function SettingsPage() {
         method: "POST",
         body,
       });
-      setBrand((current) =>
-        current
-          ? {
-              ...current,
-              [target]:
-                target === "partnerLogoUrls"
-                  ? [...current.partnerLogoUrls, result.url]
-                  : result.url,
-            }
-          : current,
-      );
-    } catch (err) {
-      setActionError(messageOf(err));
+      return result.url;
     } finally {
       setUploading(false);
     }
@@ -2172,153 +1982,20 @@ export function SettingsPage() {
   return (
     <>
       <PageHeading
-        eyebrow="Ваше мероприятие, ваш характер"
+        eyebrow="Любой повод собраться вместе"
         title="Оформление"
-        description="Единый стиль главной, командных комнат и общего табло."
+        description="Свои слова, логотипы и цвета. Один стиль для главной страницы, телефонов и общего экрана."
       />
       <form onSubmit={save} className="branding-form">
-        <div className="branding-editor">
-          <section className="card form-section">
-            <h2>Название и организатор</h2>
-            <label className="field">
-              Название игры
-              <input
-                required
-                maxLength={120}
-                value={brand.title}
-                onChange={(event) => update("title", event.target.value)}
-              />
-            </label>
-            <label className="field">
-              Описание
-              <textarea
-                aria-label="Описание"
-                rows={3}
-                maxLength={500}
-                value={brand.description}
-                onChange={(event) => update("description", event.target.value)}
-              />
-            </label>
-            <label className="field">
-              Организатор
-              <input
-                maxLength={120}
-                value={brand.organizer}
-                onChange={(event) => update("organizer", event.target.value)}
-                placeholder="Например, Социологический факультет"
-              />
-            </label>
-          </section>
-          <section className="card form-section">
-            <h2>Цвета</h2>
-            <div className="form-grid">
-              {(
-                [
-                  ["primary", "Основной"],
-                  ["accent", "Акцентный"],
-                  ["background", "Фон"],
-                  ["textColor", "Текст"],
-                ] as const
-              ).map(([key, label]) => (
-                <label className="field color-field" key={key}>
-                  {label}
-                  <div>
-                    <input
-                      type="color"
-                      value={brand[key]}
-                      onChange={(event) => update(key, event.target.value)}
-                    />
-                    <span>{brand[key]}</span>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </section>
-          <section className="card form-section">
-            <h2>Логотипы и значок</h2>
-            <ImageField
-              label="Логотип организатора"
-              value={brand.logoUrl}
-              busy={uploading}
-              onUpload={(file) => void upload(file, "logoUrl")}
-              onRemove={() => update("logoUrl", "")}
-            />
-            <ImageField
-              label="Логотип игры"
-              value={brand.gameLogoUrl}
-              busy={uploading}
-              onUpload={(file) => void upload(file, "gameLogoUrl")}
-              onRemove={() => update("gameLogoUrl", "")}
-            />
-            <ImageField
-              label="Значок сайта"
-              value={brand.faviconUrl}
-              busy={uploading}
-              onUpload={(file) => void upload(file, "faviconUrl")}
-              onRemove={() => update("faviconUrl", "")}
-            />
-            <p className="muted">
-              Для значка лучше выбрать квадратное изображение. Логотипы
-              сохраняют исходные пропорции.
-            </p>
-          </section>
-          <section className="card form-section">
-            <div className="section-heading">
-              <div>
-                <h2>Партнёры мероприятия</h2>
-                <p className="muted">
-                  Логотипы появятся на экранах ожидания и итогов.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="button button-secondary"
-                disabled={uploading || brand.partnerLogoUrls.length >= 8}
-                onClick={() => partnerInput.current?.click()}
-              >
-                <Plus size={16} />
-                Добавить
-              </button>
-            </div>
-            <input
-              ref={partnerInput}
-              type="file"
-              hidden
-              accept="image/png,image/jpeg,image/webp"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void upload(file, "partnerLogoUrls");
-                event.target.value = "";
-              }}
-            />
-            {brand.partnerLogoUrls.length ? (
-              <div className="partner-logo-list">
-                {brand.partnerLogoUrls.map((url, index) => (
-                  <div key={`${url}-${index}`}>
-                    <img src={url} alt={`Логотип партнёра ${index + 1}`} />
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={`Убрать логотип партнёра ${index + 1}`}
-                      onClick={() =>
-                        update(
-                          "partnerLogoUrls",
-                          brand.partnerLogoUrls.filter((_, i) => i !== index),
-                        )
-                      }
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">
-                Необязательно. Оформление работает и без партнёрских логотипов.
-              </p>
-            )}
-          </section>
-        </div>
+        <BrandEditor
+          brand={brand}
+          onChange={(next) => {
+            setBrand(next);
+            setNotice("");
+          }}
+          uploadImage={uploadImage}
+          disabled={busy || uploading}
+        />
         <div className="branding-preview">
           <BrandPreview brand={brand} />
         </div>
@@ -2334,8 +2011,8 @@ export function SettingsPage() {
           )}
           <div className="form-footer">
             <p className="muted">
-              Загрузка добавляет изображение. Нажмите «Сохранить», чтобы
-              применить оформление.
+              Нажмите «Сохранить оформление», чтобы применить изменения к сайту
+              и новым играм.
             </p>
             <button
               type="submit"
@@ -2440,23 +2117,20 @@ export function AccountPage() {
               <input
                 type="password"
                 required
-                minLength={8}
+                minLength={1}
                 maxLength={128}
                 autoComplete="new-password"
                 value={newPassword}
                 onChange={(event) => setNewPassword(event.target.value)}
               />
-              <small className="muted">
-                Минимум 8 символов; лучше 12 и больше. Можно использовать
-                длинную парольную фразу.
-              </small>
+              <small className="muted">От 1 до 128 символов.</small>
             </label>
             <label className="field">
               Повторите новый пароль
               <input
                 type="password"
                 required
-                minLength={8}
+                minLength={1}
                 maxLength={128}
                 autoComplete="new-password"
                 value={repeatPassword}

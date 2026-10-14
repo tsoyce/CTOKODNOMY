@@ -28,7 +28,7 @@ export function BrandMark() {
       )}
       <span>
         {site?.brand.title || "100 к 1"}
-        <small>{site?.brand.organizer || "ДЕНЬ СОЦИОЛОГА"}</small>
+        {site?.brand.organizer && <small>{site.brand.organizer}</small>}
       </span>
     </Link>
   );

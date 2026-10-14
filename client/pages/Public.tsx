@@ -1,9 +1,4 @@
-import {
-  useState,
-  type CSSProperties,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
@@ -20,7 +15,8 @@ import {
 } from "lucide-react";
 import { defaultBrand, type Brand, type Me } from "../../shared/types";
 import { api, useMe, useSite } from "../lib";
-import { BrandMark, ErrorMessage } from "../components/Common";
+import { BrandMark, ErrorMessage, Loading } from "../components/Common";
+import { BrandEditor, BrandPreview } from "../components/Branding";
 
 function PublicFrame({
   children,
@@ -31,6 +27,7 @@ function PublicFrame({
 }) {
   const { me } = useMe();
   const { site } = useSite();
+  const brand = site?.brand ?? defaultBrand;
   return (
     <div className={`public-page ${compact ? "public-page-compact" : ""}`}>
       <header className="public-header container">
@@ -49,7 +46,28 @@ function PublicFrame({
       </header>
       {children}
       <footer className="public-footer container">
-        <span>{site?.brand.organizer || "День социолога"} · Играем вместе</span>
+        <div className="public-footer-brand">
+          {brand.logoUrl && (
+            <img src={brand.logoUrl} alt="Логотип организатора" />
+          )}
+          <span>
+            {[brand.organizer, brand.footerText].filter(Boolean).join(" · ")}
+          </span>
+          {brand.partnerLogoUrls.length > 0 && (
+            <div
+              className="public-partner-logos"
+              aria-label="Партнёры мероприятия"
+            >
+              {brand.partnerLogoUrls.map((url, index) => (
+                <img
+                  src={url}
+                  alt={`Логотип партнёра ${index + 1}`}
+                  key={`${url}-${index}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
         <Link to="/help">Правила и помощь</Link>
       </footer>
     </div>
@@ -64,23 +82,11 @@ const phaseLabels = {
   finished: "Итоги игры",
 };
 
-function contrastRatio(first: string, second: string) {
-  function luminance(hex: string) {
-    const channels = [1, 3, 5]
-      .map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
-      .map((value) =>
-        value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
-      );
-    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-  }
-  const a = luminance(first);
-  const b = luminance(second);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-}
-
 export function HomePage() {
   const { site } = useSite();
   const { me } = useMe();
+  if (!site) return <Loading />;
+  if (!site.initialized) return <Navigate to="/setup" replace />;
   const brand = site?.brand ?? defaultBrand;
   const games = site?.games ?? [];
   const activeGames = games.filter((game) => game.phase !== "finished");
@@ -90,19 +96,24 @@ export function HomePage() {
       <main>
         <section className="hero container">
           <div className="hero-content">
-            <p className="hero-eyebrow">
-              <span className="status-dot" />{" "}
-              {brand.organizer || "День социолога"}
-            </p>
-            <h1 className="hero-title">
-              Вместе знаем
-              <br />
-              <span>больше.</span>
-            </h1>
-            <p className="hero-description">
-              {brand.description ||
-                "Один вопрос. Множество мнений. Соберите команду и угадайте самые популярные ответы."}
-            </p>
+            {brand.organizer && (
+              <p className="hero-eyebrow">
+                <span className="status-dot" /> {brand.organizer}
+              </p>
+            )}
+            {brand.logoUrl && (
+              <img
+                className="hero-organizer-logo"
+                src={brand.logoUrl}
+                alt="Логотип организатора"
+              />
+            )}
+            {brand.heroTitle && (
+              <h1 className="hero-title">{brand.heroTitle}</h1>
+            )}
+            {brand.description && (
+              <p className="hero-description">{brand.description}</p>
+            )}
             <div className="hero-actions">
               <Link to="/join" className="button primary">
                 Войти в команду <ArrowRight size={19} />
@@ -116,9 +127,11 @@ export function HomePage() {
                 </Link>
               )}
             </div>
-            <p className="hero-note">
-              <Users size={16} /> Для игроков и гостей. Прямо в браузере.
-            </p>
+            {brand.heroNote && (
+              <p className="hero-note">
+                <Users size={16} /> {brand.heroNote}
+              </p>
+            )}
             {me?.participant && (
               <Link
                 className="resume-link"
@@ -135,9 +148,19 @@ export function HomePage() {
               <Sparkles size={16} /> Самые популярные ответы
             </div>
             <div className="hero-game-mark">
-              <span>100</span>
-              <small>к</small>
-              <span>1</span>
+              {brand.gameLogoUrl ? (
+                <img
+                  src={brand.gameLogoUrl}
+                  alt=""
+                  className="hero-game-logo"
+                />
+              ) : (
+                <>
+                  <span>100</span>
+                  <small>к</small>
+                  <span>1</span>
+                </>
+              )}
             </div>
             <div className="hero-answer-stack">
               <div className="preview-answer">
@@ -260,20 +283,11 @@ export function HomePage() {
           ) : (
             <div className="empty-state lobby-empty">
               <Monitor size={32} />
-              <h3>
-                {site?.initialized === false
-                  ? "Мероприятие готовится"
-                  : "Здесь появится общая доска"}
-              </h3>
+              <h3>Здесь появится общая доска</h3>
               <p>
                 Когда ведущий подготовит игру, её табло будет доступно гостям.
                 Игроки смогут войти по приглашению команды.
               </p>
-              {site?.initialized === false && (
-                <Link className="text-link" to="/setup">
-                  Первый запуск для организатора <ArrowRight size={16} />
-                </Link>
-              )}
             </div>
           )}
         </section>
@@ -293,7 +307,10 @@ export function SetupPage() {
   const [passwordRepeat, setPasswordRepeat] = useState("");
   const [brand, setBrand] = useState<Brand>({ ...defaultBrand });
   const [busy, setBusy] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState(0);
+  const uploadBusy = pendingUploads > 0;
   const [error, setError] = useState("");
+  if (!site) return <Loading />;
   if (site?.initialized)
     return (
       <PublicFrame compact>
@@ -317,6 +334,7 @@ export function SetupPage() {
 
   function next(event: FormEvent) {
     event.preventDefault();
+    if (uploadBusy) return;
     if (step === 0 && password !== passwordRepeat) {
       setError("Пароли не совпадают. Проверьте оба поля.");
       return;
@@ -326,6 +344,7 @@ export function SetupPage() {
   }
   async function finish(event: FormEvent) {
     event.preventDefault();
+    if (uploadBusy) return;
     setBusy(true);
     setError("");
     try {
@@ -353,17 +372,26 @@ export function SetupPage() {
       setBusy(false);
     }
   }
-  const previewStyle = {
-    "--primary": brand.primary,
-    "--accent": brand.accent,
-    background: brand.background,
-    color: brand.textColor,
-  } as CSSProperties;
+  async function uploadImage(file: File) {
+    setPendingUploads((pending) => pending + 1);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const result = await api<{ url: string }>("/setup/media", {
+        method: "POST",
+        headers: { "x-setup-token": token.trim() },
+        body: form,
+      });
+      return result.url;
+    } finally {
+      setPendingUploads((pending) => pending - 1);
+    }
+  }
   return (
     <PublicFrame compact>
       <main className="container setup-page" data-step={step}>
         <div className="page-header">
-          <p className="eyebrow">Первый запуск</p>
+          <p className="eyebrow">Первый запуск · три простых шага</p>
           <h1>Всё начинается с вас</h1>
           <p className="muted">
             Создайте доступ организатора и задайте настроение будущей игре.
@@ -424,22 +452,21 @@ export function SetupPage() {
                   Пароль
                   <input
                     required
-                    minLength={12}
+                    minLength={1}
                     maxLength={128}
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     autoComplete="new-password"
                     type="password"
                   />
-                  <small>
-                    Не менее 12 символов. Сохраните пароль в менеджере паролей.
-                  </small>
+                  <small>От 1 до 128 символов.</small>
                 </label>
                 <label className="field">
                   Повторите пароль
                   <input
                     required
-                    minLength={12}
+                    minLength={1}
+                    maxLength={128}
                     value={passwordRepeat}
                     onChange={(event) => setPasswordRepeat(event.target.value)}
                     autoComplete="new-password"
@@ -460,88 +487,28 @@ export function SetupPage() {
                     участников. Его можно изменить позже.
                   </p>
                 </div>
-                <label className="field">
-                  Название игры
-                  <input
-                    required
-                    maxLength={120}
-                    value={brand.title}
-                    onChange={(event) =>
-                      setBrand({ ...brand, title: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="field">
-                  Организатор
-                  <input
-                    required
-                    maxLength={120}
-                    value={brand.organizer}
-                    onChange={(event) =>
-                      setBrand({ ...brand, organizer: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="field">
-                  Описание
-                  <textarea
-                    maxLength={500}
-                    rows={3}
-                    value={brand.description}
-                    onChange={(event) =>
-                      setBrand({ ...brand, description: event.target.value })
-                    }
-                  />
-                </label>
-                <div className="form-grid color-fields">
-                  {(
-                    [
-                      ["primary", "Основной цвет"],
-                      ["accent", "Акцент"],
-                      ["background", "Фон"],
-                      ["textColor", "Текст"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label className="field" key={key}>
-                      {label}
-                      <div className="color-input">
-                        <input
-                          aria-label={label}
-                          type="color"
-                          value={brand[key]}
-                          onChange={(event) =>
-                            setBrand({ ...brand, [key]: event.target.value })
-                          }
-                        />
-                        <span>{brand[key]}</span>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-                {contrastRatio(brand.background, brand.textColor) < 4.5 && (
-                  <p className="notice" role="status">
-                    Текст и фон сливаются: контраст{" "}
-                    {contrastRatio(brand.background, brand.textColor).toFixed(
-                      1,
-                    )}
-                    :1. Для чтения из зала рекомендуем не менее 4,5:1. Сделайте
-                    фон темнее или текст светлее.
-                  </p>
-                )}
-                <p className="form-hint">
-                  Логотипы и значок сайта можно загрузить после установки в
-                  разделе «Оформление».
-                </p>
+                <BrandEditor
+                  brand={brand}
+                  onChange={setBrand}
+                  uploadImage={uploadImage}
+                  disabled={busy}
+                />
                 <div className="button-row">
                   <button
                     className="button ghost"
                     type="button"
+                    disabled={uploadBusy}
                     onClick={() => setStep(0)}
                   >
                     <ChevronLeft size={18} /> Назад
                   </button>
-                  <button className="button primary" type="submit">
-                    Предпросмотр <ArrowRight size={18} />
+                  <button
+                    className="button primary"
+                    type="submit"
+                    disabled={uploadBusy}
+                  >
+                    {uploadBusy ? "Загружаем логотип…" : "Предпросмотр"}{" "}
+                    <ArrowRight size={18} />
                   </button>
                 </div>
               </form>
@@ -565,10 +532,12 @@ export function SetupPage() {
                     <span>Название</span>
                     <strong>{brand.title}</strong>
                   </div>
-                  <div>
-                    <span>Мероприятие</span>
-                    <strong>{brand.organizer}</strong>
-                  </div>
+                  {brand.organizer && (
+                    <div>
+                      <span>Мероприятие</span>
+                      <strong>{brand.organizer}</strong>
+                    </div>
+                  )}
                 </div>
                 <p className="form-hint">
                   <ShieldCheck size={17} /> Одноразовый код будет погашен, а
@@ -578,14 +547,14 @@ export function SetupPage() {
                   <button
                     className="button ghost"
                     type="button"
-                    disabled={busy}
+                    disabled={busy || uploadBusy}
                     onClick={() => setStep(1)}
                   >
                     <ChevronLeft size={18} /> Назад
                   </button>
                   <button
                     className="button primary"
-                    disabled={busy}
+                    disabled={busy || uploadBusy}
                     type="submit"
                   >
                     {busy ? "Сохраняем…" : "Завершить настройку"}{" "}
@@ -596,37 +565,10 @@ export function SetupPage() {
             )}
           </section>
           <aside className="setup-preview-wrap">
-            <p className="eyebrow">Предпросмотр оформления</p>
-            <div className="setup-preview" style={previewStyle}>
-              <div className="preview-topline">{brand.organizer}</div>
-              <h2>{brand.title || "Ваша игра"}</h2>
-              <p>{brand.description}</p>
-              <div className="preview-board-label">
-                Пример экрана · без игровых данных
-              </div>
-              <div className="preview-answer">
-                <span>1</span>
-                <strong>Открытый ответ</strong>
-                <span>✓</span>
-              </div>
-              <div className="preview-answer closed">
-                <span>2</span>
-                <strong>Скрытый ответ</strong>
-                <span>?</span>
-              </div>
-              <div className="preview-answer closed">
-                <span>3</span>
-                <strong>Скрытый ответ</strong>
-                <span>?</span>
-              </div>
-              <div className="preview-team-row">
-                <span>Команда А</span>
-                <span>Команда Б</span>
-              </div>
-            </div>
+            <BrandPreview brand={brand} />
             <p className="form-hint">
-              Выбирайте контрастные цвета: табло должно читаться с последнего
-              ряда.
+              Так будут выглядеть главная страница и общий экран. Цвета, надписи
+              и логотипы можно изменить в любой момент.
             </p>
           </aside>
         </div>

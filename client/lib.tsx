@@ -67,7 +67,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState("");
   const refreshSite = useCallback(async () => {
-    setSite(await api<SiteInfo>("/site"));
+    const nextSite = await api<SiteInfo>("/site");
+    setSite({ ...nextSite, brand: { ...defaultBrand, ...nextSite.brand } });
     setError("");
   }, []);
   const refreshMe = useCallback(async () => {
@@ -85,7 +86,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshMe]);
   useEffect(() => {
     const brand = site?.brand ?? defaultBrand;
-    document.title = `${brand.title} · ${brand.organizer || "День социолога"}`;
+    document.title = [brand.title, brand.organizer].filter(Boolean).join(" · ");
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (brand.faviconUrl) {
       if (!favicon) {

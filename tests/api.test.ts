@@ -9,6 +9,7 @@ import { buildApp } from "../server/app";
 import { issueSetupToken, tokenHash } from "../server/db";
 import {
   defaultBrand,
+  type Brand,
   type HostCommand,
   type HostGame,
   type Participant,
@@ -17,7 +18,7 @@ import {
 } from "../shared/types";
 
 const ORIGIN = "http://127.0.0.1:3000";
-const PASSWORD = "Integration-only!12345";
+const PASSWORD = "x";
 const databaseUrl = process.env.DATABASE_URL_TEST;
 if (
   !databaseUrl ||
@@ -85,6 +86,35 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       .filter((item): item is string => typeof item === "string")
       .map((item) => item.split(";")[0])
       .join("; ");
+  };
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQ1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const upload = (
+    data: Buffer,
+    mime: string,
+    filename: string,
+    headers: Record<string, string> = {},
+    url = "/api/media",
+  ) => {
+    const boundary = "ctok-test-upload-boundary";
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        origin: ORIGIN,
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+        ...headers,
+      },
+      payload: Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`,
+        ),
+        data,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]),
+    });
   };
   async function initialize() {
     const token = await issueSetupToken(pool);
@@ -172,6 +202,15 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       (
         await call("POST", "/setup", {
           ...setup,
+          password: "",
+          token: "a-token-that-never-existed",
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await call("POST", "/setup", {
+          ...setup,
           token: "a-token-that-never-existed",
         })
       ).statusCode,
@@ -212,6 +251,14 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       (
         await call("POST", "/login", {
           username: "organizer",
+          password: "",
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await call("POST", "/login", {
+          username: "organizer",
           password: "incorrect",
         })
       ).statusCode,
@@ -241,7 +288,27 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
         await call(
           "POST",
           "/account/password",
-          { currentPassword: "wrong", newPassword: "Replacement-only!45678" },
+          { currentPassword: PASSWORD, newPassword: "" },
+          adminCookie,
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await call(
+          "POST",
+          "/account/password",
+          { currentPassword: PASSWORD, newPassword: "x".repeat(129) },
+          adminCookie,
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await call(
+          "POST",
+          "/account/password",
+          { currentPassword: "wrong", newPassword: "y" },
           adminCookie,
         )
       ).statusCode,
@@ -249,7 +316,7 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     const changed = await call(
       "POST",
       "/account/password",
-      { currentPassword: PASSWORD, newPassword: "Replacement-only!45678" },
+      { currentPassword: PASSWORD, newPassword: "y" },
       adminCookie,
     );
     expect(changed.statusCode).toBe(200);
@@ -278,10 +345,121 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       (
         await call("POST", "/login", {
           username: "organizer",
-          password: "Replacement-only!45678",
+          password: "y",
         })
       ).statusCode,
     ).toBe(200);
+  });
+
+  test("setup logo uploads require a live unused grant, preserve it for installation, and close after setup", async () => {
+    const setupUpload = (token?: string, data = png, mime = "image/png") =>
+      upload(
+        data,
+        mime,
+        "logo.png",
+        token ? { "x-setup-token": token } : {},
+        "/api/setup/media",
+      );
+    expect((await setupUpload()).statusCode).toBe(403);
+    expect((await setupUpload("a-token-that-never-existed")).statusCode).toBe(
+      403,
+    );
+    const expired = await issueSetupToken(pool);
+    await pool.query(
+      "UPDATE setup_grants SET expires_at=now()-interval '1 second' WHERE token_hash=$1",
+      [tokenHash(expired)],
+    );
+    expect((await setupUpload(expired)).statusCode).toBe(403);
+    const used = await issueSetupToken(pool);
+    await pool.query(
+      "UPDATE setup_grants SET used_at=now() WHERE token_hash=$1",
+      [tokenHash(used)],
+    );
+    expect((await setupUpload(used)).statusCode).toBe(403);
+    const token = await issueSetupToken(pool);
+    expect(
+      (await setupUpload(token, Buffer.from("not an image"))).statusCode,
+    ).toBe(415);
+    expect((await setupUpload(token, png, "image/jpeg")).statusCode).toBe(415);
+    const saved = await setupUpload(token);
+    expect(saved.statusCode).toBe(200);
+    const logoUrl = saved.json<{ url: string }>().url;
+    expect(logoUrl).toMatch(/^\/media\/[a-f0-9-]+\.png$/);
+    expect(
+      (await app.inject({ method: "GET", url: logoUrl })).rawPayload,
+    ).toEqual(png);
+    expect(
+      (await pool.query("SELECT used_at FROM setup_grants")).rows[0].used_at,
+    ).toBeNull();
+    const initialized = await call("POST", "/setup", {
+      token,
+      username: "organizer",
+      password: PASSWORD,
+      brand: { ...defaultBrand, logoUrl },
+    });
+    expect(initialized.statusCode).toBe(200);
+    expect((await call("GET", "/site")).json().brand.logoUrl).toBe(logoUrl);
+    expect((await setupUpload(token)).statusCode).toBe(409);
+    expect((await upload(png, "image/png", "logo.png")).statusCode).toBe(401);
+  });
+
+  test("older stored branding receives new text defaults without overwriting existing fields or game snapshots", async () => {
+    const cookie = await initialize();
+    const legacy: Partial<Brand> = {
+      ...defaultBrand,
+      title: "Выпускной",
+      organizer: "",
+      description: "",
+    };
+    delete legacy.heroTitle;
+    delete legacy.heroNote;
+    delete legacy.footerText;
+    await pool.query("UPDATE app_settings SET brand=$1::jsonb WHERE id=1", [
+      JSON.stringify(legacy),
+    ]);
+    const expected = { ...defaultBrand, ...legacy };
+    expect((await call("GET", "/site")).json().brand).toEqual(expected);
+    expect((await call("GET", "/settings", undefined, cookie)).json()).toEqual(
+      expected,
+    );
+    // Reading must not rewrite a user's persisted settings as part of an upgrade.
+    expect(
+      (await pool.query("SELECT brand FROM app_settings")).rows[0].brand,
+    ).toEqual(legacy);
+    const { game } = await createFixture(cookie);
+    expect(game.brand).toEqual(expected);
+    const snapshot = { ...legacy, title: "Сохранённое оформление игры" };
+    await pool.query(
+      "UPDATE games SET state=jsonb_set(state,'{brand}',$2::jsonb) WHERE id=$1",
+      [game.id, JSON.stringify(snapshot)],
+    );
+    const expectedSnapshot = { ...defaultBrand, ...snapshot };
+    expect(
+      (await call("GET", `/games/${game.id}/public`)).json().brand,
+    ).toEqual(expectedSnapshot);
+    expect(
+      (await call("GET", `/games/${game.id}/host`, undefined, cookie)).json()
+        .brand,
+    ).toEqual(expectedSnapshot);
+    const member = await join(game.teams[0]!.joinCode, "Игрок");
+    expect(
+      (
+        await call("GET", `/games/${game.id}/team`, undefined, member.cookie)
+      ).json().brand,
+    ).toEqual(expectedSnapshot);
+    expect((await call("PUT", "/settings", legacy, cookie)).json()).toEqual(
+      expected,
+    );
+    expect(
+      (
+        await call(
+          "PUT",
+          "/settings",
+          { ...expected, heroTitle: "", heroNote: "", footerText: "" },
+          cookie,
+        )
+      ).json().heroTitle,
+    ).toBe("");
   });
 
   test("question import validates the entire pack and existing games keep their content and brand snapshots", async () => {
@@ -368,49 +546,30 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
 
   test("branding uploads validate image signatures and limits and serve data without path traversal", async () => {
     const cookie = await initialize();
-    const upload = (data: Buffer, mime: string, filename: string) => {
-      const boundary = "ctok-test-upload-boundary";
-      return app.inject({
-        method: "POST",
-        url: "/api/media",
-        headers: {
-          cookie,
-          origin: ORIGIN,
-          "content-type": `multipart/form-data; boundary=${boundary}`,
-        },
-        payload: Buffer.concat([
-          Buffer.from(
-            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`,
-          ),
-          data,
-          Buffer.from(`\r\n--${boundary}--\r\n`),
-        ]),
-      });
-    };
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQ1sAAAAASUVORK5CYII=",
-      "base64",
-    );
+    const authorizedUpload = (data: Buffer, mime: string, filename: string) =>
+      upload(data, mime, filename, { cookie });
     expect(
       (
-        await upload(
+        await authorizedUpload(
           Buffer.from("<svg><script>alert(1)</script></svg>"),
           "image/png",
           "logo.png",
         )
       ).statusCode,
     ).toBe(415);
-    expect((await upload(png, "image/jpeg", "logo.jpg")).statusCode).toBe(415);
+    expect(
+      (await authorizedUpload(png, "image/jpeg", "logo.jpg")).statusCode,
+    ).toBe(415);
     expect(
       (
-        await upload(
+        await authorizedUpload(
           Buffer.alloc(2 * 1024 * 1024 + 1),
           "image/png",
           "large.png",
         )
       ).statusCode,
     ).toBe(413);
-    const saved = await upload(png, "image/png", "../../logo.png");
+    const saved = await authorizedUpload(png, "image/png", "../../logo.png");
     expect(saved.statusCode).toBe(200);
     const url = saved.json<{ url: string }>().url;
     expect(url).toMatch(/^\/media\/[a-f0-9-]+\.png$/);

@@ -26,7 +26,7 @@ const pool = new pg.Pool({
   connectionString: databaseUrl,
   options: `-c search_path=${schema}`,
 });
-const PASSWORD = "Browser-testing-only!12345";
+const PASSWORD = "x";
 
 // Setting the native value and dispatching input still drives React's form.
 // Unlike fill(value), failed Playwright action logs cannot include secret text.
@@ -72,7 +72,8 @@ test("organizer installs and brands the event; independent phones collaborate wh
   page.on("pageerror", (error) => pageErrors.push(error.message));
   try {
     const grant = await issueSetupToken(pool);
-    await page.goto("/setup");
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/setup$/);
     await fillSecret(page.getByLabel("Код первого запуска"), grant);
     await page.getByLabel("Логин организатора").fill("organizer");
     await fillSecret(page.getByLabel(/^Пароль/), PASSWORD);
@@ -80,10 +81,74 @@ test("organizer installs and brands the event; independent phones collaborate wh
     await page.getByRole("button", { name: "Далее: мероприятие" }).click();
     await page
       .getByLabel("Название игры", { exact: true })
-      .fill("Социологи знают");
+      .fill("Вечер друзей");
     await page
       .getByLabel("Организатор", { exact: true })
-      .fill("День социолога");
+      .fill("Наш большой праздник");
+    await page
+      .getByLabel("Заголовок главной", { exact: true })
+      .fill("Как хорошо, что мы вместе!");
+    await page
+      .getByLabel("Подпись на главной", { exact: true })
+      .fill("Знакомые лица. Неожиданные ответы.");
+    await page
+      .getByLabel("Текст внизу страницы", { exact: true })
+      .fill("Сделано для нашей компании");
+    const logo = Buffer.from(
+      await page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 64;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#edff7a";
+        context.fillRect(0, 0, 64, 64);
+        context.fillStyle = "#111222";
+        context.font = "bold 36px sans-serif";
+        context.fillText("И", 17, 45);
+        return canvas.toDataURL("image/png").split(",")[1]!;
+      }),
+      "base64",
+    );
+    const uploadedLogos: string[] = [];
+    for (const label of [
+      "Логотип организатора",
+      "Логотип игры",
+      "Значок сайта",
+      "Логотипы партнёров",
+    ]) {
+      const uploaded = page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/setup/media") &&
+          response.request().method() === "POST",
+      );
+      await page.getByLabel(label, { exact: true }).setInputFiles({
+        name: "event-logo.png",
+        mimeType: "image/png",
+        buffer: logo,
+      });
+      const response = await uploaded;
+      expect(response.ok()).toBe(true);
+      const { url } = await response.json();
+      expect(url).toMatch(/^\/media\/.+\.png$/);
+      uploadedLogos.push(url);
+    }
+    await page.getByRole("button", { name: "Океан", exact: true }).click();
+    await page.getByRole("tab", { name: "Табло", exact: true }).click();
+    await expect(page.getByRole("tabpanel")).toContainText(
+      "Что делает вечер незабываемым?",
+    );
+    await page
+      .getByRole("tab", { name: "Табло", exact: true })
+      .press("ArrowRight");
+    await expect(
+      page.getByRole("tab", { name: "Телефон", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page
       .getByRole("button", { name: "Предпросмотр", exact: true })
       .click();
@@ -93,6 +158,53 @@ test("organizer installs and brands the event; independent phones collaborate wh
       page.getByRole("heading", { name: "Добро пожаловать, организатор" }),
     ).toBeVisible();
 
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", {
+        name: "Как хорошо, что мы вместе!",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.locator("body")).toContainText(
+      "Знакомые лица. Неожиданные ответы.",
+    );
+    await expect(page.locator(".public-footer")).toContainText(
+      "Сделано для нашей компании",
+    );
+    await expect(page.locator("body")).not.toContainText("День социолога");
+    await expect(page).toHaveTitle("Вечер друзей · Наш большой праздник");
+    for (const url of uploadedLogos) {
+      expect((await page.request.get(url)).ok()).toBe(true);
+    }
+    await expect(page.locator('link[rel="icon"]')).toHaveAttribute(
+      "href",
+      uploadedLogos[2]!,
+    );
+    await page.screenshot({
+      path: "test-results/home-branding-desktop.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: "test-results/home-branding-mobile.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    const loginContext = await browser.newContext({ baseURL });
+    contexts.push(loginContext);
+    const login = await loginContext.newPage();
+    await login.goto("/login");
+    await login.getByLabel("Логин", { exact: true }).fill("organizer");
+    await fillSecret(login.getByLabel("Пароль", { exact: true }), PASSWORD);
+    await login.getByRole("button", { name: "Войти", exact: true }).click();
+    await expect(login).toHaveURL(/\/admin$/);
+
     await page.goto("/setup");
     await expect(
       page.getByRole("heading", { name: "Всё уже настроено" }),
@@ -101,10 +213,38 @@ test("organizer installs and brands the event; independent phones collaborate wh
     await page
       .getByLabel("Описание", { exact: true })
       .fill("Вечер идей, команд и неожиданных ответов.");
+    const changedIcon = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/media") &&
+        response.request().method() === "POST",
+    );
+    await page.getByLabel("Значок сайта", { exact: true }).setInputFiles({
+      name: "updated-icon.png",
+      mimeType: "image/png",
+      buffer: logo,
+    });
+    const changedIconResponse = await changedIcon;
+    expect(changedIconResponse.ok()).toBe(true);
+    uploadedLogos[2] = (await changedIconResponse.json()).url;
+    await expect(
+      page.getByRole("button", { name: "Сохранить оформление" }),
+    ).toBeEnabled();
     await page.getByRole("button", { name: "Сохранить оформление" }).click();
     await expect(
       page.getByRole("status").filter({ hasText: "Оформление сохранено" }),
     ).toBeVisible();
+    await expect(page.locator('link[rel="icon"]')).toHaveAttribute(
+      "href",
+      uploadedLogos[2]!,
+    );
+    expect(
+      await page
+        .locator(".app")
+        .evaluate((element) =>
+          getComputedStyle(element).getPropertyValue("--primary").trim(),
+        ),
+    ).toBe("#247e96");
+    await page.evaluate(() => window.scrollTo(0, 0));
     await mkdir(path.resolve("test-results"), { recursive: true });
     await page.screenshot({
       path: "test-results/admin-branding-desktop.png",
@@ -119,6 +259,34 @@ test("organizer installs and brands the event; independent phones collaborate wh
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
       ),
+    ).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    const savedBrand = await (await page.request.get("/api/settings")).json();
+    expect(
+      (
+        await page.request.put("/api/settings", {
+          data: {
+            ...savedBrand,
+            title: "О".repeat(120),
+            organizer: "О".repeat(100),
+            heroTitle: "О".repeat(160),
+            description: "О".repeat(200),
+            heroNote: "О".repeat(200),
+            footerText: "О".repeat(200),
+          },
+        })
+      ).ok(),
+    ).toBe(true);
+    await page.goto("/");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    expect(
+      (await page.request.put("/api/settings", { data: savedBrand })).ok(),
     ).toBe(true);
     await page.setViewportSize({ width: 1280, height: 900 });
 
@@ -153,7 +321,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
     await page.goto("/admin/games/new");
     await page
       .getByLabel("Название игры", { exact: true })
-      .fill("День социолога · репетиция");
+      .fill("Праздник · репетиция");
     await page
       .getByLabel("Название", { exact: true })
       .nth(0)
@@ -251,8 +419,13 @@ test("organizer installs and brands the event; independent phones collaborate wh
       board.getByRole("heading", { name: "Собираем команды" }),
     ).toBeVisible();
     await expect(board.getByText("На связи", { exact: true })).toBeVisible();
-    await expect(board.locator(".board-brand")).toContainText(
-      "Социологи знают",
+    await expect(board.locator(".board-brand")).toContainText("Вечер друзей");
+    await expect(board.locator(".board-footer")).toContainText(
+      "Сделано для нашей компании",
+    );
+    await expect(board.locator(".board-brand img")).toHaveAttribute(
+      "src",
+      uploadedLogos[1]!,
     );
     await expect(board.locator("body")).not.toContainText(firstQuestion.prompt);
 

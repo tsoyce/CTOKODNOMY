@@ -176,6 +176,18 @@ small {
   font-weight: 850;
   font-size: 1.1rem;
   letter-spacing: -0.04em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brand-mark > img,
+.brand-icon {
+  flex-shrink: 0;
+}
+.brand-mark > span:last-child {
+  min-width: 0;
+}
+.brand-link {
+  min-width: 0;
 }
 .brand-mark img {
   width: 42px;
@@ -204,12 +216,14 @@ small {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 24px;
 }
 .public-header nav {
   display: flex;
   align-items: center;
   gap: 32px;
   font-size: 0.84rem;
+  flex-shrink: 0;
 }
 .public-header nav > a:first-child {
   color: #bab7c8;
@@ -222,6 +236,44 @@ small {
   margin-top: 60px;
   color: #918d9f;
   font-size: 0.75rem;
+  align-items: center;
+  gap: 24px;
+}
+.public-footer-brand {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  min-width: 0;
+}
+.public-footer-brand > img {
+  width: 56px;
+  height: 42px;
+  object-fit: contain;
+}
+.public-footer-brand > span,
+.hero-eyebrow,
+.hero-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.hero-eyebrow .status-dot,
+.hero-note > svg {
+  flex-shrink: 0;
+}
+.public-footer > a {
+  flex-shrink: 0;
+}
+.public-partner-logos {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.public-partner-logos img {
+  width: 64px;
+  height: 36px;
+  object-fit: contain;
 }
 .hero {
   display: grid;
@@ -236,12 +288,27 @@ small {
   align-items: center;
   gap: 10px;
 }
+.hero-content {
+  min-width: 0;
+}
+.hero-organizer-logo {
+  display: block;
+  width: auto;
+  max-width: min(240px, 100%);
+  max-height: 72px;
+  object-fit: contain;
+  object-position: left center;
+  margin-block: 20px;
+}
 .hero-title {
   font-size: clamp(3rem, 5.8vw, 5.2rem);
   letter-spacing: -0.065em;
   font-weight: 850;
   margin-block: 28px;
   line-height: 1.05;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  text-wrap: balance;
 }
 .hero-title > span {
   color: var(--accent);
@@ -251,6 +318,7 @@ small {
   color: #b6b2c6;
   font-size: 1.03rem;
   margin-bottom: 30px;
+  overflow-wrap: anywhere;
 }
 .hero-actions {
   display: flex;
@@ -273,8 +341,16 @@ small {
   border: 1px solid #ffffff14;
   border-radius: 30px;
   background:
-    radial-gradient(ellipse at 50% 30%, #7654fc55, transparent 70%),
-    linear-gradient(155deg, #29223e, #19172a);
+    radial-gradient(
+      ellipse at 50% 30%,
+      color-mix(in srgb, var(--primary) 35%, transparent),
+      transparent 70%
+    ),
+    linear-gradient(
+      155deg,
+      color-mix(in srgb, var(--bg) 85%, var(--primary)),
+      var(--bg)
+    );
   padding: 36px;
   overflow: hidden;
   isolation: isolate;
@@ -325,6 +401,12 @@ small {
   font-weight: 900;
   color: #d3c4ff;
   letter-spacing: -0.04em;
+}
+.hero-game-mark .hero-game-logo {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: contain;
 }
 .hero-answer-stack {
   display: grid;
@@ -680,11 +762,32 @@ select option {
 }
 .setup-layout {
   display: grid;
-  grid-template-columns: 1.25fr 1fr;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.setup-preview-wrap {
+  position: sticky;
+  top: 24px;
+  min-width: 0;
+}
+.setup-preview-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.setup-preview-heading .eyebrow {
+  margin: 0;
+}
+.setup-preview-wrap > .form-hint {
+  padding-inline: 6px;
+  margin-top: 16px;
 }
 .setup-form {
   padding: 32px;
+  min-width: 0;
 }
 .setup-form h2 {
   font-size: 1.5rem;
@@ -700,6 +803,7 @@ select option {
   margin: 30px 0;
   color: #817a94;
   font-size: 0.8rem;
+  flex-wrap: wrap;
 }
 .step-indicator li {
   display: flex;
@@ -771,6 +875,22 @@ select option {
   display: flex;
   gap: 10px;
   color: #b5aec7;
+}
+.summary-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding-block: 12px;
+  border-bottom: 1px solid #ffffff12;
+  font-size: 0.85rem;
+}
+.summary-list > div > span {
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.summary-list strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .help-grid {
   display: grid;
@@ -1433,6 +1553,8 @@ select option {
   .public-footer {
     gap: 20px;
     font-size: 0.65rem;
+    align-items: flex-start;
+    flex-direction: column;
   }
   .setup-layout,
   .help-grid,
@@ -1444,6 +1566,7 @@ select option {
   }
   .setup-preview-wrap {
     display: none;
+    position: static;
   }
   .step-indicator {
     gap: 16px;
@@ -1583,6 +1706,7 @@ select option {
   color: color-mix(in srgb, var(--text, #f4f3ff) 65%, transparent);
 }
 @media (max-width: 760px) {
+  .setup-page[data-step="1"] .setup-preview-wrap,
   .setup-page[data-step="2"] .setup-preview-wrap {
     display: block;
   }

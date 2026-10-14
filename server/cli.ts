@@ -91,8 +91,8 @@ async function main() {
       );
       if (!existing.rowCount) throw new Error("Administrator not found");
       const password = await readPassword(args.includes("--stdin"));
-      if (password.length < 8 || password.length > 128)
-        throw new Error("Password must contain 8 to 128 characters");
+      if (password.length < 1 || password.length > 128)
+        throw new Error("Password must contain 1 to 128 characters");
       const hash = await passwordHash(password);
       await transaction(pool, async (client) => {
         await client.query("UPDATE admins SET password_hash=$2 WHERE id=$1", [
