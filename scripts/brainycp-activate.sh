@@ -76,9 +76,11 @@ activated=0
 rollback() {
   result=$?
   if (( result != 0 && stopped == 1 && activated == 0 )); then
+    systemctl stop "$unit" || true
     if [[ -f $backup/service.conf ]]; then cp -p "$backup/service.conf" "$dropin"; else rm -f "$dropin"; fi
     if [[ -n $old_current ]]; then ln -sfnT "$old_current" "$base/current"; else rm -f "$base/current"; fi
     systemctl daemon-reload
+    systemctl reset-failed "$unit" || true
     systemctl start "$unit" || true
     echo 'The previous application service was restored; database/configuration were retained.'
   fi
@@ -161,8 +163,9 @@ done
 curl --disable --noproxy '*' --fail --silent "http://127.0.0.1:$port/api/health" | grep -q '"ok":true'
 [[ $(systemctl show "$unit" -p User --value) == "$app_user" ]]
 systemctl reload nginx
-curl --disable --fail --silent "https://$domain/api/health" | grep -q '"ok":true'
-curl --disable --fail --silent "https://$domain/" | grep -q 'id="root"'
+tls_address=${bind_ip:-127.0.0.1}
+curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/api/health" | grep -q '"ok":true'
+curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/" | grep -q 'id="root"'
 activated=1
 echo "Deployment verified: https://$domain; user $app_user; loopback port $port."
 echo "Release: $sha. Private backups: $backup."
