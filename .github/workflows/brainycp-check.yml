@@ -28,6 +28,10 @@ on:
         description: Application hostname without http or https
         required: true
         type: string
+      known_hosts:
+        description: Verified public known_hosts entry (optional if SSH_KNOWN_HOSTS is configured)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -50,5 +54,5 @@ jobs:
           APP_DOMAIN: ${{ inputs.domain }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_KNOWN_HOSTS: ${{ inputs.known_hosts || secrets.SSH_KNOWN_HOSTS }}
         run: bash scripts/check-brainycp-ssh.sh
