@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Activate one checked release in the existing BrainyCP service.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'printf "Activation failed at line %s.\n" "$LINENO" >&2' ERR
 umask 077
-[[ $# -eq 9 && $(id -u) == 0 ]] || exit 2
+[[ $# -eq 9 && $(id -u) == 0 ]] || { echo 'Activation needs nine arguments and root.'; exit 2; }
 base=$1 app_user=$2 port=$3 domain=$4 sha=$5 node_version=$6 node_digest=$7 app_digest=$8 incoming=$9
-[[ $base =~ ^/[A-Za-z0-9_/-]+$ && $base != / && $(readlink -e "$base") == "$base" ]] || exit 2
-[[ $app_user =~ ^[a-z_][a-z0-9_-]*$ && $port =~ ^[1-9][0-9]{0,4}$ ]] || exit 2
-[[ $domain =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && $sha =~ ^[a-f0-9]{40}$ ]] || exit 2
-[[ $node_version =~ ^24\.[0-9]+\.[0-9]+$ && $node_digest =~ ^[a-f0-9]{64}$ && $app_digest =~ ^[a-f0-9]{64}$ ]] || exit 2
-[[ $incoming == "/var/lib/ctokodnomy-deploy/${app_user}-${port}/$sha" && -d $incoming && ! -L $incoming && $(stat -c %u "$incoming") == 0 ]] || exit 2
-[[ $(uname -m) == x86_64 && $(stat -c %U "$base") == "$app_user" ]] || exit 2
+[[ $base =~ ^/[A-Za-z0-9_/-]+$ && $base != / && $(readlink -e "$base") == "$base" ]] || { echo 'Application path is not physical.'; exit 2; }
+[[ $app_user =~ ^[a-z_][a-z0-9_-]*$ && $port =~ ^[1-9][0-9]{0,4}$ ]] || { echo 'Invalid application user or port.'; exit 2; }
+[[ $domain =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && $sha =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid domain or commit.'; exit 2; }
+[[ $node_version =~ ^24\.[0-9]+\.[0-9]+$ && $node_digest =~ ^[a-f0-9]{64}$ && $app_digest =~ ^[a-f0-9]{64}$ ]] || { echo 'Invalid runtime version or artifact digests.'; exit 2; }
+[[ $incoming == "/var/lib/ctokodnomy-deploy/${app_user}-${port}/$sha" && -d $incoming && ! -L $incoming && $(stat -c %u "$incoming") == 0 ]] || { echo 'Incoming path or root ownership does not match.'; exit 2; }
+[[ $(uname -m) == x86_64 && $(stat -c %U "$base") == "$app_user" ]] || { echo 'CPU architecture or application owner does not match.'; exit 2; }
 unit="nodejs@$port.service"
 [[ $(systemctl show "$unit" -p RootDirectory --value) == '' ]] || { echo 'A jailed service needs a separate adapter.'; exit 1; }
 working=$(systemctl show "$unit" -p WorkingDirectory --value)
