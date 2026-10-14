@@ -2,6 +2,7 @@
 # Activate one checked release in the existing BrainyCP service.
 set -Eeuo pipefail
 trap 'printf "Activation failed at line %s.\n" "$LINENO" >&2' ERR
+trap 'result=$?; if (( result != 0 )); then printf "Activation aborted at line %s (exit %s).\n" "$LINENO" "$result" >&2; fi' EXIT
 umask 077
 [[ $# -eq 9 && $(id -u) == 0 ]] || { echo 'Activation needs nine arguments and root.'; exit 2; }
 base=$1 app_user=$2 port=$3 domain=$4 sha=$5 node_version=$6 node_digest=$7 app_digest=$8 incoming=$9
@@ -24,7 +25,8 @@ if [[ -n $bind_ip ]]; then listen_prefix="$bind_ip:"; fi
 for command in certbot nginx psql pg_dump pg_restore runuser openssl curl; do command -v "$command" >/dev/null; done
 app_group=$(id -gn "$app_user")
 app_home=$(getent passwd "$app_user" | cut -d: -f6)
-[[ $app_home =~ ^/[A-Za-z0-9_/-]+$ && $app_home != / ]] || exit 2
+app_home=$(readlink -e "$app_home")
+[[ $app_home =~ ^/[A-Za-z0-9_/-]+$ && $app_home != / ]] || { echo 'Application home is not a physical directory.'; exit 2; }
 data="$app_home/.local/share/ctokodnomy/$port"
 config="$app_home/.config/ctokodnomy/native-$port.env"
 database="ctokodnomy_${app_user}_$port"
