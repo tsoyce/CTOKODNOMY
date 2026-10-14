@@ -1,4 +1,4 @@
-name: Deploy (manual)
+name: Deploy Docker (manual)
 
 on:
   workflow_dispatch:

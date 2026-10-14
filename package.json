@@ -10,6 +10,7 @@
     "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --host 0.0.0.0\"",
     "build": "node scripts/build.mjs",
     "start": "node dist/server/index.js",
+    "package:native": "npm run build && node scripts/package-native.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
