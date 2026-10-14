@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'printf "::error title=BrainyCP deployment driver::Failed at driver line %s.\n" "$LINENO"' ERR
 fail() { printf '::error title=BrainyCP deployment::%s\n' "$*"; exit 2; }
 [[ ${DEPLOY_HOST:-} =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail 'Invalid SSH server.'
 [[ ${DEPLOY_USER:-} =~ ^[a-z_][a-z0-9_-]*$ ]] || fail 'Invalid SSH user.'
@@ -34,11 +35,13 @@ target="$DEPLOY_USER@$DEPLOY_HOST"
 node_version=$(node -p 'process.versions.node')
 [[ $node_version =~ ^24\.[0-9]+\.[0-9]+$ ]] || fail 'Build must use Node.js 24.'
 node_name="node-v$node_version-linux-x64.tar.xz"
+printf '::notice title=BrainyCP deployment stage::Download official Node.js %s.\n' "$node_version"
 curl --disable --fail --silent --show-error "https://nodejs.org/dist/v$node_version/$node_name" -o "$auth_dir/node.tar.xz"
 curl --disable --fail --silent --show-error "https://nodejs.org/dist/v$node_version/SHASUMS256.txt" -o "$auth_dir/checksums"
 node_digest=$(awk -v name="$node_name" '$2 == name {print $1}' "$auth_dir/checksums")
 [[ $node_digest =~ ^[a-f0-9]{64}$ ]] || fail 'Official Node.js checksum not found.'
 printf '%s  %s\n' "$node_digest" "$auth_dir/node.tar.xz" | sha256sum --check --status
+echo '::notice title=BrainyCP deployment stage::Official runtime checksum verified.'
 app_digest=$(sha256sum dist/ctokodnomy-native.tar.gz)
 app_digest=${app_digest%% *}
 incoming="/var/lib/ctokodnomy-deploy/${APP_USER}-${APP_PORT}/$GITHUB_SHA"
@@ -52,9 +55,13 @@ install -d -m 700 "$parent"
 [[ ! -e $incoming ]]
 mkdir -m 700 "$incoming"
 PREPARE
-scp "${opts[@]}" "$auth_dir/node.tar.xz" "$target:$incoming/node.tar.xz"
-scp "${opts[@]}" dist/ctokodnomy-native.tar.gz "$target:$incoming/app.tar.gz"
-scp "${opts[@]}" scripts/brainycp-stage.sh scripts/native-db.mjs scripts/brainycp-activate.sh "$target:$incoming/"
+echo '::notice title=BrainyCP deployment stage::Private incoming directory prepared.'
+ssh "${opts[@]}" "$target" "cat > '$incoming/node.tar.xz'" < "$auth_dir/node.tar.xz"
+ssh "${opts[@]}" "$target" "cat > '$incoming/app.tar.gz'" < dist/ctokodnomy-native.tar.gz
+for helper in brainycp-stage.sh native-db.mjs brainycp-activate.sh; do
+  ssh "${opts[@]}" "$target" "cat > '$incoming/$helper'" < "scripts/$helper"
+done
+echo '::notice title=BrainyCP deployment stage::Verified SSH transfer complete.'
 if report=$(ssh "${opts[@]}" "$target" \
   "bash '$incoming/brainycp-activate.sh' '$APP_ROOT' '$APP_USER' '$APP_PORT' '$APP_DOMAIN' '$GITHUB_SHA' '$node_version' '$node_digest' '$app_digest' '$incoming'" 2>&1); then
   report_type=notice

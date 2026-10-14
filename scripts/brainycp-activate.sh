@@ -90,9 +90,9 @@ NGINX
 nginx -t
 systemctl reload nginx
 cert_name="ctokodnomy-$port"
-certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
+(umask 022; certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
   --webroot --webroot-path "$base" --cert-name "$cert_name" --domain "$domain" \
-  --deploy-hook 'systemctl reload nginx'
+  --deploy-hook 'systemctl reload nginx')
 echo 'Public HTTPS certificate ready.'
 systemctl stop "$unit"
 stopped=1
