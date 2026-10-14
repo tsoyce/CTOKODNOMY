@@ -33,7 +33,6 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:3000
       HOST: 127.0.0.1
       PORT: 3000
-      MEDIA_DIR: ${{ runner.temp }}/ctokodnomy-uploads
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +48,8 @@ jobs:
           NODE_ENV: production
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+        env:
+          MEDIA_DIR: ${{ runner.temp }}/ctokodnomy-uploads
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

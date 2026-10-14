@@ -28,7 +28,6 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:3000
       HOST: 127.0.0.1
       PORT: 3000
-      MEDIA_DIR: ${{ runner.temp }}/ctokodnomy-uploads
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +40,8 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+        env:
+          MEDIA_DIR: ${{ runner.temp }}/ctokodnomy-uploads
       - run: node scripts/package-native.mjs
       - name: Record the checked commit
         run: printf '%s\n' "$GITHUB_SHA" > dist/COMMIT.txt
