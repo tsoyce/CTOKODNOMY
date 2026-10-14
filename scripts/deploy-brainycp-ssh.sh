@@ -58,7 +58,7 @@ PREPARE
 echo '::notice title=BrainyCP deployment stage::Private incoming directory prepared.'
 ssh "${opts[@]}" "$target" "cat > '$incoming/node.tar.xz'" < "$auth_dir/node.tar.xz"
 ssh "${opts[@]}" "$target" "cat > '$incoming/app.tar.gz'" < dist/ctokodnomy-native.tar.gz
-for helper in brainycp-stage.sh native-db.mjs native-copy.mjs brainycp-activate.sh; do
+for helper in brainycp-stage.sh native-unpack.mjs native-db.mjs native-copy.mjs brainycp-activate.sh; do
   ssh "${opts[@]}" "$target" "cat > '$incoming/$helper'" < "scripts/$helper"
 done
 echo '::notice title=BrainyCP deployment stage::Verified SSH transfer complete.'

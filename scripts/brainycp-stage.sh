@@ -37,7 +37,7 @@ runtime_path="$node_dir:/usr/local/bin:/usr/bin:/bin"
 if [[ $caller_uid -eq 0 ]]; then
   command -v runuser >/dev/null 2>&1 || fail 'runuser is required to stage files as APP_USER'
 fi
-for utility in tar sha256sum mkdir chmod stat readlink; do
+for utility in sha256sum mkdir chmod stat readlink; do
   command -v "$utility" >/dev/null 2>&1 || fail "Required utility is missing: $utility"
 done
 
@@ -54,68 +54,8 @@ as_app_user test -x "$node_bin" || fail 'APP_USER cannot execute NODE_BIN'
 # Validate the digest and tar headers together before creating a release.
 # The producer emits ordinary files/directories, so extended headers, links,
 # devices and paths outside the packaged production code are rejected.
-"$node_bin" --input-type=module - "$archive_path" "$expected_sha" <<'NODE'
-import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
-import { gunzipSync } from 'node:zlib';
-
-const [, , archive, expected] = process.argv;
-const reject = (message) => { throw new Error(`Invalid native archive: ${message}`); };
-if (statSync(archive).size > 128 * 1024 * 1024) reject('compressed size exceeds 128 MiB');
-const compressed = readFileSync(archive);
-if (createHash('sha256').update(compressed).digest('hex') !== expected.toLowerCase()) reject('SHA-256 does not match');
-const data = gunzipSync(compressed, { maxOutputLength: 512 * 1024 * 1024 });
-const entries = new Map();
-const field = (header, start, length) => header.subarray(start, start + length).toString('utf8').split('\0', 1)[0];
-const octal = (text) => {
-  const clean = text.trim();
-  if (!/^[0-7]+$/.test(clean)) reject('unsupported numeric header');
-  return Number.parseInt(clean, 8);
-};
-let offset = 0;
-let ended = false;
-while (offset + 512 <= data.length) {
-  const header = data.subarray(offset, offset + 512);
-  if (header.every((byte) => byte === 0)) {
-    if (offset + 1024 > data.length || !data.subarray(offset).every((byte) => byte === 0)) reject('invalid tar terminator');
-    ended = true;
-    break;
-  }
-  const storedChecksum = octal(field(header, 148, 8));
-  const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
-  if (storedChecksum !== checksum) reject('tar header checksum mismatch');
-  const size = octal(field(header, 124, 12));
-  const prefix = field(header, 345, 155);
-  let name = `${prefix ? `${prefix}/` : ''}${field(header, 0, 100)}`;
-  const type = header[156];
-  const directory = type === 53;
-  if (type !== 0 && type !== 48 && !directory) reject('only regular files and directories are allowed');
-  if (directory) name = name.replace(/\/$/, '');
-  if (!name || name.startsWith('/') || /[\\\x00-\x1f\x7f]/.test(name) || name.split('/').some((part) => !part || part === '.' || part === '..')) reject('unsafe entry path');
-  const rootFile = ['app.mjs', 'package.json', 'package-lock.json'].includes(name);
-  const codeDirectory = name === 'dist/client' || name === 'dist/server';
-  const codeEntry = name.startsWith('dist/client/') || name.startsWith('dist/server/');
-  if (!(rootFile || codeDirectory || codeEntry) || (rootFile && directory) || (codeDirectory && !directory)) reject('entry outside the production file whitelist');
-  if (directory && size !== 0) reject('directory has file data');
-  if (entries.has(name)) reject('duplicate entry');
-  entries.set(name, directory ? 'directory' : 'file');
-  if (entries.size > 10000) reject('too many entries');
-  offset += 512 + Math.ceil(size / 512) * 512;
-  if (offset > data.length) reject('truncated entry');
-}
-if (!ended) reject('missing tar terminator');
-for (const name of entries.keys()) {
-  const components = name.split('/');
-  components.pop();
-  while (components.length) {
-    if (entries.get(components.join('/')) === 'file') reject('file used as a parent directory');
-    components.pop();
-  }
-}
-for (const name of ['app.mjs', 'package.json', 'package-lock.json', 'dist/client/index.html', 'dist/server/index.js', 'dist/server/cli.js']) {
-  if (entries.get(name) !== 'file') reject(`required file is missing: ${name}`);
-}
-NODE
+helper_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+"$node_bin" "$helper_dir/native-unpack.mjs" "$archive_path" "$expected_sha"
 
 releases="$app_root/releases"
 if [[ -e $releases || -L $releases ]]; then
@@ -142,7 +82,7 @@ await pipeline(createReadStream(null, { fd: 0, autoClose: false }), createWriteS
 ' "$staged_archive" < "$archive_path"
 copied_sha=$(sha256sum < "$staged_archive")
 [[ ${copied_sha%% *} == "${expected_sha,,}" ]] || fail 'Copied archive checksum changed'
-as_app_user tar --extract --gzip --file "$staged_archive" --directory "$release_path" --no-same-owner --no-same-permissions
+as_app_user "$node_bin" --input-type=module - "$staged_archive" "$expected_sha" "$release_path" < "$helper_dir/native-unpack.mjs"
 as_app_user rm -- "$staged_archive"
 
 # Normalize only files just extracted into this new release. Never change the
