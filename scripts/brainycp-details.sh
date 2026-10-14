@@ -12,6 +12,29 @@ printf 'Operating system: '; uname -sm
 getconf GNU_LIBC_VERSION
 printf '\nAvailable disk:\n'; df -Ph -- "$app_root"
 printf '\nMemory:\n'; free -m
+printf '\nRecent kernel memory kills (last 30 minutes):\n'
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl -k --since '30 minutes ago' --no-pager -o cat 2>/dev/null |
+    awk 'tolower($0) ~ /out of memory|oom-kill|killed process|memory cgroup out/ { print; found=1 } END { if (!found) print "No matching kernel messages." }' |
+    tail -n 8 || true
+fi
+printf '\nSSH process memory limits:\n'
+memory_cgroup=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+if [[ $memory_cgroup == /* && $memory_cgroup =~ ^/[A-Za-z0-9_./-]*$ ]]; then
+  for metric in memory.max memory.current memory.events; do
+    metric_file="/sys/fs/cgroup$memory_cgroup/$metric"
+    if [[ -r $metric_file ]]; then printf '%s: ' "$metric"; cat -- "$metric_file"; fi
+  done
+fi
+printf '\nArchive copy utility metadata:\n'
+copy_path=$(command -v cp)
+stat -Lc '%A %U:%G %s %n' -- "$copy_path"
+sha256sum -- "$copy_path"
+if command -v dpkg >/dev/null 2>&1; then
+  if verification=$(dpkg --verify coreutils 2>&1); then
+    if [[ -z $verification ]]; then printf 'Coreutils package files match installed checksums.\n'; else printf '%s\n' "$verification"; fi
+  else printf '%s\n' "$verification"; fi
+fi
 printf '\nApplication unit:\n'
 systemctl show "nodejs@$app_port.service" \
   --property=MainPID,User,Group,WorkingDirectory,FragmentPath,DropInPaths,ActiveState,SubState,Restart

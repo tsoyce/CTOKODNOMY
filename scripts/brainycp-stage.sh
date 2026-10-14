@@ -37,7 +37,7 @@ runtime_path="$node_dir:/usr/local/bin:/usr/bin:/bin"
 if [[ $caller_uid -eq 0 ]]; then
   command -v runuser >/dev/null 2>&1 || fail 'runuser is required to stage files as APP_USER'
 fi
-for utility in tar sha256sum cp mkdir chmod stat readlink; do
+for utility in tar sha256sum mkdir chmod stat readlink; do
   command -v "$utility" >/dev/null 2>&1 || fail "Required utility is missing: $utility"
 done
 
@@ -132,9 +132,14 @@ release_path="$releases/$release_id"
 mkdir -- "$release_path"
 if [[ $caller_uid -eq 0 ]]; then chown -- "$app_uid:$app_gid" "$release_path"; fi
 staged_archive="$release_path/.native-release.tar.gz"
-cp -- "$archive_path" "$staged_archive"
-chmod 600 -- "$staged_archive"
-if [[ $caller_uid -eq 0 ]]; then chown -- "$app_uid:$app_gid" "$staged_archive"; fi
+# Stream through the verified runtime as APP_USER. Root opens the private
+# source; exclusive creation avoids following a destination link in the new
+# application-owned directory, and stream buffers keep memory use bounded.
+as_app_user "$node_bin" --input-type=module -e '
+import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+await pipeline(createReadStream(null, { fd: 0, autoClose: false }), createWriteStream(process.argv[1], { flags: "wx", mode: 0o600 }));
+' "$staged_archive" < "$archive_path"
 copied_sha=$(sha256sum < "$staged_archive")
 [[ ${copied_sha%% *} == "${expected_sha,,}" ]] || fail 'Copied archive checksum changed'
 as_app_user tar --extract --gzip --file "$staged_archive" --directory "$release_path" --no-same-owner --no-same-permissions
