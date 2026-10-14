@@ -26,7 +26,7 @@
   display: block;
   margin-top: 5px;
   font-size: 0.55rem;
-  color: #9b94ad;
+  color: var(--muted);
 }
 .admin-brand-icon {
   display: flex;
@@ -49,7 +49,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.13em;
-  color: #706780;
+  color: var(--muted);
 }
 .admin-sidebar .admin-nav-link {
   display: flex;
@@ -96,10 +96,10 @@
   gap: 8px;
   margin-bottom: 22px;
   font-size: 0.77rem;
-  color: #aaa1bd;
+  color: var(--muted);
 }
 .admin-content .back-link:hover {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .admin-content .stat-card {
   display: grid;
@@ -109,7 +109,7 @@
 .admin-content .stat-card > svg {
   grid-column: 2;
   grid-row: 1;
-  color: #ad93e0;
+  color: var(--primary-ink);
   margin-top: 6px;
 }
 .admin-content .stat-card > strong {
@@ -122,7 +122,7 @@
 .admin-content .stat-card > span {
   grid-column: 1 / -1;
   font-size: 0.75rem;
-  color: #9d94b0;
+  color: var(--muted);
   margin-top: 13px;
 }
 .admin-content .section-heading {
@@ -163,17 +163,17 @@
   margin-bottom: 20px;
 }
 .admin-content .game-card h2 a:hover {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .admin-content .badge-accent {
-  background: #edff7a0a;
-  border-color: #edff7a26;
-  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-color: var(--border);
+  color: var(--accent-ink);
 }
 .admin-content .badge-demo {
-  color: #dcc594;
-  background: #ffcb7010;
-  border-color: #ffcb7020;
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--border);
 }
 .admin-content .game-team-summary {
   display: grid;
@@ -201,7 +201,7 @@
   margin-right: 6px;
 }
 .admin-content .game-card-actions {
-  border-top: 1px solid #ffffff0f;
+  border-top: 1px solid var(--border);
   padding-top: 19px;
   display: flex;
   align-items: center;
@@ -225,7 +225,7 @@
   padding: 23px;
 }
 .admin-content .quick-link > svg:first-child {
-  color: #b6a1e7;
+  color: var(--primary-ink);
   flex-shrink: 0;
 }
 .admin-content .quick-link > div {
@@ -233,7 +233,7 @@
 }
 .admin-content .quick-link > svg:last-child {
   flex-shrink: 0;
-  color: #9990ae;
+  color: var(--muted);
 }
 .admin-content .quick-link h3 {
   margin: 0 0 5px;
@@ -243,15 +243,15 @@
   font-size: 0.75rem;
 }
 .admin-content .quick-link:hover {
-  border-color: #ffffff35;
-  background: #ffffff08;
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
 }
 .admin-content .empty-state h2 {
   color: var(--text);
   margin-bottom: 12px;
 }
 .admin-content .empty-state .empty-icon {
-  color: #aa94cb;
+  color: var(--primary-ink);
   margin-bottom: 18px;
 }
 .admin-content .empty-state .button {
@@ -265,16 +265,16 @@
 }
 .admin-content .filter-tabs button {
   background: transparent;
-  color: #a39ab5;
+  color: var(--muted);
   padding: 9px 15px;
   border: 1px solid transparent;
   border-radius: 9px;
   font-size: 0.78rem;
 }
 .admin-content .filter-tabs button.active {
-  border-color: #a993ff30;
-  color: #d4c6ff;
-  background: #a993ff12;
+  border-color: var(--primary-ink);
+  color: var(--primary-ink);
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg));
 }
 .admin-content .game-create-form,
 .admin-content .question-editor,
@@ -310,16 +310,16 @@
   width: 30px;
   height: 30px;
   font-size: 0.64rem;
-  background: #977aff15;
-  color: #b69be7;
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg));
+  color: var(--primary-ink);
   border-radius: 9px;
   font-weight: 700;
   vertical-align: middle;
 }
 .admin-content .team-editor {
   padding: 21px;
-  background: #ffffff02;
-  border: 1px solid #ffffff0e;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 13px;
 }
 .admin-content .team-editor .field + .field {
@@ -343,7 +343,7 @@
 .admin-content .color-field > div > span {
   font-size: 0.72rem;
   font-weight: 400;
-  color: #9d94af;
+  color: var(--muted);
 }
 .admin-content .question-picker-grid {
   display: grid;
@@ -355,13 +355,13 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #08091233;
-  border: 1px solid #ffffff20;
+  background: var(--input-bg);
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 0 14px;
 }
 .admin-content .search-field > svg {
-  color: #898097;
+  color: var(--muted);
   flex-shrink: 0;
 }
 .admin-content .search-field input {
@@ -373,7 +373,7 @@
 }
 .admin-content .search-field:focus-within {
   border-color: var(--primary);
-  outline: 2px solid #977aff22;
+  outline: 2px solid color-mix(in srgb, var(--focus) 25%, transparent);
 }
 .admin-content .search-field input:focus {
   outline: none;
@@ -390,14 +390,14 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  border: 1px solid #ffffff12;
+  border: 1px solid var(--border);
   border-radius: 11px;
   padding: 16px;
   cursor: pointer;
 }
 .admin-content .question-option.selected {
-  border-color: #a18aff60;
-  background: #977aff0d;
+  border-color: var(--primary-ink);
+  background: color-mix(in srgb, var(--primary) 7%, var(--bg));
 }
 .admin-content .question-option input {
   flex-shrink: 0;
@@ -414,10 +414,10 @@
   margin-top: 7px;
 }
 .admin-content .selected-questions {
-  border: 1px solid #ffffff11;
+  border: 1px solid var(--border);
   border-radius: 13px;
   padding: 19px;
-  background: #0000000f;
+  background: var(--surface-soft);
 }
 .admin-content .selected-questions h3 {
   margin-bottom: 17px;
@@ -427,7 +427,7 @@
   align-items: flex-start;
   gap: 10px;
   padding: 15px 0;
-  border-top: 1px solid #ffffff10;
+  border-top: 1px solid var(--border);
 }
 .admin-content .selected-question > div:nth-child(2) {
   flex: 1;
@@ -442,8 +442,8 @@
   width: 25px;
   height: 25px;
   border-radius: 7px;
-  background: #a185ff13;
-  color: #b69bdc;
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg));
+  color: var(--primary-ink);
   font-size: 0.69rem;
   display: inline-grid;
   place-items: center;
@@ -454,7 +454,7 @@
   align-items: center;
   gap: 9px;
   font-size: 0.65rem;
-  color: #9890a8;
+  color: var(--muted);
   margin-top: 11px;
 }
 .admin-content .multiplier-field select {
@@ -477,14 +477,14 @@
   height: 31px;
   width: 31px;
   padding: 0;
-  border: 1px solid #ffffff14;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  color: #b5a9c9;
-  background: #ffffff03;
+  color: var(--muted);
+  background: var(--surface-soft);
 }
 .admin-content .icon-button:hover:not(:disabled) {
-  background: #ffffff10;
-  border-color: #ffffff35;
+  background: var(--surface);
+  border-color: var(--border-strong);
 }
 .admin-content .selected-placeholder {
   padding: 24px 8px;
@@ -529,7 +529,7 @@
 }
 .admin-content .notice > svg {
   flex-shrink: 0;
-  color: #bba5e8;
+  color: var(--primary-ink);
   margin-top: 3px;
 }
 .admin-content .notice p {
@@ -581,7 +581,7 @@
   line-height: 1.5;
   letter-spacing: 0.12em;
   margin-bottom: 7px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .admin-content .invite-card > .actions {
   margin-top: 19px;
@@ -603,7 +603,7 @@
   align-items: center;
   gap: 12px;
   padding: 12px 0;
-  border-bottom: 1px solid #ffffff0e;
+  border-bottom: 1px solid var(--border);
 }
 .admin-content .avatar {
   width: 34px;
@@ -613,8 +613,8 @@
   display: inline-grid;
   place-items: center;
   font-size: 0.8rem;
-  color: #d0bbef;
-  background: #a18aff19;
+  color: var(--primary-ink);
+  background: color-mix(in srgb, var(--primary) 12%, var(--bg));
 }
 .admin-content .participant-row > div {
   flex: 1;
@@ -638,7 +638,7 @@
 }
 .admin-content .roster-empty svg {
   flex-shrink: 0;
-  color: #8b769f;
+  color: var(--muted);
 }
 .admin-content .round-list {
   list-style: none;
@@ -652,7 +652,7 @@
   align-items: center;
   gap: 13px;
   padding: 17px 0;
-  border-bottom: 1px solid #ffffff10;
+  border-bottom: 1px solid var(--border);
 }
 .admin-content .round-list li > div {
   flex: 1;
@@ -713,14 +713,14 @@
   font-size: 1.1rem;
 }
 .admin-content .question-library-main h2 a:hover {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .admin-content .question-library-main p {
   font-size: 0.74rem;
   margin-bottom: 6px;
 }
 .admin-content .question-source {
-  color: #837a93;
+  color: var(--muted);
   max-width: 660px;
 }
 .admin-content .question-library-actions {
@@ -738,7 +738,7 @@
   display: block;
   font-size: 0.78rem;
   margin-bottom: 10px;
-  color: #ffbac2;
+  color: var(--danger);
 }
 .admin-content .library-note {
   font-size: 0.72rem;
@@ -753,15 +753,15 @@
   display: flex;
   align-items: flex-start;
   gap: 16px;
-  border: 1px solid #ffffff10;
+  border: 1px solid var(--border);
   border-radius: 13px;
   padding: 18px;
-  background: #0000000b;
+  background: var(--surface);
 }
 .admin-content .answer-editor-row > .round-number {
   margin-top: 26px;
   font-size: 0.69rem;
-  color: #b69bdc;
+  color: var(--primary-ink);
 }
 .admin-content .answer-editor-fields {
   flex: 1;
@@ -775,7 +775,7 @@
 .admin-content .aliases-field {
   margin-top: 13px;
   font-weight: 400;
-  color: #a398b3;
+  color: var(--muted);
   font-size: 0.69rem;
 }
 .admin-content .aliases-field input {
@@ -829,7 +829,7 @@
   align-items: center;
   gap: 16px;
   padding-bottom: 26px;
-  border-bottom: 1px solid #ffffff12;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
 }
 .admin-content .account-identity h2 {
@@ -956,7 +956,7 @@
     align-items: center;
     width: 100%;
     justify-content: flex-end;
-    border-top: 1px solid #ffffff0d;
+    border-top: 1px solid var(--border);
     padding-top: 15px;
   }
   .admin-content .answer-editor-row {
@@ -985,4 +985,188 @@
     padding: 7px;
     gap: 5px;
   }
+}
+
+/* Management actions remain separate from the live game controls. */
+.admin-content .results-publication {
+  border-color: var(--primary-ink);
+  background: color-mix(in srgb, var(--primary) 4%, var(--bg));
+}
+.admin-content .results-publication > p {
+  font-size: 0.88rem;
+  margin-bottom: 20px;
+}
+.admin-content .published-results-link {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 24px;
+}
+.admin-content .published-results-link .field {
+  flex: 1 1 250px;
+  margin: 0;
+  min-width: 0;
+}
+.admin-content .published-results-link > .button {
+  flex-shrink: 0;
+}
+.admin-content .game-lifecycle {
+  margin-top: 28px;
+}
+.admin-content .game-lifecycle .section-heading {
+  margin-bottom: 4px;
+}
+.admin-content .game-lifecycle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-block: 23px;
+}
+.admin-content .game-lifecycle-row + .game-lifecycle-row {
+  border-top: 1px solid var(--border);
+  padding-bottom: 0;
+}
+.admin-content .game-lifecycle-row > div {
+  min-width: 0;
+}
+.admin-content .game-lifecycle-row h3 {
+  margin: 0 0 7px;
+}
+.admin-content .game-lifecycle-row p {
+  font-size: 0.84rem;
+  margin: 0;
+}
+.admin-content .game-lifecycle-row > .button {
+  flex-shrink: 0;
+}
+@media (max-width: 760px) {
+  .admin-shell > .admin-sidebar {
+    position: static;
+    padding: 14px 18px;
+    min-height: 73px;
+    border-bottom: 1px solid var(--border);
+  }
+  .admin-sidebar .admin-brand {
+    width: fit-content;
+  }
+  .admin-brand strong {
+    max-width: calc(100vw - 110px);
+    font-size: 0.95rem;
+  }
+  .admin-shell .admin-sidebar nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 70;
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.8fr) minmax(
+        0,
+        1fr
+      ) minmax(0, 1.25fr) minmax(0, 1.05fr);
+    gap: 0;
+    padding: 7px 6px calc(7px + env(safe-area-inset-bottom, 0px));
+    background: var(--bg);
+    border-top: 1px solid var(--border-strong);
+    box-shadow: 0 -4px 16px #0000000a;
+    overflow: visible;
+  }
+  .admin-shell .admin-sidebar nav .admin-nav-link {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 9px 2px;
+    min-height: 57px;
+    border-radius: 10px;
+    font-size: 0.68rem;
+    font-weight: 650;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .admin-shell .admin-sidebar nav .admin-nav-link svg {
+    width: 21px;
+    height: 21px;
+  }
+  .admin-shell .admin-content {
+    padding: 25px 18px calc(105px + env(safe-area-inset-bottom, 0px));
+  }
+  .admin-content .page-heading {
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  .admin-content .page-heading h1 {
+    font-size: clamp(1.65rem, 7vw, 2rem);
+    margin-bottom: 12px;
+  }
+  .admin-content .page-heading .actions > .button {
+    flex: 1 1 130px;
+  }
+  .admin-content .game-card {
+    padding: 21px;
+  }
+  .admin-content .game-card-actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .admin-content .game-card-actions > :is(.button, .text-link) {
+    flex: 1 1 120px;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .admin-content .button,
+  .admin-content .icon-button,
+  .admin-content .filter-tabs button,
+  .admin-content .question-library-actions .button,
+  .admin-content .multiplier-field select {
+    min-height: 44px;
+  }
+  .admin-content .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+  .admin-content
+    :is(input:not([type="color"]):not([type="checkbox"]), textarea, select) {
+    font-size: 16px;
+  }
+  .admin-content .filter-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin-inline: -2px;
+    padding: 2px 2px 7px;
+  }
+  .admin-content .filter-tabs button {
+    flex-shrink: 0;
+  }
+  .admin-content .published-results-link {
+    align-items: stretch;
+  }
+  .admin-content .published-results-link > .button {
+    width: 100%;
+  }
+  .admin-content .game-lifecycle-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .admin-content .game-lifecycle-row > .button {
+    width: 100%;
+  }
+  .admin-content .invite-card {
+    padding: 21px;
+  }
+  .admin-content .invite-card > .actions {
+    gap: 8px;
+  }
+  .admin-content .invite-card > .actions .button {
+    flex: 1 1 125px;
+    padding: 10px;
+  }
+}
+
+.admin-content .game-card-result-note {
+  font-size: 0.77rem;
+  line-height: 1.5;
+  margin: -5px 0 14px;
 }

@@ -24,7 +24,15 @@ import {
   type Participant,
   type Question,
 } from "../shared/types.js";
-import { createGame, applyCommand, publicView, teamView } from "./game.js";
+import {
+  createGame,
+  applyCommand,
+  publicView,
+  teamView,
+  normalizeGameState,
+  resetGame,
+  gameResults,
+} from "./game.js";
 import { createDemoQuestions } from "./demo.js";
 import {
   createDatabase,
@@ -205,7 +213,7 @@ async function loadGame(
   );
   if (!result.rowCount) throw new ApiError(404, "Игра не найдена", "NOT_FOUND");
   const state = result.rows[0].state as GameState;
-  return { ...state, brand: normalizeBrand(state.brand) };
+  return normalizeGameState({ ...state, brand: normalizeBrand(state.brand) });
 }
 const saveGame = (db: Transaction, state: GameState) =>
   db.query("UPDATE games SET state=$2::jsonb,updated_at=now() WHERE id=$1", [
@@ -398,14 +406,18 @@ export async function buildApp(
       brand: initialized
         ? normalizeBrand(settings.rows[0].brand)
         : defaultBrand,
-      games: games.rows.map(({ state }: { state: GameState }) => ({
-        id: state.id,
-        title: state.title,
-        phase: state.phase,
-        teams: publicView(state).teams,
-        createdAt: state.createdAt,
-        revision: state.revision,
-      })),
+      games: games.rows.map(({ state }: { state: GameState }) => {
+        const game = normalizeGameState(state);
+        return {
+          id: game.id,
+          title: game.title,
+          phase: game.phase,
+          teams: publicView(game).teams,
+          createdAt: game.createdAt,
+          revision: game.revision,
+          resultsAvailable: game.phase === "finished" && game.resultsPublished,
+        };
+      }),
     };
   });
   app.post(
@@ -764,6 +776,120 @@ export async function buildApp(
       self = await requireParticipant(request, id);
     return teamView(await loadGame(pool, id), self, await players(pool, id));
   });
+  app.get("/api/games/:id/results", async (request) => {
+    const state = await loadGame(pool, gameId(request));
+    if (
+      state.phase !== "finished" ||
+      (!state.resultsPublished && !(await getAdmin(request)))
+    )
+      throw new ApiError(404, "Результаты не опубликованы", "NOT_FOUND");
+    return gameResults(state);
+  });
+  app.post("/api/games/:id/reset", async (request) => {
+    const admin = await requireAdmin(request),
+      id = gameId(request),
+      body = commandEnvelope.omit({ command: true }).parse(request.body),
+      actor = `admin:${admin.id}`,
+      inputHash = createHash("sha256")
+        .update(JSON.stringify({ type: "reset" }))
+        .digest("hex");
+    const result = await transaction(pool, async (client) => {
+      const state = await loadGame(client, id, true);
+      const previous = await client.query(
+        "SELECT actor,input_hash FROM game_commands WHERE game_id=$1 AND request_id=$2",
+        [id, body.requestId],
+      );
+      if (previous.rowCount) {
+        if (
+          previous.rows[0].actor !== actor ||
+          previous.rows[0].input_hash !== inputHash
+        )
+          throw new ApiError(
+            409,
+            "Этот идентификатор уже использован для другого действия",
+            "REQUEST_ID",
+          );
+        return { state, changed: false };
+      }
+      if (state.revision !== body.revision)
+        throw new ApiError(
+          409,
+          "Игра уже изменилась. Обновите состояние и повторите действие.",
+          "REVISION",
+        );
+      const brand = normalizeBrand(
+        (await client.query("SELECT brand FROM app_settings WHERE id=1"))
+          .rows[0].brand,
+      );
+      const updated = resetGame(state, brand);
+      if (updated.revision !== state.revision + 1)
+        throw new Error("Game engine reset revision invariant failed");
+      await client.query("DELETE FROM participants WHERE game_id=$1", [id]);
+      await client.query("DELETE FROM game_commands WHERE game_id=$1", [id]);
+      await saveGame(client, updated);
+      await client.query(
+        "INSERT INTO game_commands(game_id,request_id,actor,input_hash) VALUES($1,$2,$3,$4)",
+        [id, body.requestId, actor, inputHash],
+      );
+      return { state: updated, changed: true };
+    });
+    if (result.changed) broadcast(result.state);
+    return hostGame(pool, result.state);
+  });
+  app.delete("/api/games/:id", async (request) => {
+    await requireAdmin(request);
+    const id = gameId(request),
+      body = z
+        .object({ revision: z.number().int().min(0) })
+        .parse(request.body);
+    const state = await transaction(pool, async (client) => {
+      const state = await loadGame(client, id, true);
+      if (state.revision !== body.revision)
+        throw new ApiError(
+          409,
+          "Игра уже изменилась. Обновите состояние и повторите действие.",
+          "REVISION",
+        );
+      await client.query("DELETE FROM games WHERE id=$1", [id]);
+      return state;
+    });
+    broadcast({ ...state, revision: state.revision + 1 });
+    for (const socket of sockets.get(id) ?? []) socket.close();
+    return { ok: true };
+  });
+  app.post("/api/games/:id/results/publication", async (request) => {
+    await requireAdmin(request);
+    const id = gameId(request),
+      body = z
+        .object({
+          published: z.boolean(),
+          revision: z.number().int().min(0),
+        })
+        .parse(request.body);
+    const result = await transaction(pool, async (client) => {
+      const state = await loadGame(client, id, true);
+      if (state.revision !== body.revision)
+        throw new ApiError(
+          409,
+          "Игра уже изменилась. Обновите состояние и повторите действие.",
+          "REVISION",
+        );
+      if (body.published && state.phase !== "finished")
+        throw new ApiError(
+          409,
+          "Опубликовать результаты можно после завершения игры",
+          "GAME_PHASE",
+        );
+      if (state.resultsPublished === body.published)
+        return { state, changed: false };
+      state.resultsPublished = body.published;
+      state.revision += 1;
+      await saveGame(client, state);
+      return { state, changed: true };
+    });
+    if (result.changed) broadcast(result.state);
+    return hostGame(pool, result.state);
+  });
   app.post(
     "/api/join",
     { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } },
@@ -788,8 +914,11 @@ export async function buildApp(
         );
         if (rows.rowCount !== 1)
           throw new ApiError(404, "Код команды не найден", "JOIN_CODE");
-        const state = rows.rows[0].state as GameState;
-        state.brand = normalizeBrand(state.brand);
+        const stored = rows.rows[0].state as GameState;
+        const state = normalizeGameState({
+          ...stored,
+          brand: normalizeBrand(stored.brand),
+        });
         const team = state.teams.find((t) => t.joinCode === body.code)!;
         if (!team.joinOpen || state.phase === "finished")
           throw new ApiError(409, "Вход в эту команду закрыт", "JOIN_CLOSED");
@@ -944,12 +1073,18 @@ export async function buildApp(
         body.revision,
         command,
         async (client) => {
-          if (type === "submit") {
-            const role = await client.query(
-              "SELECT role FROM participants WHERE id=$1 AND game_id=$2",
-              [self.id, id],
+          const participant = await client.query(
+            "SELECT role FROM participants WHERE id=$1 AND game_id=$2",
+            [self.id, id],
+          );
+          if (!participant.rowCount)
+            throw new ApiError(
+              403,
+              "Присоединитесь к команде этой игры",
+              "TEAM_REQUIRED",
             );
-            if (role.rows[0]?.role !== "captain")
+          if (type === "submit") {
+            if (participant.rows[0]?.role !== "captain")
               throw new ApiError(
                 403,
                 "Итоговый ответ отправляет капитан",

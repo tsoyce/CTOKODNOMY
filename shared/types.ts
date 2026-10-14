@@ -83,6 +83,16 @@ export interface GameEvent {
   message: string;
   createdAt: string;
 }
+export interface RoundResult {
+  questionIndex: number;
+  winnerTeamId: string | null;
+  awardedPoints: number;
+  openedAnswerIds: string[];
+  strikes: number;
+  multiplier: number;
+  completed: boolean;
+  completedAt: string;
+}
 export interface GameSnapshot {
   teams: Team[];
   questionIndex: number;
@@ -95,6 +105,8 @@ export interface GameSnapshot {
   openedAnswerIds: string[];
   pendingAnswer: OfficialAnswer | null;
   suggestions: Suggestion[];
+  roundResults: RoundResult[];
+  resultsPublished: boolean;
 }
 export interface GameState extends GameSnapshot {
   id: string;
@@ -119,6 +131,30 @@ export interface PublicAnswer {
   text?: string;
   points?: number;
 }
+export interface PublicRoundStats {
+  questionId: string;
+  questionIndex: number;
+  prompt: string;
+  source: string;
+  surveyDate: string;
+  respondentCount: number | null;
+  isDemo: boolean;
+  answers: Array<{
+    position: number;
+    text: string;
+    points: number;
+    opened: boolean;
+    /** Percentage of answer weights; not necessarily a population percentage. */
+    share: number;
+  }>;
+  totalPoints: number;
+  multiplier: number;
+  winnerTeamId: string | null;
+  awardedPoints: number;
+  strikes: number;
+  completed: boolean;
+  completedAt: string;
+}
 export interface PublicGame {
   id: string;
   title: string;
@@ -136,6 +172,19 @@ export interface PublicGame {
   prompt: string;
   answers: PublicAnswer[];
   isDemo: boolean;
+  roundStats: PublicRoundStats | null;
+  resultsAvailable: boolean;
+}
+export interface PublicGameResults {
+  id: string;
+  title: string;
+  brand: Brand;
+  teams: PublicTeam[];
+  revision: number;
+  createdAt: string;
+  published: boolean;
+  rounds: PublicRoundStats[];
+  totalRounds: number;
 }
 export interface HostGame extends GameState {
   players: Participant[];
@@ -179,6 +228,7 @@ export interface GameSummary {
   teams: PublicTeam[];
   createdAt: string;
   revision: number;
+  resultsAvailable: boolean;
 }
 export interface SiteInfo {
   initialized: boolean;

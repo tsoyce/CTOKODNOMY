@@ -6,7 +6,10 @@ import type {
   GameState,
   Participant,
   PublicGame,
+  PublicGameResults,
+  PublicRoundStats,
   Question,
+  RoundResult,
   Rules,
   Team,
   TeamGame,
@@ -136,6 +139,8 @@ export function createGame(input: CreateGameInput): GameState {
     openedAnswerIds: [],
     pendingAnswer: null,
     suggestions: [],
+    roundResults: [],
+    resultsPublished: false,
     revision: 0,
     events: [],
     history: [],
@@ -156,7 +161,100 @@ function snapshot(game: GameState): GameSnapshot {
     openedAnswerIds: game.openedAnswerIds,
     pendingAnswer: game.pendingAnswer,
     suggestions: game.suggestions,
+    roundResults: game.roundResults,
+    resultsPublished: game.resultsPublished,
   });
+}
+
+/** Fill legacy JSON snapshots without treating unplayed questions as results. */
+export function normalizeGameState(state: GameState): GameState {
+  const game = structuredClone(state);
+  const previous: GameSnapshot[] = [];
+  for (const old of game.history) {
+    normalizeSnapshot(old, previous, game);
+    previous.push(old);
+  }
+  normalizeSnapshot(game, previous, game);
+  return game;
+}
+
+function normalizeSnapshot(
+  state: GameSnapshot,
+  previous: GameSnapshot[],
+  game: GameState,
+): void {
+  if (!Array.isArray(state.roundResults)) {
+    const results: RoundResult[] = [];
+    const roundCount = Math.min(state.questionIndex, game.questions.length);
+    for (let index = 0; index < roundCount; index += 1) {
+      const witness = previous.findLast(
+        (item) => item.questionIndex === index && item.phase === "round-result",
+      );
+      const known = previous
+        .findLast((item) =>
+          item.roundResults.some((result) => result.questionIndex === index),
+        )
+        ?.roundResults.find((result) => result.questionIndex === index);
+      results.push(
+        known
+          ? structuredClone(known)
+          : legacyResult(index, witness, game, true),
+      );
+    }
+    if (state.questionIndex < game.questions.length) {
+      if (state.phase === "round-result") {
+        results.push(legacyResult(state.questionIndex, state, game, true));
+      } else if (state.phase === "finished") {
+        const known = previous
+          .findLast((item) =>
+            item.roundResults.some(
+              (result) => result.questionIndex === state.questionIndex,
+            ),
+          )
+          ?.roundResults.find(
+            (result) => result.questionIndex === state.questionIndex,
+          );
+        const witness = previous.findLast(
+          (item) => item.questionIndex === state.questionIndex,
+        );
+        if (known) {
+          results.push(structuredClone(known));
+        } else if (witness?.phase === "round-result") {
+          results.push(legacyResult(state.questionIndex, witness, game, true));
+        } else if (
+          witness?.phase === "playing" ||
+          witness?.phase === "steal" ||
+          state.openedAnswerIds.length > 0 ||
+          state.bank > 0
+        ) {
+          results.push(legacyResult(state.questionIndex, state, game, false));
+        }
+      }
+    }
+    state.roundResults = results;
+  }
+  state.resultsPublished =
+    state.phase === "finished" && state.resultsPublished === true;
+}
+
+function legacyResult(
+  questionIndex: number,
+  state: GameSnapshot | undefined,
+  game: GameState,
+  completed: boolean,
+): RoundResult {
+  const wasAwarded = completed && state?.phase === "round-result";
+  return {
+    questionIndex,
+    winnerTeamId: wasAwarded ? state.activeTeamId : null,
+    awardedPoints: wasAwarded ? state.bank : 0,
+    openedAnswerIds: [...(state?.openedAnswerIds ?? [])],
+    strikes: state?.strikes ?? 0,
+    multiplier: multiplierForRound(game, questionIndex),
+    completed,
+    // Older snapshots did not record completion times.
+    completedAt: "",
+  };
 }
 
 function teamById(game: GameState, id: string | null): Team {
@@ -166,9 +264,38 @@ function teamById(game: GameState, id: string | null): Team {
 }
 
 function multiplier(game: GameState): number {
+  return multiplierForRound(game, game.questionIndex);
+}
+
+function multiplierForRound(game: GameState, questionIndex: number): number {
   return game.rules.multipliers[
-    Math.min(game.questionIndex, game.rules.multipliers.length - 1)
+    Math.min(questionIndex, game.rules.multipliers.length - 1)
   ]!;
+}
+
+function recordRound(
+  game: GameState,
+  winnerTeamId: string | null,
+  awardedPoints: number,
+  completed: boolean,
+): void {
+  const result: RoundResult = {
+    questionIndex: game.questionIndex,
+    winnerTeamId,
+    awardedPoints,
+    openedAnswerIds: [...game.openedAnswerIds],
+    strikes: game.strikes,
+    multiplier: multiplier(game),
+    completed,
+    completedAt: new Date().toISOString(),
+  };
+  game.roundResults = game.roundResults.filter(
+    (item) => item.questionIndex !== game.questionIndex,
+  );
+  game.roundResults.push(result);
+  game.roundResults.sort(
+    (left, right) => left.questionIndex - right.questionIndex,
+  );
 }
 
 function clearAnswers(game: GameState): void {
@@ -192,6 +319,7 @@ function awardBank(game: GameState, teamId: string): void {
     400,
   );
   team.score += game.bank;
+  recordRound(game, team.id, game.bank, true);
   game.phase = "round-result";
   game.activeTeamId = team.id;
   clearAnswers(game);
@@ -209,6 +337,8 @@ function beginRound(game: GameState, teamId: string): void {
 }
 
 function endGame(game: GameState): void {
+  if (game.phase === "playing" || game.phase === "steal")
+    recordRound(game, null, 0, false);
   game.phase = "finished";
   game.paused = false;
   clearAnswers(game);
@@ -220,7 +350,8 @@ export function applyCommand(
   state: GameState,
   command: GameCommand,
 ): GameState {
-  const game = structuredClone(state);
+  const normalized = normalizeGameState(state);
+  const game = structuredClone(normalized);
   let message: string;
   switch (command.type) {
     case "start": {
@@ -341,7 +472,11 @@ export function applyCommand(
     case "undo": {
       const previous = game.history.pop();
       requireRule(previous, "Нет решений ведущего для отмены.");
+      const published = game.resultsPublished;
       Object.assign(game, structuredClone(previous));
+      // Publication is a separate choice: undoing a score adjustment must
+      // never expose a report which the organizer explicitly hid.
+      game.resultsPublished = game.phase === "finished" && published;
       message = "Последнее решение ведущего отменено.";
       break;
     }
@@ -430,7 +565,7 @@ export function applyCommand(
     command.type !== "suggest" &&
     command.type !== "submit"
   ) {
-    game.history.push(snapshot(state));
+    game.history.push(snapshot(normalized));
     game.history = game.history.slice(-HISTORY_LIMIT);
   }
   game.revision = state.revision + 1;
@@ -446,8 +581,14 @@ export function applyCommand(
 
 /** An explicit allowlist prevents unplayed answers and invitation codes reaching the audience. */
 export function publicView(game: GameState): PublicGame {
+  game = normalizeGameState(game);
+  const result = game.roundResults.find(
+    (item) => item.questionIndex === game.questionIndex,
+  );
   const question =
-    game.phase === "lobby" ? undefined : game.questions[game.questionIndex];
+    game.phase === "lobby" || (game.phase === "finished" && !result)
+      ? undefined
+      : game.questions[game.questionIndex];
   return {
     id: game.id,
     title: game.title,
@@ -469,6 +610,12 @@ export function publicView(game: GameState): PublicGame {
     multiplier: multiplier(game),
     prompt: question?.prompt ?? "",
     isDemo: question?.isDemo ?? false,
+    roundStats:
+      result?.completed &&
+      (game.phase === "round-result" || game.phase === "finished")
+        ? roundStats(game, result)
+        : null,
+    resultsAvailable: game.phase === "finished" && game.resultsPublished,
     answers:
       question?.answers.map((answer, index) =>
         game.openedAnswerIds.includes(answer.id)
@@ -481,6 +628,83 @@ export function publicView(game: GameState): PublicGame {
           : { position: index + 1, opened: false },
       ) ?? [],
   };
+}
+
+function roundStats(game: GameState, result: RoundResult): PublicRoundStats {
+  const question = game.questions[result.questionIndex]!;
+  const totalPoints = question.answers.reduce(
+    (sum, answer) => sum + answer.points,
+    0,
+  );
+  return {
+    questionId: question.id,
+    questionIndex: result.questionIndex,
+    prompt: question.prompt,
+    source: question.source,
+    surveyDate: question.surveyDate,
+    respondentCount: question.respondentCount,
+    isDemo: question.isDemo,
+    answers: question.answers.map((answer, index) => ({
+      position: index + 1,
+      text: answer.text,
+      points: answer.points,
+      opened: result.openedAnswerIds.includes(answer.id),
+      share: totalPoints > 0 ? (answer.points / totalPoints) * 100 : 0,
+    })),
+    totalPoints,
+    multiplier: result.multiplier,
+    winnerTeamId: result.winnerTeamId,
+    awardedPoints: result.awardedPoints,
+    strikes: result.strikes,
+    completed: result.completed,
+    completedAt: result.completedAt,
+  };
+}
+
+/** The API decides whether this finished game's allowlisted results are public. */
+export function gameResults(state: GameState): PublicGameResults {
+  const game = normalizeGameState(state);
+  requireRule(
+    game.phase === "finished",
+    "Статистика всей игры доступна после завершения.",
+  );
+  return {
+    id: game.id,
+    title: game.title,
+    brand: structuredClone(game.brand),
+    teams: game.teams.map(({ id, name, color, score }) => ({
+      id,
+      name,
+      color,
+      score,
+    })),
+    revision: game.revision,
+    createdAt: game.createdAt,
+    published: game.resultsPublished,
+    rounds: game.roundResults.map((result) => roundStats(game, result)),
+    totalRounds: game.questions.length,
+  };
+}
+
+/** Start the same prepared game afresh; the API invalidates old player sessions. */
+export function resetGame(state: GameState, brand = state.brand): GameState {
+  const game = createGame({
+    id: state.id,
+    title: state.title,
+    brand,
+    questions: state.questions,
+    rules: state.rules,
+    teams: state.teams.map(({ id, name, color }) => ({ id, name, color })),
+  });
+  const allocatedCodes = new Set(state.teams.map((team) => team.joinCode));
+  for (const team of game.teams) {
+    while (allocatedCodes.has(team.joinCode))
+      team.joinCode = randomBytes(6).toString("hex").toUpperCase();
+    allocatedCodes.add(team.joinCode);
+  }
+  game.revision = state.revision + 1;
+  game.createdAt = state.createdAt;
+  return game;
 }
 
 function participantView(person: Participant): Participant {

@@ -261,7 +261,11 @@ export function HomePage() {
               {games.map((game) => (
                 <Link
                   className="game-entry"
-                  to={`/board/${game.id}`}
+                  to={
+                    game.resultsAvailable
+                      ? `/results/${game.id}`
+                      : `/board/${game.id}`
+                  }
                   key={game.id}
                 >
                   <div>
@@ -274,7 +278,11 @@ export function HomePage() {
                     <p>{game.teams.map((team) => team.name).join(" · ")}</p>
                   </div>
                   <span className="game-entry-action">
-                    {game.phase === "finished" ? "Результаты" : "Открыть табло"}{" "}
+                    {game.resultsAvailable
+                      ? "Итоги и ответы"
+                      : game.phase === "finished"
+                        ? "Финальный счёт"
+                        : "Открыть табло"}{" "}
                     <ArrowRight size={20} />
                   </span>
                 </Link>

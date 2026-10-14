@@ -274,7 +274,7 @@
 }
 .brand-palettes {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
   margin-bottom: 22px;
 }
@@ -493,7 +493,7 @@
   font-size: 0.51rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--demo-accent);
+  color: var(--accent-ink);
   margin: 0 0 13px;
 }
 .brand-demo-eyebrow > span {
@@ -520,7 +520,7 @@
 }
 .brand-demo-description {
   font-size: 0.64rem;
-  color: color-mix(in srgb, var(--demo-text) 63%, transparent);
+  color: var(--muted);
   line-height: 1.7;
   margin: 0 0 17px;
 }
@@ -543,7 +543,7 @@
   font-size: 0.48rem;
   line-height: 1.6;
   margin: 13px 0 24px;
-  color: color-mix(in srgb, var(--demo-text) 45%, transparent);
+  color: var(--muted);
 }
 .brand-demo-note svg {
   flex-shrink: 0;
@@ -557,7 +557,7 @@
   border-top: 1px solid color-mix(in srgb, var(--demo-text) 9%, transparent);
   font-size: 0.43rem;
   line-height: 1.6;
-  color: color-mix(in srgb, var(--demo-text) 45%, transparent);
+  color: var(--muted);
 }
 .brand-demo-partners {
   display: flex;
@@ -618,8 +618,8 @@
   font-size: 0.62rem;
 }
 .brand-demo-answer.is-open {
-  background: var(--demo-primary);
-  border-color: #ffffff20;
+  background: color-mix(in srgb, var(--demo-primary) 10%, var(--demo-bg));
+  border-color: var(--demo-primary);
 }
 .brand-demo-answer > span {
   opacity: 0.6;
@@ -635,7 +635,7 @@
   opacity: 0.3;
 }
 .brand-demo-answer > b {
-  color: var(--demo-accent);
+  color: var(--accent-ink);
 }
 .brand-demo-scores {
   display: flex;
@@ -650,7 +650,7 @@
 .brand-demo-scores > div strong {
   display: block;
   font-size: 1.25rem;
-  color: var(--demo-accent);
+  color: var(--accent-ink);
   margin-top: 6px;
 }
 .brand-demo-scores > span {
@@ -720,7 +720,7 @@
 }
 .brand-demo-player > b {
   font-size: 0.75rem;
-  color: var(--demo-accent);
+  color: var(--accent-ink);
 }
 .brand-demo-phone > .brand-demo-eyebrow {
   font-size: 0.44rem;

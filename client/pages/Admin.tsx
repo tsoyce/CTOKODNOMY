@@ -20,6 +20,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  BarChart3,
   Check,
   Clipboard,
   Crown,
@@ -42,9 +43,10 @@ import {
   X,
 } from "lucide-react";
 import QRCode from "qrcode";
-import { api, useMe, useSite } from "../lib";
+import { ApiError, api, useMe, useSite } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
 import { BrandEditor, BrandPreview } from "../components/Branding";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import type {
   Answer,
   Brand,
@@ -173,7 +175,7 @@ export function AdminLayout() {
     ["/admin/games", "Игры", <Gamepad2 size={19} />],
     ["/admin/questions", "Вопросы", <FileQuestion size={19} />],
     ["/admin/settings", "Оформление", <Palette size={19} />],
-    ["/admin/account", "Мой аккаунт", <ShieldCheck size={19} />],
+    ["/admin/account", "Аккаунт", <ShieldCheck size={19} />],
   ] as const;
   return (
     <div className="admin-shell">
@@ -188,7 +190,7 @@ export function AdminLayout() {
           )}
           <div>
             <strong>{site?.brand.title || "100 к 1"}</strong>
-            <small>пространство организатора</small>
+            <small>Управление игрой</small>
           </div>
         </Link>
         <div className="admin-nav-label">Управление</div>
@@ -244,6 +246,11 @@ function GameCard({ game }: { game: GameSummary }) {
           }).format(new Date(game.createdAt))}
         </time>
       </div>
+      {game.phase === "finished" && (
+        <p className="game-card-result-note muted">
+          {game.resultsAvailable ? "Итоги опубликованы для гостей" : "Итоги видны только организатору"}
+        </p>
+      )}
       <h2>
         <Link to={`/admin/games/${game.id}`}>{game.title}</Link>
       </h2>
@@ -257,11 +264,14 @@ function GameCard({ game }: { game: GameSummary }) {
         ))}
       </div>
       <div className="game-card-actions">
-        <Link className="button button-primary" to={`/host/${game.id}`}>
+        <Link
+          className="button button-primary"
+          to={game.phase === "finished" ? `/results/${game.id}` : `/host/${game.id}`}
+        >
           {game.phase === "lobby"
             ? "Открыть пульт"
             : game.phase === "finished"
-              ? "Посмотреть игру"
+              ? "Итоги и ответы"
               : "Продолжить"}
           <ArrowRight size={16} />
         </Link>
@@ -270,7 +280,7 @@ function GameCard({ game }: { game: GameSummary }) {
           to={`/admin/games/${game.id}`}
           aria-label={`Настройки ${game.title}`}
         >
-          <Settings size={18} />
+          <Settings size={18} /> Настройки
         </Link>
       </div>
     </article>
@@ -880,6 +890,8 @@ function InviteCard({
 
 export function GameSettingsPage() {
   const { gameId } = useParams();
+  const navigate = useNavigate();
+  const { refresh: refreshSite } = useSite();
   const {
     value: game,
     setValue: setGame,
@@ -890,12 +902,122 @@ export function GameSettingsPage() {
   } = useResource<HostGame>(`/games/${encodeURIComponent(gameId || "")}/host`);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [confirmation, setConfirmation] = useState<{
+    kind: "reset" | "delete";
+    revision: number;
+    requestId?: string;
+  } | null>(null);
+  const [dialogError, setDialogError] = useState("");
+  const [resultsCopied, setResultsCopied] = useState(false);
+  const pendingReset = useRef<{ requestId: string; revision: number } | null>(null);
   useEffect(() => {
     const interval = window.setInterval(() => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !busy) void refresh();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, busy]);
+  const openConfirmation = (kind: "reset" | "delete") => {
+    if (!game || busy) return;
+    setDialogError("");
+    setConfirmation(
+      kind === "reset"
+        ? { kind, ...(pendingReset.current ?? { requestId: crypto.randomUUID(), revision: game.revision }) }
+        : { kind, revision: game.revision },
+    );
+  };
+  const performLifecycleAction = async () => {
+    if (!game || !confirmation || busy) return;
+    const action = confirmation;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    setBusy(true);
+    setDialogError("");
+    setNotice("");
+    try {
+      if (action.kind === "reset") {
+        const request = { requestId: action.requestId!, revision: action.revision };
+        pendingReset.current = request;
+        const next = await api<HostGame>(
+          `/games/${game.id}/reset`,
+          { ...json("POST", request), signal: controller.signal },
+        );
+        pendingReset.current = null;
+        setGame(next);
+        setConfirmation(null);
+        setNotice("Игра готова к новому старту. Передайте командам новые приглашения ниже.");
+      } else {
+        await api<{ ok: true }>(
+          `/games/${game.id}`,
+          { ...json("DELETE", { revision: action.revision }), signal: controller.signal },
+        );
+        await refreshSite().catch(() => {});
+        navigate("/admin/games", { replace: true });
+        return;
+      }
+      setError("");
+      await refreshSite().catch(() => {});
+    } catch (err) {
+      if (action.kind === "delete" && err instanceof ApiError && err.status === 404) {
+        await refreshSite().catch(() => {});
+        navigate("/admin/games", { replace: true });
+        return;
+      }
+      if (err instanceof ApiError && err.status === 409) {
+        if (action.kind === "reset") pendingReset.current = null;
+        setConfirmation(null);
+        await refresh();
+        setError("Игра изменилась в другом окне. Проверьте её состояние и повторите действие.");
+      } else {
+        if (action.kind === "reset") {
+          await refresh();
+          setDialogError(
+            err instanceof ApiError
+              ? messageOf(err)
+              : "Ответ сервера не получен. Повторите действие: тот же запрос не сбросит игру второй раз.",
+          );
+        } else {
+          setDialogError(messageOf(err));
+        }
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      setBusy(false);
+    }
+  };
+  const toggleResultsPublication = async () => {
+    if (!game || busy) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const next = await api<HostGame>(
+        `/games/${game.id}/results/publication`,
+        json("POST", { published: !game.resultsPublished, revision: game.revision }),
+      );
+      setGame(next);
+      setError("");
+      setNotice(next.resultsPublished
+        ? "Итоги опубликованы. Поделитесь ссылкой с гостями."
+        : "Итоги скрыты. Страница доступна только организатору.");
+      await refreshSite().catch(() => {});
+    } catch (err) {
+      await refresh();
+      setError(err instanceof ApiError && err.status === 409
+        ? "Игра изменилась в другом окне. Состояние обновлено — проверьте публикацию и повторите действие."
+        : messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copyResults = async () => {
+    if (!game) return;
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/results/${game.id}`);
+      setResultsCopied(true);
+      setError("");
+    } catch {
+      setError("Не удалось скопировать автоматически. Выделите ссылку на итоги ниже и скопируйте её.");
+    }
+  };
   const command = async (hostCommand: HostCommand) => {
     if (!game) return;
     setBusy(true);
@@ -959,7 +1081,9 @@ export function GameSettingsPage() {
       <PageHeading
         eyebrow={phases[game.phase]}
         title={game.title}
-        description="Приглашайте команды, назначайте капитанов и подготовьте общий экран."
+        description={game.phase === "finished"
+          ? "Посмотрите результаты, поделитесь ответами с гостями или сыграйте ещё раз."
+          : "Пригласите команды и откройте пульт. Гости смогут следить за игрой на табло."}
         actions={
           <>
             <Link
@@ -971,9 +1095,12 @@ export function GameSettingsPage() {
               <ExternalLink size={16} />
               Табло
             </Link>
-            <Link className="button button-primary" to={`/host/${game.id}`}>
-              <Gamepad2 size={18} />
-              Пульт ведущего
+            <Link
+              className="button button-primary"
+              to={game.phase === "finished" ? `/results/${game.id}` : `/host/${game.id}`}
+            >
+              {game.phase === "finished" ? <BarChart3 size={18} /> : <Gamepad2 size={18} />}
+              {game.phase === "finished" ? "Итоги и ответы" : "Пульт ведущего"}
             </Link>
           </>
         }
@@ -984,6 +1111,59 @@ export function GameSettingsPage() {
           <Check size={16} />
           {notice}
         </p>
+      )}
+      {game.phase === "finished" && (
+        <section className="card form-section results-publication">
+          <div className="section-heading">
+            <div>
+              <h2>Итоги для гостей</h2>
+              <p className="muted">
+                Ответы на вопросы, их популярность и финальный счёт — на одной странице.
+              </p>
+            </div>
+            <span className={`badge ${game.resultsPublished ? "badge-accent" : ""}`}>
+              {game.resultsPublished ? "Опубликованы" : "Пока скрыты"}
+            </span>
+          </div>
+          <p className="muted">
+            {game.resultsPublished
+              ? "Страницу можно открыть без входа. Ссылка подходит для участников и гостей."
+              : "Сначала проверьте страницу итогов. После публикации её смогут открыть все, у кого есть ссылка."}
+          </p>
+          <div className="actions">
+            <Link className="button button-secondary" to={`/results/${game.id}`}>
+              <BarChart3 size={18} /> Посмотреть итоги
+            </Link>
+            <button
+              type="button"
+              disabled={busy}
+              className={`button ${game.resultsPublished ? "button-ghost" : "button-primary"}`}
+              onClick={() => void toggleResultsPublication()}
+            >
+              {game.resultsPublished ? "Скрыть итоги" : "Опубликовать итоги"}
+            </button>
+          </div>
+          {game.resultsPublished && (
+            <div className="published-results-link">
+              <label className="field">
+                Ссылка на итоги
+                <input
+                  value={`${window.location.origin}/results/${game.id}`}
+                  readOnly
+                  onFocus={(event) => event.target.select()}
+                />
+              </label>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => void copyResults()}
+              >
+                {resultsCopied ? <Check size={17} /> : <Clipboard size={17} />}
+                {resultsCopied ? "Скопировано" : "Копировать ссылку"}
+              </button>
+            </div>
+          )}
+        </section>
       )}
       <div className="notice">
         <ShieldCheck size={20} />
@@ -1083,8 +1263,8 @@ export function GameSettingsPage() {
           <div>
             <h2>Сценарий партии</h2>
             <p className="muted">
-              Вопросы и оформление зафиксированы при создании. Для другого
-              набора создайте новую игру.
+              Вопросы сохранены в этой партии. При сбросе оформление обновится
+              из настроек сайта. Для другого набора создайте новую игру.
             </p>
           </div>
           <span className="badge">{game.questions.length} раундов</span>
@@ -1118,6 +1298,66 @@ export function GameSettingsPage() {
           .
         </p>
       </section>
+      <section className="card game-lifecycle">
+        <div className="section-heading">
+          <div>
+            <h2>Управление партией</h2>
+            <p className="muted">Вопросы в библиотеке сохранятся при любом действии.</p>
+          </div>
+        </div>
+        <div className="game-lifecycle-row">
+          <div>
+            <h3>Сыграть ещё раз</h3>
+            <p className="muted">
+              Те же вопросы и команды, счёт с нуля и новые приглашения для игроков.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={busy}
+            onClick={() => openConfirmation("reset")}
+          >
+            <RefreshCw size={18} /> Начать заново
+          </button>
+        </div>
+        <div className="game-lifecycle-row">
+          <div>
+            <h3>Удалить игру</h3>
+            <p className="muted">Партия, её участники и результаты будут удалены.</p>
+          </div>
+          <button
+            type="button"
+            className="button button-danger"
+            disabled={busy}
+            onClick={() => openConfirmation("delete")}
+          >
+            <Trash2 size={18} /> Удалить игру
+          </button>
+        </div>
+      </section>
+      {confirmation && (
+        <ConfirmDialog
+          title={confirmation.kind === "reset" ? "Начать игру заново?" : "Удалить игру?"}
+          description={confirmation.kind === "reset" ? (
+            <>
+              <p><strong>{game.title}</strong> вернётся в ожидание. Счёт, история, участники и опубликованные итоги будут сброшены.</p>
+              <p>Вопросы и названия команд сохранятся. Оформление обновится из настроек сайта. Игрокам понадобятся новые приглашения.</p>
+            </>
+          ) : (
+            <>
+              <p><strong>{game.title}</strong>, её результаты и участники будут удалены без возможности восстановления.</p>
+              <p>Вопросы в библиотеке останутся. Ссылки на эту игру перестанут работать.</p>
+            </>
+          )}
+          confirmLabel={confirmation.kind === "reset" ? "Начать заново" : "Удалить игру"}
+          danger={confirmation.kind === "delete"}
+          busy={busy}
+          error={dialogError}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => void performLifecycleAction()}
+        />
+      )}
     </>
   );
 }

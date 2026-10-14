@@ -131,7 +131,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
       expect(url).toMatch(/^\/media\/.+\.png$/);
       uploadedLogos.push(url);
     }
-    await page.getByRole("button", { name: "Океан", exact: true }).click();
+    await page.getByRole("button", { name: "Проектор", exact: true }).click();
     await page.getByRole("tab", { name: "Табло", exact: true }).click();
     await expect(page.getByRole("tabpanel")).toContainText(
       "Что делает вечер незабываемым?",
@@ -243,7 +243,8 @@ test("organizer installs and brands the event; independent phones collaborate wh
         .evaluate((element) =>
           getComputedStyle(element).getPropertyValue("--primary").trim(),
         ),
-    ).toBe("#247e96");
+    ).toBe("#1646a0");
+    await expect(page.locator(".app")).toHaveAttribute("data-theme", "light");
     await page.evaluate(() => window.scrollTo(0, 0));
     await mkdir(path.resolve("test-results"), { recursive: true });
     await page.screenshot({
@@ -427,6 +428,27 @@ test("organizer installs and brands the event; independent phones collaborate wh
       "src",
       uploadedLogos[1]!,
     );
+    await board
+      .getByRole("button", { name: "Для проектора", exact: true })
+      .click();
+    await expect(
+      board.getByRole("button", { name: "Для проектора", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(board.locator(".board-page")).toHaveAttribute(
+      "data-theme",
+      "light",
+    );
+    await expect(board.locator(".board-page")).toHaveCSS(
+      "background-color",
+      "rgb(255, 255, 255)",
+    );
+    await board.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await board.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    await board.setViewportSize({ width: 1440, height: 900 });
     await expect(board.locator("body")).not.toContainText(firstQuestion.prompt);
 
     await page.goto(`/host/${game.id}`);
@@ -545,6 +567,29 @@ test("organizer installs and brands the event; independent phones collaborate wh
       .getByRole("button", { name: "Подтвердить" })
       .click();
     await expect(board.locator(".board-round-complete")).toBeVisible();
+    await expect(board.locator(".round-statistics")).toBeVisible();
+    for (const answer of firstQuestion.answers) {
+      await expect(board.locator(".statistics-answer-list")).toContainText(
+        answer.text,
+      );
+    }
+    await expect(board.locator(".round-statistics")).toContainText(
+      "Угадали 1 из",
+    );
+    await expect(board.locator("body")).not.toContainText(
+      game.questions[1]!.prompt,
+    );
+    await board.setViewportSize({ width: 1280, height: 720 });
+    await board.screenshot({
+      path: "test-results/round-statistics-projector.png",
+      fullPage: true,
+    });
+    expect(
+      await board.evaluate(
+        () => document.documentElement.scrollHeight <= innerHeight + 1,
+      ),
+    ).toBe(true);
+    await board.setViewportSize({ width: 1440, height: 900 });
     await expect(
       board.locator(".team-score").filter({ hasText: "Исследователи" }),
     ).toContainText(String(firstAnswer.points));
@@ -568,6 +613,20 @@ test("organizer installs and brands the event; independent phones collaborate wh
       path: "test-results/team-mobile.png",
       fullPage: true,
     });
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1,
+        ),
+      ).toBe(true);
+    }
+    await page.screenshot({
+      path: "test-results/host-mobile.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1280, height: 900 });
     expect(
       await captain.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -607,6 +666,115 @@ test("organizer installs and brands the event; independent phones collaborate wh
         exact: true,
       }),
     ).toBeVisible();
+
+    const results = await guestContext.newPage();
+    results.on("pageerror", (error) => pageErrors.push(error.message));
+    await results.goto(`/results/${game.id}`);
+    await expect(
+      results.getByRole("heading", {
+        name: "Итоги пока недоступны",
+        exact: true,
+      }),
+    ).toBeVisible();
+    const privateReport = await page.request.get(
+      `/api/games/${game.id}/results`,
+    );
+    expect(privateReport.ok()).toBe(true);
+    expect((await privateReport.json()).published).toBe(false);
+    await page
+      .getByRole("button", { name: "Опубликовать итоги", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Скрыть итоги", exact: true }),
+    ).toBeVisible();
+    await expect(
+      board.getByRole("link", { name: "Ответы и итоги", exact: true }),
+    ).toBeVisible();
+    await results.reload();
+    await expect(
+      results.getByRole("heading", { name: "Итоги игры", exact: true }),
+    ).toBeVisible();
+    await expect(results.locator(".round-statistics")).toHaveCount(2);
+    await expect(results.locator("body")).not.toContainText(
+      firstQuestion.notes,
+    );
+    await results.screenshot({
+      path: "test-results/results-desktop.png",
+      fullPage: true,
+    });
+    await results.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await results.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    await results.screenshot({
+      path: "test-results/results-mobile.png",
+      fullPage: true,
+    });
+
+    await page
+      .getByRole("button", { name: "Скрыть итоги", exact: true })
+      .click();
+    await results.reload();
+    await expect(
+      results.getByRole("heading", {
+        name: "Итоги пока недоступны",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.goto(`/admin/games/${game.id}`);
+    await page
+      .getByRole("button", { name: "Начать заново", exact: true })
+      .click();
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    expect(
+      (await (await page.request.get(`/api/games/${game.id}/host`)).json())
+        .phase,
+    ).toBe("finished");
+    await page
+      .getByRole("button", { name: "Начать заново", exact: true })
+      .click();
+    const resetting = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/api/games/${game.id}/reset`) &&
+        response.request().method() === "POST",
+    );
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Начать заново", exact: true })
+      .click();
+    const resetResponse = await resetting;
+    expect(resetResponse.ok()).toBe(true);
+    const resetGame = (await resetResponse.json()) as HostGame;
+    expect(resetGame.teams.map((team) => team.score)).toEqual([0, 0]);
+    expect(resetGame.players).toEqual([]);
+    expect(resetGame.roundResults).toEqual([]);
+    expect(resetGame.teams[0]!.joinCode).not.toBe(teamA!.joinCode);
+    await expect(
+      board.getByRole("heading", { name: "Собираем команды", exact: true }),
+    ).toBeVisible();
+    await expect(
+      member.getByRole("link", { name: "Войти по приглашению команды" }),
+    ).toBeVisible();
+    await expect(member.getByLabel("Ваше предложение")).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "Удалить игру", exact: true })
+      .click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Удалить игру", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/admin\/games$/);
+    await expect(board.locator(".board-page")).toHaveCount(0);
+    expect(
+      (await page.request.get(`/api/games/${game.id}/public`)).status(),
+    ).toBe(404);
+    expect(
+      (await (await page.request.get("/api/questions")).json()).length,
+    ).toBe(4);
     expect(pageErrors).toEqual([]);
   } finally {
     await Promise.all(contexts.map((context) => context.close()));

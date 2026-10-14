@@ -21,10 +21,21 @@ import {
   Users,
 } from "lucide-react";
 import { defaultBrand, type Brand } from "../../shared/types";
+import { brandStyle } from "../lib";
+import {
+  contrastRatio,
+  isLightBrand,
+  projectorPalette,
+  themeTokens,
+} from "../theme";
 import "./Branding.css";
 
 const imageTypes = ["image/png", "image/jpeg", "image/webp"];
 const palettes = [
+  {
+    name: "Проектор",
+    ...projectorPalette,
+  },
   {
     name: "Лайм",
     primary: "#7559ff",
@@ -61,21 +72,6 @@ function completeBrand(brand: Brand): Brand {
     ...brand,
     partnerLogoUrls: brand.partnerLogoUrls ?? [],
   };
-}
-
-function luminance(hex: string) {
-  const values = [1, 3, 5]
-    .map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
-    .map((value) =>
-      value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
-    );
-  return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
-}
-
-function contrastRatio(first: string, second: string) {
-  const a = luminance(first),
-    b = luminance(second);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
 function PreviewMark({
@@ -260,14 +256,15 @@ export function BrandPreview({ brand: source }: { brand: Brand }) {
   ];
   const id = useId();
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const ratio = contrastRatio(brand.background, brand.textColor);
+  const tokens = themeTokens(brand);
+  const ratio = contrastRatio(brand.background, tokens["--text"]);
   const style = {
+    ...brandStyle(brand),
     "--demo-bg": brand.background,
-    "--demo-text": brand.textColor,
+    "--demo-text": tokens["--text"],
     "--demo-primary": brand.primary,
     "--demo-accent": brand.accent,
-    "--demo-accent-text":
-      contrastRatio(brand.accent, "#151620") >= 4.5 ? "#151620" : "#ffffff",
+    "--demo-accent-text": tokens["--button-text"],
   } as CSSProperties;
   return (
     <section className="brand-preview" aria-label="Предпросмотр оформления">
@@ -326,6 +323,7 @@ export function BrandPreview({ brand: source }: { brand: Brand }) {
       </div>
       <div
         className="brand-demo"
+        data-theme={isLightBrand(brand) ? "light" : "dark"}
         style={style}
         id={`${id}-panel`}
         role="tabpanel"
@@ -699,7 +697,7 @@ export function BrandEditor({
       <EditorSection
         number="03 / Цвет"
         title="Выберите настроение"
-        description="Начните с готовой палитры или задайте свои цвета. Результат сразу виден в предпросмотре."
+        description="Для светлого зала и проектора выберите «Проектор»: белый фон, тёмный текст и чёткие границы. Любую палитру можно настроить под себя."
         icon={<Palette size={21} />}
       >
         <div className="brand-palettes">

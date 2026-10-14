@@ -16,6 +16,11 @@ const schema =
 if (!/^e2e_[a-f0-9]{32}$/.test(schema))
   throw new Error("Invalid E2E database schema.");
 process.env.E2E_DATABASE_SCHEMA = schema;
+// Browser checks use their own server alongside the development application.
+const testPort = process.env.E2E_PORT ?? "4173";
+if (!/^\d+$/.test(testPort) || Number(testPort) < 1 || Number(testPort) > 65535)
+  throw new Error("E2E_PORT must be a TCP port number.");
+const testOrigin = `http://127.0.0.1:${testPort}`;
 
 // A new schema belongs to this test run only. Production tables are never
 // truncated. The server wrapper removes its schema when Playwright shuts down.
@@ -29,7 +34,7 @@ const child = spawn(process.execPath, ['dist/server/index.js'], {
   stdio: 'inherit',
   env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL_TEST,
     PGOPTIONS: '-c search_path=' + schema,
-    APP_ORIGIN: 'http://127.0.0.1:3000', PORT: '3000', HOST: '127.0.0.1', NODE_ENV: 'test' }
+    APP_ORIGIN: process.env.E2E_ORIGIN, PORT: process.env.E2E_PORT, HOST: '127.0.0.1', NODE_ENV: 'test' }
 });
 let stopping = false;
 async function finish(code) {
@@ -59,7 +64,7 @@ export default defineConfig({
   expect: { timeout: 12_000 },
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: testOrigin,
     actionTimeout: 15_000,
     navigationTimeout: 20_000,
     // Setup uses an ephemeral grant and a password. Do not retain browser
@@ -72,9 +77,14 @@ export default defineConfig({
   },
   webServer: {
     command: `node --input-type=module -e '${startServer.replaceAll("'", "'\\''")}'`,
-    url: "http://127.0.0.1:3000/health",
+    url: `${testOrigin}/health`,
     reuseExistingServer: false,
     timeout: 45_000,
-    env: { DATABASE_URL_TEST: databaseUrl, E2E_DATABASE_SCHEMA: schema },
+    env: {
+      DATABASE_URL_TEST: databaseUrl,
+      E2E_DATABASE_SCHEMA: schema,
+      E2E_PORT: testPort,
+      E2E_ORIGIN: testOrigin,
+    },
   },
 });

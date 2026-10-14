@@ -14,6 +14,7 @@ import {
   type Me,
   type SiteInfo,
 } from "../shared/types";
+import { isLightBrand, themeTokens } from "./theme";
 
 export class ApiError extends Error {
   constructor(
@@ -48,10 +49,8 @@ export async function api<T>(
 }
 export function brandStyle(brand: Brand): CSSProperties {
   return {
-    "--primary": brand.primary,
-    "--accent": brand.accent,
-    "--bg": brand.background,
-    "--text": brand.textColor,
+    ...themeTokens(brand),
+    colorScheme: isLightBrand(brand) ? "light" : "dark",
   } as CSSProperties;
 }
 const SiteContext = createContext<{
@@ -87,6 +86,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const brand = site?.brand ?? defaultBrand;
     document.title = [brand.title, brand.organizer].filter(Boolean).join(" · ");
+    document.documentElement.style.backgroundColor = brand.background;
+    document.documentElement.style.colorScheme = isLightBrand(brand)
+      ? "light"
+      : "dark";
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (brand.faviconUrl) {
       if (!favicon) {
@@ -100,7 +103,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <SiteContext.Provider value={{ site, refresh: refreshSite }}>
       <MeContext.Provider value={{ me, refresh: refreshMe }}>
-        <div className="app" style={brandStyle(site?.brand ?? defaultBrand)}>
+        <div
+          className="app"
+          data-theme={
+            isLightBrand(site?.brand ?? defaultBrand) ? "light" : "dark"
+          }
+          style={brandStyle(site?.brand ?? defaultBrand)}
+        >
           {error && (
             <div className="service-alert" role="alert">
               {error}{" "}
@@ -153,8 +162,14 @@ export function useLiveGame<T extends { revision: number }>(
         setError("");
       }
     } catch (e) {
-      if (valid())
+      if (valid()) {
+        if (e instanceof ApiError && [401, 403, 404].includes(e.status)) {
+          setGame(null);
+          if (view === "team" && e.status === 403)
+            window.dispatchEvent(new Event("ctok-auth-expired"));
+        }
         setError(e instanceof Error ? e.message : "Ошибка соединения");
+      }
     } finally {
       if (valid()) setLoading(false);
     }

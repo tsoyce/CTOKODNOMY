@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Sun,
   Trophy,
   Undo2,
   Users,
@@ -44,6 +45,8 @@ import type {
 import { api, ApiError, brandStyle, useLiveGame } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
 import { useGameSound } from "../components/BoardSound";
+import { RoundStatistics } from "../components/Statistics";
+import { isLightBrand, projectorPalette } from "../theme";
 import "./Game.css";
 
 const phases = {
@@ -185,6 +188,25 @@ export function BoardPage() {
     "public",
   );
   const [fullscreenError, setFullscreenError] = useState("");
+  const [projector, setProjector] = useState(false);
+  useEffect(() => {
+    try {
+      setProjector(
+        localStorage.getItem(`ctokodnomy:projector:${gameId}`) === "1",
+      );
+    } catch {
+      setProjector(false);
+    }
+  }, [gameId]);
+  function toggleProjector() {
+    const next = !projector;
+    setProjector(next);
+    try {
+      localStorage.setItem(`ctokodnomy:projector:${gameId}`, next ? "1" : "0");
+    } catch {
+      /* The contrast control also works without browser storage. */
+    }
+  }
   const sound = useGameSound(game, connected, error);
   if (loading) return <Loading />;
   if (!game) return <GameUnavailable error={error} refresh={refresh} />;
@@ -205,10 +227,15 @@ export function BoardPage() {
   );
   const tied =
     standings.length > 1 && standings[0].score === standings[1].score;
+  const displayBrand = projector
+    ? { ...game.brand, ...projectorPalette }
+    : game.brand;
   return (
     <main
       className={`board-page phase-${game.phase}`}
-      style={brandStyle(game.brand)}
+      style={brandStyle(displayBrand)}
+      data-theme={isLightBrand(displayBrand) ? "light" : "dark"}
+      data-projector={projector ? "true" : undefined}
     >
       <header className="board-header">
         <Link className="board-brand" to="/">
@@ -223,6 +250,15 @@ export function BoardPage() {
         </Link>
         <div className="board-header-actions">
           <Connection connected={connected} error={error} refresh={refresh} />
+          <button
+            type="button"
+            className="projector-toggle"
+            aria-pressed={projector}
+            onClick={toggleProjector}
+            title="Светлый фон, чёрный текст и чёткие границы для проектора"
+          >
+            <Sun size={18} /> Для проектора
+          </button>
           <button
             className="icon-button"
             disabled={sound.busy}
@@ -321,68 +357,90 @@ export function BoardPage() {
             <Link className="button secondary" to="/">
               К другим играм <ArrowRight size={18} />
             </Link>
+            {game.resultsAvailable && (
+              <Link className="button primary" to={`/results/${game.id}`}>
+                Ответы и итоги <ArrowRight size={18} />
+              </Link>
+            )}
           </section>
         ) : (
           <>
             <RoundMeta game={game} />
             <h1 className="board-question">{game.prompt}</h1>
-            <div className="board-answer-grid">
-              {game.answers.map((answer) => (
-                <div
-                  key={answer.position}
-                  className={`board-answer ${answer.opened ? "opened" : "closed"}`}
-                  aria-label={
-                    answer.opened
-                      ? `${answer.position}. ${answer.text}: ${answer.points} очков`
-                      : `Ответ ${answer.position} скрыт`
-                  }
-                >
-                  <span className="board-answer-number">
-                    {String(answer.position).padStart(2, "0")}
-                  </span>
-                  <span className="board-answer-text">
-                    {answer.opened ? (
-                      answer.text
-                    ) : (
-                      <span className="hidden-answer-label">
-                        {answer.position}
-                      </span>
-                    )}
-                  </span>
-                  {answer.opened && (
-                    <strong className="board-answer-points">
-                      {answer.points}
-                    </strong>
-                  )}
+            {game.phase === "round-result" && game.roundStats ? (
+              <div className="board-round-statistics">
+                <div className="board-round-complete" role="status">
+                  <Check size={22} /> Раунд завершён. Смотрим все ответы!
                 </div>
-              ))}
-            </div>
-            <div className="board-round-status">
-              <div className="round-bank">
-                <span>
-                  {game.phase === "round-result" ? "Банк раунда" : "В банке"}
-                </span>
-                <strong>{game.bank}</strong>
+                <RoundStatistics
+                  round={game.roundStats}
+                  teams={game.teams}
+                  compact
+                />
               </div>
-              <Strikes count={game.strikes} />
-              <div className="round-turn">
-                <span>
-                  {game.phase === "steal"
-                    ? "Шанс на перехват"
-                    : game.phase === "round-result"
-                      ? "Банк получает"
-                      : "Ход команды"}
-                </span>
-                <strong>{activeTeam?.name ?? "Решает ведущий"}</strong>
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="board-answer-grid">
+                  {game.answers.map((answer) => (
+                    <div
+                      key={answer.position}
+                      className={`board-answer ${answer.opened ? "opened" : "closed"}`}
+                      aria-label={
+                        answer.opened
+                          ? `${answer.position}. ${answer.text}: ${answer.points} очков`
+                          : `Ответ ${answer.position} скрыт`
+                      }
+                    >
+                      <span className="board-answer-number">
+                        {String(answer.position).padStart(2, "0")}
+                      </span>
+                      <span className="board-answer-text">
+                        {answer.opened ? (
+                          answer.text
+                        ) : (
+                          <span className="hidden-answer-label">
+                            {answer.position}
+                          </span>
+                        )}
+                      </span>
+                      {answer.opened && (
+                        <strong className="board-answer-points">
+                          {answer.points}
+                        </strong>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="board-round-status">
+                  <div className="round-bank">
+                    <span>
+                      {game.phase === "round-result"
+                        ? "Банк раунда"
+                        : "В банке"}
+                    </span>
+                    <strong>{game.bank}</strong>
+                  </div>
+                  <Strikes count={game.strikes} />
+                  <div className="round-turn">
+                    <span>
+                      {game.phase === "steal"
+                        ? "Шанс на перехват"
+                        : game.phase === "round-result"
+                          ? "Банк получает"
+                          : "Ход команды"}
+                    </span>
+                    <strong>{activeTeam?.name ?? "Решает ведущий"}</strong>
+                  </div>
+                </div>
+              </>
+            )}
             <TeamScores
               teams={game.teams}
               activeTeamId={
                 game.phase === "round-result" ? null : game.activeTeamId
               }
             />
-            {game.phase === "round-result" && (
+            {game.phase === "round-result" && !game.roundStats && (
               <div className="board-round-complete">
                 <Check size={19} /> Раунд завершён. Готовимся к следующему!
               </div>
@@ -548,7 +606,11 @@ export function TeamPage() {
               : "Сейчас ваш ход"
             : `Отвечает ${activeTeam?.name ?? "другая команда"}`;
   return (
-    <main className="team-page" style={brandStyle(game.brand)}>
+    <main
+      className="team-page"
+      style={brandStyle(game.brand)}
+      data-theme={isLightBrand(game.brand) ? "light" : "dark"}
+    >
       <header className="team-header container">
         <Link className="text-link" to="/">
           <ArrowLeft size={17} />
@@ -617,8 +679,16 @@ export function TeamPage() {
                 командную работу.
               </p>
               <TeamScores teams={game.teams} activeTeamId={null} compact />
-              <Link className="button secondary" to={`/board/${game.id}`}>
-                Посмотреть итоги <Trophy size={17} />
+              <Link
+                className="button primary"
+                to={
+                  game.resultsAvailable
+                    ? `/results/${game.id}`
+                    : `/board/${game.id}`
+                }
+              >
+                {game.resultsAvailable ? "Ответы и итоги" : "Посмотреть табло"}{" "}
+                <Trophy size={17} />
               </Link>
             </>
           ) : (
@@ -644,12 +714,24 @@ export function TeamPage() {
                         ? "Посмотрите предложения команды и отправьте один итоговый ответ."
                         : "Напишите идею — капитан увидит её в списке предложений."}
               </p>
+              {game.phase === "round-result" && game.roundStats && (
+                <details className="team-round-statistics" open>
+                  <summary>Все ответы на этот вопрос</summary>
+                  <RoundStatistics
+                    round={game.roundStats}
+                    teams={game.teams}
+                    compact
+                  />
+                </details>
+              )}
             </>
           )}
         </section>
-        {game.phase !== "finished" && (
-          <div className="team-room-grid">
-            <section className="card">
+        {game.phase !== "finished" && game.phase !== "round-result" && (
+          <div
+            className={`team-room-grid ${isCaptain || game.pendingAnswer ? "with-captain" : "member-room"}`}
+          >
+            <section className="card team-ideas">
               <div className="section-title small">
                 <h2>Идеи команды</h2>
                 <span className="badge">{game.suggestions.length}</span>
@@ -718,15 +800,15 @@ export function TeamPage() {
               )}
             </section>
             <div className="stack">
-              {isCaptain && (
+              {isCaptain && !game.pendingAnswer && (
                 <section className="card captain-panel">
                   <div className="captain-panel-title">
                     <Crown size={22} />
                     <h2>Ваш общий ответ</h2>
                   </div>
                   <p className="muted">
-                    Выберите идею из списка или введите свой вариант.
-                    Отправленный ответ оценивает ведущий.
+                    Один ответ от команды. Выберите идею из списка или напишите
+                    свою.
                   </p>
                   <form
                     className="stack"
@@ -772,29 +854,30 @@ export function TeamPage() {
                   </p>
                 </section>
               )}
-              <section className="card team-roster">
-                <h2>
-                  <Users size={19} /> Ваша команда
-                </h2>
-                <ul>
-                  {game.players.map((player) => (
-                    <li key={player.id}>
-                      <span>
-                        {player.name}
-                        {player.id === game.self.id && <small>вы</small>}
-                      </span>
-                      {player.role === "captain" && (
-                        <span className="badge captain">
-                          <Crown size={13} /> Капитан
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </section>
             </div>
           </div>
         )}
+        <details className="card team-roster">
+          <summary>
+            <Users size={19} /> Ваша команда{" "}
+            <span className="badge">{game.players.length}</span>
+          </summary>
+          <ul>
+            {game.players.map((player) => (
+              <li key={player.id}>
+                <span>
+                  {player.name}
+                  {player.id === game.self.id && <small>вы</small>}
+                </span>
+                {player.role === "captain" && (
+                  <span className="badge captain">
+                    <Crown size={13} /> Капитан
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
         <footer className="team-footer">
           {game.brand.footerText && <span>{game.brand.footerText}</span>}
           <Link to="/help">Правила и помощь</Link>
@@ -1028,6 +1111,52 @@ export function HostPage() {
       setBusy(false);
     }
   }
+  async function publishResults() {
+    if (!game) return;
+    setBusy(true);
+    setCommandError("");
+    setNotice("");
+    try {
+      await api<HostGame>(`/games/${game.id}/results/publication`, {
+        method: "POST",
+        body: JSON.stringify({
+          published: !game.resultsPublished,
+          revision: game.revision,
+        }),
+      });
+      await refresh();
+      setNotice(
+        game.resultsPublished
+          ? "Итоги скрыты. Общая ссылка больше не открывается для гостей."
+          : "Итоги опубликованы. Поделитесь ссылкой с игроками и гостями.",
+      );
+    } catch (err) {
+      await refresh();
+      setCommandError(
+        err instanceof ApiError && err.status === 409
+          ? "Игра уже обновилась. Проверьте состояние итогов и повторите действие."
+          : err instanceof Error
+            ? err.message
+            : "Не удалось изменить публикацию итогов.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function copyResultsLink() {
+    if (!game) return;
+    try {
+      await navigator.clipboard.writeText(
+        `${location.origin}/results/${game.id}`,
+      );
+      setNotice("Ссылка на итоги скопирована.");
+      setCommandError("");
+    } catch {
+      setCommandError(
+        "Не удалось скопировать ссылку. Откройте итоги и скопируйте адрес из строки браузера.",
+      );
+    }
+  }
   function adjust(event: FormEvent) {
     event.preventDefault();
     const value = Number(delta);
@@ -1053,7 +1182,11 @@ export function HostPage() {
             ? `Передать ход команде «${game.teams.find((team) => team.id === confirmation.teamId)?.name}»? Ошибки сбросятся, банк сохранится.`
             : "";
   return (
-    <main className="host-page" style={brandStyle(game.brand)}>
+    <main
+      className="host-page"
+      style={brandStyle(game.brand)}
+      data-theme={isLightBrand(game.brand) ? "light" : "dark"}
+    >
       <div className="container host-container">
         <header className="host-header">
           <div>
@@ -1099,13 +1232,153 @@ export function HostPage() {
           </span>
           <Strikes count={game.strikes} />
         </div>
+        {(game.phase === "lobby" || game.phase === "round-result") && (
+          <section className="card host-start-panel">
+            <div>
+              <p className="eyebrow">
+                {game.phase === "lobby"
+                  ? "Всё готово к игре"
+                  : "Раунд завершён"}
+              </p>
+              <h2>
+                {game.phase === "lobby"
+                  ? "Кто отвечает первым?"
+                  : game.questionIndex + 1 >= game.questions.length
+                    ? "Пора подвести итоги"
+                    : "Готовы к следующему вопросу?"}
+              </h2>
+              <p className="muted">
+                {game.phase === "lobby"
+                  ? "Выберите команду. Первый вопрос появится на табло после старта."
+                  : game.questionIndex + 1 >= game.questions.length
+                    ? "Все раунды сыграны. Завершите игру, чтобы открыть страницу результатов."
+                    : "Ответы и статистика остаются на табло, пока вы не продолжите игру."}
+              </p>
+            </div>
+            <div className="host-start-actions">
+              {(game.phase === "lobby" ||
+                game.questionIndex + 1 < game.questions.length) && (
+                <label className="field">
+                  Первой отвечает
+                  <select
+                    value={firstTeamId}
+                    onChange={(event) => setFirstTeamId(event.target.value)}
+                  >
+                    {game.teams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <button
+                className="button primary"
+                disabled={disabled || game.paused || !firstTeamId}
+                onClick={() =>
+                  void command(
+                    game.phase === "lobby"
+                      ? { type: "start", teamId: firstTeamId }
+                      : { type: "next", teamId: firstTeamId },
+                  )
+                }
+              >
+                <Play size={18} />
+                {game.phase === "lobby"
+                  ? "Начать игру"
+                  : game.questionIndex + 1 >= game.questions.length
+                    ? "Завершить по итогам раундов"
+                    : "Следующий раунд"}
+              </button>
+            </div>
+          </section>
+        )}
         <TeamScores
           teams={game.teams}
           activeTeamId={game.activeTeamId}
           compact
         />
+        {game.phase === "finished" && (
+          <section className="card host-results-panel">
+            <div>
+              <p className="eyebrow">Ответы, команды и результаты</p>
+              <h2>
+                {game.resultsPublished
+                  ? "Итоги доступны всем"
+                  : "Поделитесь итогами игры"}
+              </h2>
+              <p className="muted">
+                {game.resultsPublished
+                  ? "Игроки и гости могут открыть общую страницу с ответами и инфографикой."
+                  : "Посмотрите страницу результатов. Когда всё готово, откройте её для игроков и гостей."}
+              </p>
+            </div>
+            <div className="host-results-actions">
+              <Link className="button secondary" to={`/results/${game.id}`}>
+                <Trophy size={18} /> Посмотреть итоги
+              </Link>
+              <button
+                className={`button ${game.resultsPublished ? "secondary" : "primary"}`}
+                disabled={disabled}
+                onClick={() => void publishResults()}
+              >
+                {game.resultsPublished ? "Скрыть итоги" : "Опубликовать итоги"}
+              </button>
+              {game.resultsPublished && (
+                <button
+                  className="button ghost"
+                  onClick={() => void copyResultsLink()}
+                >
+                  <Copy size={17} /> Скопировать ссылку
+                </button>
+              )}
+            </div>
+          </section>
+        )}
         <div className="host-grid">
-          <div className="stack">
+          <div className="stack host-main">
+            <section
+              className={`card host-answer-decision ${game.pendingAnswer ? "has-pending" : ""}`}
+            >
+              <div className="section-title small">
+                <h2>Ответ капитана</h2>
+                <span className="badge">
+                  {game.pendingAnswer ? "Нужна оценка" : "Ожидание"}
+                </span>
+              </div>
+              {game.pendingAnswer ? (
+                <div className="host-pending">
+                  <p>
+                    {
+                      game.teams.find(
+                        (team) => team.id === game.pendingAnswer!.teamId,
+                      )?.name
+                    }{" "}
+                    · {game.pendingAnswer.authorName}
+                  </p>
+                  <h3>{game.pendingAnswer.text}</h3>
+                  <p className="muted">
+                    Откройте совпавший ответ в списке ниже или отметьте ошибку.
+                    Решение очистит текущие предложения.
+                  </p>
+                </div>
+              ) : (
+                <p className="muted">
+                  Капитан может отправить ответ с телефона. При устной игре
+                  принимайте решение кнопками пульта.
+                </p>
+              )}
+              <button
+                className="button danger"
+                disabled={disabled || !roundLive}
+                onClick={() => void command({ type: "strike" })}
+              >
+                <X size={18} />
+                {game.phase === "steal"
+                  ? "Перехват не удался"
+                  : "Отметить ошибку"}
+              </button>
+            </section>
             <section className="card host-question">
               <div className="section-title small">
                 <p className="eyebrow">Вопрос и ответы · Только ведущему</p>
@@ -1169,48 +1442,11 @@ export function HostPage() {
                 </p>
               )}
             </section>
-            <section className="card">
-              <div className="section-title small">
-                <h2>Ответ капитана</h2>
-                <span className="badge">
-                  {game.pendingAnswer ? "Нужна оценка" : "Ожидание"}
-                </span>
-              </div>
-              {game.pendingAnswer ? (
-                <div className="host-pending">
-                  <p>
-                    {
-                      game.teams.find(
-                        (team) => team.id === game.pendingAnswer!.teamId,
-                      )?.name
-                    }{" "}
-                    · {game.pendingAnswer.authorName}
-                  </p>
-                  <h3>{game.pendingAnswer.text}</h3>
-                  <p className="muted">
-                    Откройте совпавший ответ выше или отметьте ошибку. Решение
-                    очистит текущие предложения.
-                  </p>
-                </div>
-              ) : (
-                <p className="muted">
-                  Капитан может отправить ответ с телефона. При устной игре
-                  принимайте решение кнопками пульта.
-                </p>
-              )}
-              <button
-                className="button danger"
-                disabled={disabled || !roundLive}
-                onClick={() => void command({ type: "strike" })}
-              >
-                <X size={18} />
-                {game.phase === "steal"
-                  ? "Перехват не удался"
-                  : "Отметить ошибку"}
-              </button>
-            </section>
-            <section className="card">
-              <h2>Предложения команд</h2>
+            <details className="card host-ideas">
+              <summary>
+                Предложения команд{" "}
+                <span className="badge">{game.suggestions.length}</span>
+              </summary>
               {game.suggestions.length ? (
                 <ul className="suggestion-list host-suggestions">
                   {[...game.suggestions].reverse().map((suggestion) => (
@@ -1234,45 +1470,29 @@ export function HostPage() {
                   Предложения появятся здесь во время хода команды.
                 </p>
               )}
-            </section>
+            </details>
           </div>
           <aside className="stack host-controls">
-            <section className="card">
+            <section className="card host-round-controls">
               <h2>Управление раундом</h2>
+              <p className="host-current-step">
+                {game.phase === "lobby"
+                  ? "Выберите команду — и можно начинать."
+                  : game.phase === "round-result"
+                    ? game.questionIndex + 1 >= game.questions.length
+                      ? "Все раунды сыграны. Перейдите к итогам."
+                      : "Все ответы открыты на табло. Начните следующий раунд, когда готовы."
+                    : game.phase === "finished"
+                      ? "Спасибо за игру!"
+                      : game.paused
+                        ? "Продолжите игру, чтобы принимать ответы."
+                        : "Откройте совпавший ответ или отметьте ошибку."}
+              </p>
               {game.phase === "lobby" || game.phase === "round-result" ? (
-                <div className="stack">
-                  <label className="field">
-                    Первой отвечает
-                    <select
-                      value={firstTeamId}
-                      onChange={(event) => setFirstTeamId(event.target.value)}
-                    >
-                      {game.teams.map((team) => (
-                        <option key={team.id} value={team.id}>
-                          {team.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    className="button primary"
-                    disabled={disabled || game.paused || !firstTeamId}
-                    onClick={() =>
-                      void command(
-                        game.phase === "lobby"
-                          ? { type: "start", teamId: firstTeamId }
-                          : { type: "next", teamId: firstTeamId },
-                      )
-                    }
-                  >
-                    <Play size={17} />
-                    {game.phase === "lobby"
-                      ? "Начать игру"
-                      : game.questionIndex + 1 >= game.questions.length
-                        ? "Завершить по итогам раундов"
-                        : "Следующий раунд"}
-                  </button>
-                </div>
+                <p className="form-hint">
+                  Кнопка продолжения — над вопросом. Сначала можно обсудить
+                  ответы с гостями.
+                </p>
               ) : game.phase === "finished" ? (
                 <div className="notice">
                   <Trophy size={23} />
@@ -1280,10 +1500,6 @@ export function HostPage() {
                 </div>
               ) : (
                 <div className="stack">
-                  <p className="form-hint">
-                    Для устной игры можно передать ход или вручную присудить
-                    банк.
-                  </p>
                   {game.teams.map((team) => (
                     <div className="host-team-actions" key={team.id}>
                       <strong>{team.name}</strong>

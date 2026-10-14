@@ -32,9 +32,44 @@ try {
     ),
     false,
   );
+  const game = site.games[0];
+  if (game) {
+    await page.goto(`${url.origin}/board/${encodeURIComponent(game.id)}`, {
+      waitUntil: "networkidle",
+      timeout: 30000,
+    });
+    await page.waitForSelector(".board-page");
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const projector = page.getByRole("button", { name: "Для проектора" });
+    if ((await projector.getAttribute("aria-pressed")) !== "true")
+      await projector.click();
+    assert.equal(
+      await page.locator(".board-page").getAttribute("data-projector"),
+      "true",
+    );
+    assert.equal(
+      await page.locator(".board-page").evaluate(
+        (element) => getComputedStyle(element).getPropertyValue("--bg").trim(),
+      ),
+      "#ffffff",
+    );
+    const results = await page.request.get(
+      `${url.origin}/api/games/${encodeURIComponent(game.id)}/results`,
+    );
+    assert.equal(results.status(), game.resultsAvailable ? 200 : 404);
+    await page.goto(`${url.origin}/results/${encodeURIComponent(game.id)}`, {
+      waitUntil: "networkidle",
+      timeout: 30000,
+    });
+    await page.waitForSelector(
+      game.resultsAvailable ? ".results-page" : ".results-unavailable",
+    );
+    if (!game.resultsAvailable)
+      assert.equal(await page.locator(".round-statistics").count(), 0);
+  }
   assert.deepEqual(errors, []);
   console.log(
-    "::notice title=Live browser verification::Public HTTPS, React rendering, first setup and mobile layout verified without skipping certificate verification.",
+    "::notice title=Live browser verification::Public HTTPS, React rendering, mobile layout and available game/projector/results pages verified without skipping certificate verification.",
   );
 } finally {
   await browser.close();

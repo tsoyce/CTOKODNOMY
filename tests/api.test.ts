@@ -189,6 +189,21 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       participant: response.json<{ participant: Participant }>().participant,
     };
   }
+  async function hostCommand(
+    state: HostGame,
+    cookie: string,
+    command: HostCommand,
+    requestId = randomUUID(),
+  ) {
+    const response = await call(
+      "POST",
+      `/games/${state.id}/commands`,
+      { command, revision: state.revision, requestId },
+      cookie,
+    );
+    expect(response.statusCode, response.body).toBe(200);
+    return response.json<HostGame>();
+  }
 
   test("first-run grants expire, cannot be replayed, and credentials stay hashed and revocable", async () => {
     expect((await call("GET", "/site")).json().initialized).toBe(false);
@@ -430,7 +445,7 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     expect(game.brand).toEqual(expected);
     const snapshot = { ...legacy, title: "Сохранённое оформление игры" };
     await pool.query(
-      "UPDATE games SET state=jsonb_set(state,'{brand}',$2::jsonb) WHERE id=$1",
+      "UPDATE games SET state=jsonb_set(state - 'roundResults' - 'resultsPublished','{brand}',$2::jsonb) WHERE id=$1",
       [game.id, JSON.stringify(snapshot)],
     );
     const expectedSnapshot = { ...defaultBrand, ...snapshot };
@@ -441,12 +456,28 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       (await call("GET", `/games/${game.id}/host`, undefined, cookie)).json()
         .brand,
     ).toEqual(expectedSnapshot);
+    const legacyGame = (
+      await call("GET", `/games/${game.id}/host`, undefined, cookie)
+    ).json<HostGame>();
+    expect(legacyGame.roundResults).toEqual([]);
+    expect(legacyGame.resultsPublished).toBe(false);
+    expect((await call("GET", "/site")).json().games[0].resultsAvailable).toBe(
+      false,
+    );
+    expect(
+      (await pool.query("SELECT state FROM games WHERE id=$1", [game.id]))
+        .rows[0].state,
+    ).not.toHaveProperty("roundResults");
     const member = await join(game.teams[0]!.joinCode, "Игрок");
     expect(
       (
         await call("GET", `/games/${game.id}/team`, undefined, member.cookie)
       ).json().brand,
     ).toEqual(expectedSnapshot);
+    expect(
+      (await pool.query("SELECT state FROM games WHERE id=$1", [game.id]))
+        .rows[0].state.roundResults,
+    ).toEqual([]);
     expect((await call("PUT", "/settings", legacy, cookie)).json()).toEqual(
       expected,
     );
@@ -674,6 +705,427 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
             }),
         ),
       );
+    }
+  });
+
+  test("completed round statistics reveal survey answers without future questions; publication is explicit and revocable", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const publication = `/games/${game.id}/results/publication`;
+    const results = `/games/${game.id}/results`;
+    expect((await call("GET", results)).statusCode).toBe(404);
+    expect((await call("GET", results, undefined, cookie)).statusCode).toBe(
+      404,
+    );
+    expect(
+      (await call("POST", publication, { published: true, revision: 0 }))
+        .statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await call(
+          "POST",
+          publication,
+          { published: true, revision: 0 },
+          cookie,
+        )
+      ).statusCode,
+    ).toBe(409);
+    let state = await hostCommand(game, cookie, {
+      type: "start",
+      teamId: game.teams[0]!.id,
+    });
+    state = await hostCommand(state, cookie, {
+      type: "reveal",
+      answerId: questions[0]!.answers[0]!.id,
+    });
+    expect(
+      (await call("GET", `/games/${game.id}/public`)).json().roundStats,
+    ).toBeNull();
+    state = await hostCommand(state, cookie, {
+      type: "award",
+      teamId: game.teams[0]!.id,
+    });
+    const round = await call("GET", `/games/${game.id}/public`);
+    expect(round.json().roundStats).toBeTruthy();
+    expect(round.body).toContain(questions[0]!.answers[1]!.text);
+    for (const hidden of [
+      questions[1]!.prompt,
+      questions[1]!.answers[0]!.text,
+      "private-organizer-notes",
+      "private-alias",
+      game.teams[0]!.joinCode,
+    ])
+      expect(round.body).not.toContain(hidden);
+    state = await hostCommand(state, cookie, { type: "finish" });
+    expect(state.resultsPublished).toBe(false);
+    expect((await call("GET", results)).statusCode).toBe(404);
+    const preview = await call("GET", results, undefined, cookie);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain(questions[0]!.answers[0]!.text);
+    expect(preview.body).toContain(questions[0]!.answers[1]!.text);
+    for (const hidden of [
+      questions[1]!.prompt,
+      questions[1]!.answers[0]!.text,
+      "private-organizer-notes",
+      "private-alias",
+      game.teams[0]!.joinCode,
+      "password",
+    ])
+      expect(preview.body).not.toContain(hidden);
+    expect((await call("GET", "/site")).json().games[0].resultsAvailable).toBe(
+      false,
+    );
+    expect(
+      (
+        await call(
+          "POST",
+          publication,
+          { published: true, revision: state.revision },
+          cookie,
+          "https://unrelated.example",
+        )
+      ).statusCode,
+    ).toBe(403);
+    const published = await call(
+      "POST",
+      publication,
+      { published: true, revision: state.revision },
+      cookie,
+    );
+    expect(published.statusCode).toBe(200);
+    expect(published.json().revision).toBe(state.revision + 1);
+    state = published.json<HostGame>();
+    expect((await call("GET", results)).json()).toEqual({
+      ...preview.json(),
+      published: true,
+      revision: state.revision,
+    });
+    expect(
+      (await call("GET", `/games/${game.id}/public`)).json().resultsAvailable,
+    ).toBe(true);
+    expect((await call("GET", "/site")).json().games[0].resultsAvailable).toBe(
+      true,
+    );
+    const noChange = await call(
+      "POST",
+      publication,
+      { published: true, revision: state.revision },
+      cookie,
+    );
+    expect(noChange.statusCode).toBe(200);
+    expect(noChange.json().revision).toBe(state.revision);
+    expect(
+      (
+        await call(
+          "POST",
+          publication,
+          { published: false, revision: state.revision - 1 },
+          cookie,
+        )
+      ).statusCode,
+    ).toBe(409);
+    const unpublished = await call(
+      "POST",
+      publication,
+      { published: false, revision: state.revision },
+      cookie,
+    );
+    expect(unpublished.statusCode).toBe(200);
+    state = unpublished.json<HostGame>();
+    expect((await call("GET", results)).statusCode).toBe(404);
+    expect((await call("GET", results, undefined, cookie)).statusCode).toBe(
+      200,
+    );
+    const republished = await call(
+      "POST",
+      publication,
+      { published: true, revision: state.revision },
+      cookie,
+    );
+    state = republished.json<HostGame>();
+    state = await hostCommand(state, cookie, { type: "undo" });
+    expect(state.phase).toBe("round-result");
+    expect(state.resultsPublished).toBe(false);
+    expect((await call("GET", results)).statusCode).toBe(404);
+  });
+
+  test("reset is atomic and retry safe, revokes every player and old invite, and keeps question snapshots", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Участник");
+    const captain = await call(
+      "POST",
+      `/games/${game.id}/captain`,
+      { participantId: member.participant.id },
+      cookie,
+    );
+    const oldCommandId = randomUUID();
+    let state = await hostCommand(
+      captain.json<HostGame>(),
+      cookie,
+      {
+        type: "start",
+        teamId: game.teams[0]!.id,
+      },
+      oldCommandId,
+    );
+    state = await hostCommand(state, cookie, {
+      type: "reveal",
+      answerId: questions[0]!.answers[0]!.id,
+    });
+    state = await hostCommand(state, cookie, {
+      type: "award",
+      teamId: game.teams[0]!.id,
+    });
+    state = await hostCommand(state, cookie, { type: "finish" });
+    const published = await call(
+      "POST",
+      `/games/${game.id}/results/publication`,
+      { published: true, revision: state.revision },
+      cookie,
+    );
+    expect(published.statusCode).toBe(200);
+    state = published.json<HostGame>();
+    const brand = { ...defaultBrand, title: "Оформление новой попытки" };
+    await call("PUT", "/settings", brand, cookie);
+    await call(
+      "PUT",
+      `/questions/${questions[0]!.id}`,
+      { ...questions[0], prompt: "Обновлённая библиотека" },
+      cookie,
+    );
+    const reset = `/games/${game.id}/reset`;
+    const envelope = { revision: state.revision, requestId: randomUUID() };
+    expect((await call("POST", reset, envelope)).statusCode).toBe(401);
+    expect(
+      (await call("POST", reset, envelope, member.cookie)).statusCode,
+    ).toBe(401);
+    expect(
+      (await call("POST", reset, envelope, cookie, "https://unrelated.example"))
+        .statusCode,
+    ).toBe(403);
+    const reused = await call(
+      "POST",
+      reset,
+      { ...envelope, requestId: oldCommandId },
+      cookie,
+    );
+    expect(reused.statusCode).toBe(409);
+    expect(reused.json().code).toBe("REQUEST_ID");
+    const stale = await call(
+      "POST",
+      reset,
+      { ...envelope, revision: state.revision - 1 },
+      cookie,
+    );
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().code).toBe("REVISION");
+    const [response, simultaneousRetry] = await Promise.all([
+      call("POST", reset, envelope, cookie),
+      call("POST", reset, envelope, cookie),
+    ]);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(simultaneousRetry.statusCode, simultaneousRetry.body).toBe(200);
+    expect(simultaneousRetry.json()).toEqual(response.json());
+    const fresh = response.json<HostGame>();
+    expect(fresh.id).toBe(game.id);
+    expect(fresh.title).toBe(game.title);
+    expect(fresh.createdAt).toBe(game.createdAt);
+    expect(fresh.questions).toEqual(game.questions);
+    expect(fresh.rules).toEqual(game.rules);
+    expect(fresh.brand).toEqual(brand);
+    expect(fresh.revision).toBe(state.revision + 1);
+    expect(fresh.phase).toBe("lobby");
+    expect(fresh.questionIndex).toBe(0);
+    expect(fresh.paused).toBe(false);
+    expect(fresh.activeTeamId).toBeNull();
+    expect(fresh.originTeamId).toBeNull();
+    expect(fresh.bank).toBe(0);
+    expect(fresh.strikes).toBe(0);
+    expect(fresh.pendingAnswer).toBeNull();
+    expect(fresh.openedAnswerIds).toEqual([]);
+    expect(fresh.suggestions).toEqual([]);
+    expect(fresh.events).toEqual([]);
+    expect(fresh.history).toEqual([]);
+    expect(fresh.roundResults).toEqual([]);
+    expect(fresh.resultsPublished).toBe(false);
+    expect(fresh.players).toEqual([]);
+    fresh.teams.forEach((team, index) => {
+      expect(team.id).toBe(game.teams[index]!.id);
+      expect(team.name).toBe(game.teams[index]!.name);
+      expect(team.color).toBe(game.teams[index]!.color);
+      expect(team.score).toBe(0);
+      expect(team.joinOpen).toBe(true);
+      expect(game.teams.map((old) => old.joinCode)).not.toContain(
+        team.joinCode,
+      );
+    });
+    const replay = await call("POST", reset, envelope, cookie);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(fresh);
+    expect(
+      (
+        await pool.query(
+          "SELECT request_id FROM game_commands WHERE game_id=$1",
+          [game.id],
+        )
+      ).rows,
+    ).toEqual([{ request_id: envelope.requestId }]);
+    expect(
+      (await pool.query("SELECT count(*)::int AS count FROM participants"))
+        .rows[0].count,
+    ).toBe(0);
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM participant_sessions",
+        )
+      ).rows[0].count,
+    ).toBe(0);
+    expect(
+      (await call("GET", "/me", undefined, member.cookie)).json().participant,
+    ).toBeNull();
+    expect(
+      (await call("GET", `/games/${game.id}/team`, undefined, member.cookie))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await call(
+          "POST",
+          `/games/${game.id}/suggest`,
+          {
+            text: "Старый сеанс",
+            revision: fresh.revision,
+            requestId: randomUUID(),
+          },
+          member.cookie,
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await call("POST", "/join", {
+          code: game.teams[0]!.joinCode,
+          name: "Гость",
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect((await call("GET", `/games/${game.id}/results`)).statusCode).toBe(
+      404,
+    );
+    const library = (await call("GET", "/questions", undefined, cookie)).json<
+      Question[]
+    >();
+    expect(library).toHaveLength(2);
+    expect(library.find((item) => item.id === questions[0]!.id)?.prompt).toBe(
+      "Обновлённая библиотека",
+    );
+    await join(fresh.teams[0]!.joinCode, "Новая команда");
+  });
+
+  test("deleting a game checks its revision, invalidates sessions, cascades records and closes audience connections", async () => {
+    const cookie = await initialize();
+    const { game } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Участник");
+    const host = await call("GET", `/games/${game.id}/host`, undefined, cookie);
+    const state = await hostCommand(host.json<HostGame>(), cookie, {
+      type: "start",
+      teamId: game.teams[0]!.id,
+    });
+    const url = `/games/${game.id}`;
+    expect(
+      (await call("DELETE", url, { revision: state.revision })).statusCode,
+    ).toBe(401);
+    expect(
+      (await call("DELETE", url, { revision: state.revision }, member.cookie))
+        .statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await call(
+          "DELETE",
+          url,
+          { revision: state.revision },
+          cookie,
+          "https://unrelated.example",
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await call("DELETE", url, { revision: state.revision - 1 }, cookie))
+        .statusCode,
+    ).toBe(409);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string")
+      throw new Error("HTTP listener is unavailable");
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${address.port}/api/ws/games/${game.id}`,
+    );
+    const frames: unknown[] = [];
+    const initial = new Promise<void>((resolve) => {
+      socket.addEventListener("message", (event) => {
+        frames.push(JSON.parse(String(event.data)));
+        resolve();
+      });
+    });
+    const closed = new Promise<void>((resolve) =>
+      socket.addEventListener("close", () => resolve(), { once: true }),
+    );
+    try {
+      await initial;
+      const deleted = await call(
+        "DELETE",
+        url,
+        { revision: state.revision },
+        cookie,
+      );
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toEqual({ ok: true });
+      await closed;
+      expect(frames).toEqual([
+        { type: "changed", revision: state.revision },
+        { type: "changed", revision: state.revision + 1 },
+      ]);
+      for (const table of [
+        "games",
+        "participants",
+        "participant_sessions",
+        "game_commands",
+      ])
+        expect(
+          (await pool.query(`SELECT count(*)::int AS count FROM ${table}`))
+            .rows[0].count,
+        ).toBe(0);
+      expect(
+        (await pool.query("SELECT count(*)::int AS count FROM questions"))
+          .rows[0].count,
+      ).toBe(2);
+      expect(
+        (await call("GET", "/me", undefined, member.cookie)).json().participant,
+      ).toBeNull();
+      expect(
+        (await call("GET", `${url}/host`, undefined, cookie)).statusCode,
+      ).toBe(404);
+      expect((await call("GET", `${url}/public`)).statusCode).toBe(404);
+      expect((await call("GET", `${url}/results`)).statusCode).toBe(404);
+      expect((await call("GET", "/site")).json().games).toEqual([]);
+      expect(
+        (
+          await call("POST", "/join", {
+            code: game.teams[0]!.joinCode,
+            name: "Гость",
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (await call("DELETE", url, { revision: state.revision }, cookie))
+          .statusCode,
+      ).toBe(404);
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.close();
     }
   });
 

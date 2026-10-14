@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   applyCommand,
   createGame,
+  gameResults,
   GameRuleError,
+  normalizeGameState,
   publicView,
+  resetGame,
   teamView,
 } from "../server/game";
 import { defaultBrand } from "../shared/types";
@@ -563,3 +566,330 @@ describe("Представления для гостей и команд", () =>
     expect(() => teamView(game, outsider, [outsider])).toThrow(GameRuleError);
   });
 });
+
+describe("Статистика раундов и новая партия", () => {
+  it("показывает все ответы только после раунда и фиксирует начисление банка", () => {
+    const active = applyCommand(playing(), {
+      type: "reveal",
+      answerId: "q1-0",
+    });
+    expect(publicView(active).roundStats).toBeNull();
+    const ended = applyCommand(active, { type: "award", teamId: "b" });
+    const stats = publicView(ended).roundStats!;
+    expect(stats).toMatchObject({
+      questionId: "q1",
+      questionIndex: 0,
+      source: "Внутренний источник",
+      surveyDate: "2026-10-01",
+      respondentCount: 100,
+      totalPoints: 100,
+      multiplier: 1,
+      winnerTeamId: "b",
+      awardedPoints: 40,
+      strikes: 0,
+      completed: true,
+    });
+    expect(stats.answers).toEqual([
+      {
+        position: 1,
+        text: "Скрытый ответ q1-0",
+        points: 40,
+        opened: true,
+        share: 40,
+      },
+      {
+        position: 2,
+        text: "Скрытый ответ q1-1",
+        points: 35,
+        opened: false,
+        share: 35,
+      },
+      {
+        position: 3,
+        text: "Скрытый ответ q1-2",
+        points: 25,
+        opened: false,
+        share: 25,
+      },
+    ]);
+    expect(Number.isNaN(Date.parse(stats.completedAt))).toBe(false);
+    expect(ended.roundResults).toHaveLength(1);
+    expect(active.roundResults).toEqual([]);
+    const next = applyCommand(ended, { type: "next" });
+    expect(publicView(next).roundStats).toBeNull();
+    expect(next.roundResults).toEqual(ended.roundResults);
+  });
+
+  it("запоминает банк при перехвате отдельно от суммы весов ответов", () => {
+    const ended = applyCommand(steal({ stealAddsPoints: false }), {
+      type: "reveal",
+      answerId: "q1-1",
+    });
+    expect(publicView(ended).roundStats).toMatchObject({
+      totalPoints: 100,
+      awardedPoints: 40,
+      winnerTeamId: "b",
+      strikes: 3,
+    });
+    expect(
+      publicView(ended).roundStats!.answers.filter((answer) => answer.opened),
+    ).toHaveLength(2);
+  });
+
+  it("публикует в итогах только сыгранные вопросы без служебных полей", () => {
+    const finished = commands(
+      playing(),
+      { type: "reveal", answerId: "q1-0" },
+      { type: "award", teamId: "a" },
+      { type: "finish" },
+    );
+    finished.resultsPublished = true;
+    const results = gameResults(finished);
+    expect(results.published).toBe(true);
+    expect(publicView(finished).resultsAvailable).toBe(true);
+    expect(results.totalRounds).toBe(3);
+    expect(results.rounds).toHaveLength(1);
+    expect(results.rounds[0]!.answers).toHaveLength(3);
+    expect(results.teams[0]).not.toHaveProperty("joinCode");
+    for (const privateValue of [
+      "SECRET-A",
+      "SECRET-B",
+      "Секретная заметка",
+      "секретный синоним",
+      "Скрытый ответ q2-0",
+      "Скрытый ответ q3-0",
+    ])
+      expect(JSON.stringify(results)).not.toContain(privateValue);
+    results.rounds[0]!.answers[0]!.text = "Изменено";
+    results.brand.title = "Изменено";
+    expect(finished.questions[0]!.answers[0]!.text).toBe("Скрытый ответ q1-0");
+    expect(finished.brand.title).toBe(defaultBrand.title);
+    expect(() => gameResults(playing())).toThrow(/после завершения/);
+  });
+
+  it("отмечает прерванный раунд и не зачисляет банк; нулевые веса дают нулевые доли", () => {
+    const game = createGame({
+      title: "Нулевые веса",
+      brand: defaultBrand,
+      questions: [question("zero", [0, 0]), question("future", [50])],
+      teams: [
+        { id: "a", name: "А", color: "#000000" },
+        { id: "b", name: "Б", color: "#ffffff" },
+      ],
+    });
+    const finished = commands(
+      game,
+      { type: "start", teamId: "a" },
+      { type: "reveal", answerId: "zero-0" },
+      { type: "finish" },
+    );
+    const results = gameResults(finished);
+    expect(results.rounds).toHaveLength(1);
+    expect(results.rounds[0]).toMatchObject({
+      completed: false,
+      winnerTeamId: null,
+      awardedPoints: 0,
+      totalPoints: 0,
+    });
+    expect(results.rounds[0]!.answers.map((answer) => answer.share)).toEqual([
+      0, 0,
+    ]);
+    expect(results.teams.map((team) => team.score)).toEqual([0, 0]);
+    expect(publicView(finished).roundStats).toBeNull();
+    expect(JSON.stringify(results)).not.toContain("Скрытый ответ future");
+  });
+
+  it("не раскрывает первый вопрос при завершении игры прямо из лобби", () => {
+    const finished = applyCommand(makeGame(), { type: "finish" });
+    expect(gameResults(finished).rounds).toEqual([]);
+    expect(publicView(finished)).toMatchObject({
+      prompt: "",
+      answers: [],
+      roundStats: null,
+    });
+    expect(JSON.stringify(gameResults(finished))).not.toContain("Вопрос q1");
+  });
+
+  it("отмена изменения счёта не публикует скрытые итоги заново", () => {
+    const finished = applyCommand(playing(), { type: "finish" });
+    finished.resultsPublished = true;
+    const adjusted = applyCommand(finished, {
+      type: "adjust",
+      teamId: "a",
+      delta: 10,
+      reason: "Исправление",
+    });
+    adjusted.resultsPublished = false;
+    const undone = applyCommand(adjusted, { type: "undo" });
+    expect(undone.phase).toBe("finished");
+    expect(undone.teams[0]!.score).toBe(0);
+    expect(undone.resultsPublished).toBe(false);
+    expect(publicView(undone).resultsAvailable).toBe(false);
+  });
+
+  it("отмена убирает итог раунда и публикацию при возврате к игре", () => {
+    const ended = commands(
+      playing(),
+      { type: "reveal", answerId: "q1-0" },
+      { type: "award", teamId: "a" },
+    );
+    expect(ended.roundResults).toHaveLength(1);
+    const active = applyCommand(ended, { type: "undo" });
+    expect(active.roundResults).toEqual([]);
+    expect(publicView(active).roundStats).toBeNull();
+    const finished = applyCommand(active, { type: "finish" });
+    finished.resultsPublished = true;
+    const resumed = applyCommand(finished, { type: "undo" });
+    expect(resumed.phase).toBe("playing");
+    expect(resumed.roundResults).toEqual([]);
+    expect(resumed.resultsPublished).toBe(false);
+    expect(publicView(resumed).resultsAvailable).toBe(false);
+  });
+
+  it("восстанавливает старые раунды из истории без изменения сохранённого состояния", () => {
+    const state = commands(
+      playing(),
+      { type: "reveal", answerId: "q1-0" },
+      { type: "award", teamId: "b" },
+      { type: "next", teamId: "a" },
+    );
+    const old = legacy(state);
+    const normalized = normalizeGameState(old);
+    expect(normalized.roundResults).toHaveLength(1);
+    expect(normalized.roundResults[0]).toMatchObject({
+      questionIndex: 0,
+      winnerTeamId: "b",
+      awardedPoints: 40,
+      openedAnswerIds: ["q1-0"],
+      completed: true,
+    });
+    expect(normalized.resultsPublished).toBe(false);
+    expect(
+      normalized.history.every(
+        (item) =>
+          Array.isArray(item.roundResults) && item.resultsPublished === false,
+      ),
+    ).toBe(true);
+    expect(old).not.toHaveProperty("roundResults");
+    const beforeNext = applyCommand(old, { type: "undo" });
+    expect(beforeNext.phase).toBe("round-result");
+    expect(publicView(beforeNext).roundStats!.winnerTeamId).toBe("b");
+    const beforeAward = applyCommand(beforeNext, { type: "undo" });
+    expect(beforeAward.phase).toBe("playing");
+    expect(beforeAward.roundResults).toEqual([]);
+  });
+
+  it("при усечённой старой истории не выдумывает победителя, очки и открытые ответы", () => {
+    const old = legacy(
+      commands(playing(), { type: "award", teamId: "b" }, { type: "next" }),
+    );
+    old.history = [];
+    const normalized = normalizeGameState(old);
+    expect(normalized.roundResults).toEqual([
+      {
+        questionIndex: 0,
+        winnerTeamId: null,
+        awardedPoints: 0,
+        openedAnswerIds: [],
+        strikes: 0,
+        multiplier: 1,
+        completed: true,
+        completedAt: "",
+      },
+    ]);
+    expect(
+      normalizeGameState(legacy(applyCommand(makeGame(), { type: "finish" })))
+        .roundResults,
+    ).toEqual([]);
+  });
+
+  it("сохраняет восстановленный результат старой завершённой игры после исправлений счёта", () => {
+    const old = legacy(
+      commands(
+        playing(),
+        { type: "reveal", answerId: "q1-0" },
+        { type: "award", teamId: "b" },
+        { type: "finish" },
+        { type: "adjust", teamId: "a", delta: 5, reason: "Жюри" },
+      ),
+    );
+    expect(gameResults(old).rounds[0]).toMatchObject({
+      completed: true,
+      winnerTeamId: "b",
+      awardedPoints: 40,
+    });
+    expect(gameResults(old).teams.map((team) => team.score)).toEqual([5, 40]);
+  });
+
+  it("сбрасывает партию с новыми приглашениями и сохраняет подготовленные вопросы", () => {
+    const old = commands(
+      playing(),
+      suggestion(),
+      { type: "reveal", answerId: "q1-0" },
+      { type: "award", teamId: "b" },
+      { type: "finish" },
+    );
+    old.resultsPublished = true;
+    const before = structuredClone(old);
+    const brand = { ...defaultBrand, title: "Новый бренд" };
+    const reset = resetGame(old, brand);
+    expect(reset).toMatchObject({
+      id: old.id,
+      title: old.title,
+      createdAt: old.createdAt,
+      phase: "lobby",
+      paused: false,
+      questionIndex: 0,
+      bank: 0,
+      strikes: 0,
+      activeTeamId: null,
+      originTeamId: null,
+      revision: old.revision + 1,
+      openedAnswerIds: [],
+      pendingAnswer: null,
+      suggestions: [],
+      roundResults: [],
+      resultsPublished: false,
+      history: [],
+      events: [],
+    });
+    expect(reset.questions).toEqual(old.questions);
+    expect(reset.rules).toEqual(old.rules);
+    expect(reset.brand.title).toBe("Новый бренд");
+    expect(
+      reset.teams.map(({ id, name, color, score, joinOpen }) => ({
+        id,
+        name,
+        color,
+        score,
+        joinOpen,
+      })),
+    ).toEqual(
+      old.teams.map(({ id, name, color }) => ({
+        id,
+        name,
+        color,
+        score: 0,
+        joinOpen: true,
+      })),
+    );
+    const oldCodes = new Set(old.teams.map((team) => team.joinCode));
+    expect(reset.teams.every((team) => !oldCodes.has(team.joinCode))).toBe(
+      true,
+    );
+    expect(new Set(reset.teams.map((team) => team.joinCode)).size).toBe(2);
+    reset.questions[0]!.prompt = "Изменено";
+    brand.title = "Изменено";
+    expect(old).toEqual(before);
+    expect(reset.brand.title).toBe("Новый бренд");
+  });
+});
+
+function legacy(state: GameState): GameState {
+  const old = structuredClone(state);
+  for (const item of [old, ...old.history]) {
+    delete (item as Partial<typeof item>).roundResults;
+    delete (item as Partial<typeof item>).resultsPublished;
+  }
+  return old;
+}
