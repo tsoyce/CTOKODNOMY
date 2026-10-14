@@ -29,12 +29,6 @@ fi
 printf '\nArchive copy utility metadata:\n'
 copy_path=$(command -v cp)
 stat -Lc '%A %U:%G %s %n' -- "$copy_path"
-sha256sum -- "$copy_path"
-if command -v dpkg >/dev/null 2>&1; then
-  if verification=$(dpkg --verify coreutils 2>&1); then
-    if [[ -z $verification ]]; then printf 'Coreutils package files match installed checksums.\n'; else printf '%s\n' "$verification"; fi
-  else printf '%s\n' "$verification"; fi
-fi
 printf '\nApplication unit:\n'
 systemctl show "nodejs@$app_port.service" \
   --property=MainPID,User,Group,WorkingDirectory,FragmentPath,DropInPaths,ActiveState,SubState,Restart

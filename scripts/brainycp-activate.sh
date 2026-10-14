@@ -67,8 +67,8 @@ ln -sfnT "$node_root" "$base/shared/runtime/node24"
 echo 'Application Node.js 24 runtime ready.'
 bash "$incoming/brainycp-stage.sh" "$base" "$app_user" "$sha" "$incoming/app.tar.gz" "$app_digest" "$node_bin"
 install -d -m 700 "$backup"
-cp -p "$site" "$backup/nginx.conf"
-if [[ -f $dropin ]]; then cp -p "$dropin" "$backup/service.conf"; fi
+"$node_bin" "$incoming/native-copy.mjs" "$site" "$backup/nginx.conf"
+if [[ -f $dropin ]]; then "$node_bin" "$incoming/native-copy.mjs" "$dropin" "$backup/service.conf"; fi
 old_current=''
 if [[ -L $base/current ]]; then old_current=$(readlink "$base/current"); elif [[ -e $base/current ]]; then echo 'current is not a release symlink.'; exit 1; fi
 stopped=0
@@ -77,14 +77,14 @@ rollback() {
   result=$?
   if (( result != 0 && stopped == 1 && activated == 0 )); then
     systemctl stop "$unit" || true
-    if [[ -f $backup/service.conf ]]; then cp -p "$backup/service.conf" "$dropin"; else rm -f "$dropin"; fi
+    if [[ -f $backup/service.conf ]]; then "$node_bin" "$incoming/native-copy.mjs" "$backup/service.conf" "$dropin"; else rm -f "$dropin"; fi
     if [[ -n $old_current ]]; then ln -sfnT "$old_current" "$base/current"; else rm -f "$base/current"; fi
     systemctl daemon-reload
     systemctl reset-failed "$unit" || true
     systemctl start "$unit" || true
     echo 'The previous application service was restored; database/configuration were retained.'
   fi
-  if (( result != 0 )); then cp -p "$backup/nginx.conf" "$site"; nginx_test && systemctl reload nginx || true; fi
+  if (( result != 0 )); then "$node_bin" "$incoming/native-copy.mjs" "$backup/nginx.conf" "$site"; nginx_test && systemctl reload nginx || true; fi
   exit "$result"
 }
 trap rollback EXIT
