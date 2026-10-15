@@ -230,7 +230,7 @@ section('PHP recovery metadata: bounded installed runtime and configuration disc
       if (!entry.isFile() && !entry.isSymbolicLink()) continue;
       if (/^php-fpm(?:[0-9.]+)?$/i.test(entry.name)) executables.add(file);
       if (/^(?:php.*fpm.*|fpm.*)\.service$/i.test(entry.name)) unitFiles.add(file);
-      if (/^php-fpm\.conf$/i.test(entry.name) || entry.name === `${appUser}.conf`) configurations.add(file);
+      if (/^(?:php.*fpm|fpm).*\.conf$/i.test(entry.name) || (entry.name.endsWith('.conf') && entry.name.includes(appUser))) configurations.add(file);
     }
   }
   for (const root of [...roots].slice(0, 40)) {
