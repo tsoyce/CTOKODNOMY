@@ -1,4 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import pg from "pg";
 import {
@@ -9,7 +10,14 @@ import {
 } from "@playwright/test";
 import { issueSetupToken } from "../server/db";
 import { parseQuestionPack } from "../shared/questionImport";
-import type { HostGame, Question } from "../shared/types";
+import {
+  defaultBrand,
+  type HostCommand,
+  type HostGame,
+  type PublicGame,
+  type PublicGameResults,
+  type Question,
+} from "../shared/types";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const schema = process.env.E2E_DATABASE_SCHEMA;
@@ -56,6 +64,192 @@ test.beforeEach(async () => {
 });
 test.afterAll(async () => {
   await pool.end();
+});
+
+test("a full survey keeps only its top six on the board and publishes every reviewed phrase in the list and cloud", async ({
+  browser,
+  page,
+  baseURL,
+}) => {
+  const contexts: BrowserContext[] = [];
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const original = "Приватная исходная фраза из анкеты";
+  const publicLabel = "Подпись для общего экрана";
+  const futurePrompt = "Несыгранный вопрос остаётся закрытым";
+  const futureAnswer = "Несыгранный ответ остаётся закрытым";
+  const rare = ["Единичный вариант Янтарь", "Редкий вариант Сирень", "Редкий вариант Клевер"];
+  const question: Question = {
+    id: randomUUID(),
+    prompt: "Какие ответы останутся в общей картине опроса?",
+    answers: Array.from({ length: 9 }, (_, index) => ({
+      id: randomUUID(),
+      text: index < 6 ? `Популярный вариант ${index + 1}` : rare[index - 6]!,
+      points: 9 - index,
+      aliases: [],
+      ...(index === 0 ? { originals: [original] } : {}),
+    })),
+    source: "Учебная выгрузка для проверки полной статистики",
+    surveyDate: "2026-10-15",
+    respondentCount: 45,
+    notes: "Приватная заметка: в опросе девять групп, на табло шесть.",
+    isDemo: true,
+    pack: "Полная палитра",
+  };
+  const futureQuestion: Question = {
+    ...question,
+    id: randomUUID(),
+    prompt: futurePrompt,
+    answers: [{ id: randomUUID(), text: futureAnswer, points: 1, aliases: [] }],
+  };
+  try {
+    const setup = await page.request.post("/api/setup", {
+      data: {
+        token: await issueSetupToken(pool),
+        username: "organizer",
+        password: PASSWORD,
+        brand: defaultBrand,
+      },
+    });
+    expect(setup.ok()).toBe(true);
+    await page.goto("/admin/questions/import");
+    await page.getByLabel("Готовый JSON", { exact: true }).fill(JSON.stringify({
+      format: "ctokodnomy-questions-v1",
+      questions: [question, futureQuestion],
+    }));
+    await page.getByRole("button", { name: "Проверить вопросы", exact: true }).click();
+    const preview = page.getByRole("region", { name: "Предпросмотр вопросов", exact: true });
+    await expect(preview).toContainText("Табло: 6 · Все варианты: 9");
+    const firstPreview = preview.locator(".question-import-question").first();
+    await expect(firstPreview.locator(".question-import-answer-scope.on-board")).toHaveCount(6);
+    await expect(firstPreview.getByText("Статистика", { exact: true })).toHaveCount(3);
+    await page.getByRole("button", { name: "Сохранить вопросы", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText("Сохранено вопросов: 2.");
+
+    // A reviewed public label can change without losing the original wording.
+    await page.goto(`/admin/questions/${question.id}`);
+    await expect(page.locator(".answer-editor-row")).toHaveCount(9);
+    await expect(page.getByText("Только статистика", { exact: true })).toHaveCount(3);
+    await page.locator(".answer-originals summary").click();
+    await expect(page.locator(".answer-originals")).toContainText(original);
+    await page.getByLabel("Ответ", { exact: true }).first().fill(publicLabel);
+    await page.getByRole("button", { name: "Сохранить вопрос", exact: true }).click();
+    await expect(page).toHaveURL(/\/admin\/questions$/);
+    const library = await (await page.request.get("/api/questions")).json() as Question[];
+    expect(library.find((item) => item.id === question.id)!.answers[0]).toMatchObject({
+      text: publicLabel,
+      originals: [original],
+    });
+
+    const created = await page.request.post("/api/games", {
+      data: {
+        title: "Девять ответов, шесть на табло",
+        questionIds: [question.id, futureQuestion.id],
+        teams: [{ name: "Первая команда", color: "#1646a0" }, { name: "Вторая команда", color: "#edff7a" }],
+      },
+    });
+    expect(created.ok()).toBe(true);
+    const game = await created.json() as HostGame;
+    const guestContext = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 } });
+    const phoneContext = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    contexts.push(guestContext, phoneContext);
+    expect((await phoneContext.request.post("/api/join", { data: { code: game.teams[0]!.joinCode, name: "Участник опроса" } })).ok()).toBe(true);
+    const board = await guestContext.newPage();
+    const phone = await phoneContext.newPage();
+    for (const screen of [board, phone])
+      screen.on("pageerror", (error) => pageErrors.push(error.message));
+    await board.goto(`/board/${game.id}`);
+    await phone.goto(`/team/${game.id}`);
+    await page.goto(`/host/${game.id}`);
+    await page.getByRole("button", { name: "Начать игру", exact: true }).click();
+    await expect(board.getByRole("heading", { name: question.prompt, exact: true })).toBeVisible();
+    await expect(board.locator(".board-answer.closed")).toHaveCount(6);
+    await expect(page.locator(".host-answer")).toHaveCount(6);
+    const publicState = await (await guestContext.request.get(`/api/games/${game.id}/public`)).json() as PublicGame;
+    expect(publicState.answers).toHaveLength(6);
+    expect(publicState.roundStats).toBeNull();
+    const teamState = await (await phoneContext.request.get(`/api/games/${game.id}/team`)).json();
+    expect(teamState.answers).toHaveLength(6);
+    for (const hidden of [...rare, original, publicLabel, futurePrompt, futureAnswer]) {
+      expect(JSON.stringify(publicState)).not.toContain(hidden);
+      expect(JSON.stringify(teamState)).not.toContain(hidden);
+      await expect(board.locator("body")).not.toContainText(hidden);
+      await expect(phone.locator("body")).not.toContainText(hidden);
+    }
+
+    // Opening six answers must finish the round even though three survey groups remain.
+    for (let index = 0; index < 6; index++) {
+      const row = page.locator(".host-answer").nth(index);
+      await row.getByRole("button", { name: "Открыть", exact: true }).click();
+      if (index < 5)
+        await expect(row.getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
+    }
+    await expect(board.locator(".board-round-complete")).toBeVisible();
+    const stats = board.locator(".round-statistics");
+    await expect(stats).toContainText("Угадали 6 из 6");
+    await expect(stats.locator(".statistics-answer-list > li")).toHaveCount(9);
+    for (const answer of [...rare, publicLabel]) await expect(stats).toContainText(answer);
+    await expect(stats).not.toContainText(original);
+    await expect(board.locator("body")).not.toContainText(futurePrompt);
+    const completed = await (await guestContext.request.get(`/api/games/${game.id}/public`)).json() as PublicGame;
+    expect(completed.roundStats!.answers).toHaveLength(9);
+    expect(completed.roundStats!.answers.filter((answer) => answer.onBoard)).toHaveLength(6);
+    expect(completed.roundStats!.totalPoints).toBe(45);
+    expect(JSON.stringify(completed)).not.toContain(original);
+
+    await stats.getByRole("button", { name: "Облако ответов", exact: true }).click();
+    await expect(stats.getByRole("button", { name: "Облако ответов", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const cloud = stats.getByRole("list", { name: "Облако всех ответов опроса", exact: true });
+    await expect(cloud.getByRole("listitem")).toHaveCount(9);
+    for (const answer of rare) await expect(cloud).toContainText(answer);
+    await mkdir(path.resolve("test-results"), { recursive: true });
+    await board.screenshot({ path: "test-results/survey-cloud-desktop.png", fullPage: true });
+    await board.setViewportSize({ width: 1280, height: 720 });
+    await board.getByRole("button", { name: "Для проектора", exact: true }).click();
+    expect(await board.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+    await expect(stats.getByRole("button", { name: "Облако ответов", exact: true })).toBeInViewport();
+    await expect(board.locator(".team-score").first()).toBeInViewport();
+    await board.screenshot({ path: "test-results/survey-cloud-projector.png", fullPage: true });
+    for (const width of [320, 390]) {
+      await board.setViewportSize({ width, height: 844 });
+      expect(await board.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+      await expect(cloud.getByRole("listitem")).toHaveCount(9);
+    }
+    await board.screenshot({ path: "test-results/survey-cloud-mobile.png", fullPage: true });
+    await stats.getByRole("button", { name: "Список", exact: true }).click();
+    await expect(stats.locator(".statistics-answer-list > li")).toHaveCount(9);
+
+    async function command(command: HostCommand) {
+      const state = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+      const response = await page.request.post(`/api/games/${game.id}/commands`, {
+        data: { command, revision: state.revision, requestId: randomUUID() },
+      });
+      expect(response.ok()).toBe(true);
+      return response.json() as Promise<HostGame>;
+    }
+    const finished = await command({ type: "finish" });
+    expect((await page.request.post(`/api/games/${game.id}/results/publication`, {
+      data: { published: true, revision: finished.revision },
+    })).ok()).toBe(true);
+    await board.goto(`/results/${game.id}`);
+    await expect(board.getByRole("heading", { name: "Итоги игры", exact: true })).toBeVisible();
+    await expect(board.locator(".round-statistics")).toHaveCount(1);
+    const reportResponse = await guestContext.request.get(`/api/games/${game.id}/results`);
+    expect(reportResponse.ok()).toBe(true);
+    const report = await reportResponse.json() as PublicGameResults;
+    expect(report.rounds).toHaveLength(1);
+    expect(report.rounds[0]!.answers).toHaveLength(9);
+    for (const hidden of [original, futurePrompt, futureAnswer, question.notes]) {
+      expect(JSON.stringify(report)).not.toContain(hidden);
+      await expect(board.locator("body")).not.toContainText(hidden);
+    }
+    await board.getByRole("button", { name: "Облако ответов", exact: true }).click();
+    await expect(board.locator(".statistics-answer-cloud > li")).toHaveCount(9);
+    for (const answer of rare) await expect(board.locator(".statistics-answer-cloud")).toContainText(answer);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await Promise.all(contexts.map((context) => context.close()));
+  }
 });
 
 test("organizer checks a complete JSON pack before saving, explicitly updates matching questions or imports copies", async ({

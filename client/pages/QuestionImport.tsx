@@ -18,6 +18,12 @@ import {
   type QuestionImportIssue,
   type QuestionPack,
 } from "../../shared/questionImport";
+import {
+  boardAnswers,
+  GAME_ANSWER_LIMIT,
+  MAX_QUESTION_ANSWERS,
+  rankedAnswers,
+} from "../../shared/questionAnswers";
 import type { Question } from "../../shared/types";
 import { ApiError, api } from "../lib";
 import "./QuestionImport.css";
@@ -28,14 +34,19 @@ const EXAMPLE_PACK = {
     {
       prompt: "Учебный пример: что берут с собой на прогулку?",
       answers: [
-        { text: "Воду", points: 40, aliases: ["Бутылку воды"] },
+        { text: "Воду", points: 40, aliases: ["Бутылку воды"], originals: ["Водичку", "Бутылку воды"] },
         { text: "Телефон", points: 20, aliases: ["Смартфон"] },
         { text: "Хорошее настроение", points: 10, aliases: [] },
+        { text: "Ключи", points: 8, aliases: [] },
+        { text: "Зонт", points: 7, aliases: [] },
+        { text: "Наушники", points: 5, aliases: [] },
+        { text: "Перекус", points: 3, aliases: [] },
+        { text: "Фотоаппарат", points: 2, aliases: [] },
       ],
       source: "Учебный пример, реальный опрос не проводился",
       surveyDate: "",
       respondentCount: null,
-      notes: "Вымышленные ответы и условные очки для проверки импорта.",
+      notes: "Вымышленные ответы и условные очки. На табло — 6 самых популярных групп, в статистике — все 8. Исходные формулировки — примеры словоупотребления, а не полный список анкет.",
       isDemo: true,
       pack: "Проверка импорта",
     },
@@ -45,8 +56,11 @@ const EXAMPLE_PACK = {
 const AI_PROMPT = `Подготовь вопросы для игры «100 к 1» из приложенной выгрузки опроса.
 Используй только сведения из выгрузки. Не выдумывай ответы, количества, источник, дату и число опрошенных. Не включай имена, контакты и другие персональные данные участников.
 Объединяй одинаковые по смыслу ответы только после описания групп и проверки частот. При неоднозначности сначала задай мне вопрос. Не смешивай число людей с числом выбранных ими ответов.
+Если в одной анкете перечислено несколько вариантов, учитывай только первый выбранный ответ по смыслу, а не первое слово. Например, «голову, ручку» — «голову»; «телефон не беру, беру воду» — «воду». Неясные случаи вынеси на проверку, не разрезай текст автоматически. Сохрани исходную фразу без персональных данных в originals соответствующей группы, методику и неоднозначности — в notes.
+Сохрани все группы, включая единичные и редкие: игра сама выберет ${GAME_ANSWER_LIMIT} ответов с наибольшими points для табло, а статистика покажет все. При равных очках сохраняется порядок answers; если равны 6-й и 7-й варианты, отдельно покажи мне границу отбора. Не обрезай список и не пересчитывай сумму к 100.
+text — подпись для гостей. Для грубых или спорных фраз предложи нейтральную подпись с сохранением смысла; исходные фразы оставь в originals для организатора. Не считай замену согласованной автоматически: перечисли такие случаи перед финальным JSON. aliases — синонимы для ведущего, originals — исходные фразы, они не публикуются. Не включай имена и контакты даже в originals.
 Неизвестное число опрошенных — null; неизвестные источник и дата — пустые строки. Дата, если известна, — YYYY-MM-DD. points — целые игровые веса от 0 до 1000. Сохраняй реальные частоты; если нужны выбор вариантов или пересчёт очков, сначала предложи правило и дождись моего решения. Опиши согласованное правило в notes.
-Формат JSON: format строго "ctokodnomy-questions-v1", questions от 1 до 500. У каждого вопроса prompt от 1 до 500 символов и answers от 1 до 12. У ответа text от 1 до 200 символов, points — целое число 0–1000, aliases — до 30 непустых синонимов по 1–200 символов. Не повторяй тексты ответов внутри вопроса. source — до 1000 символов, surveyDate — до 40, respondentCount — целое 1–1000000 или null, notes — до 4000, pack — название набора до 100 символов. Для нового набора не добавляй id ни вопросам, ни ответам. Реальные данные помечай isDemo:false, вымышленные учебные данные — isDemo:true.
+Формат JSON: format строго "ctokodnomy-questions-v1", questions от 1 до 500. У каждого вопроса prompt от 1 до 500 символов и answers от 1 до ${MAX_QUESTION_ANSWERS}. У ответа text от 1 до 200 символов, points — целое число 0–1000, aliases — до 30 непустых синонимов по 1–200 символов, необязательный originals — до 100 непустых исходных фраз по 1–500 символов. originals не является списком респондентов и не определяет points. Не повторяй тексты ответов внутри вопроса. source — до 1000 символов, surveyDate — до 40, respondentCount — целое 1–1000000 или null, notes — до 4000, pack — название набора до 100 символов. Для нового набора не добавляй id ни вопросам, ни ответам. Реальные данные помечай isDemo:false, вымышленные учебные данные — isDemo:true. Максимальный размер JSON в UTF-8 — 3 МиБ; если не помещается, разбей на несколько полных наборов вопросов без потери групп.
 После согласования выдай только валидный JSON без Markdown и пояснений. Ниже — исключительно образец структуры с вымышленными данными; не используй его ответы вместо моей выгрузки:
 
 ${JSON.stringify(EXAMPLE_PACK, null, 2)}`;
@@ -78,6 +92,14 @@ function importWarnings(pack: QuestionPack) {
     if (zeroCount)
       warnings.push(
         `${label}: ответов с нулевыми очками — ${zeroCount}. Они будут сохранены, но не увеличат счёт.`,
+      );
+    const ranked = rankedAnswers(question.answers);
+    if (
+      ranked.length > GAME_ANSWER_LIMIT &&
+      ranked[GAME_ANSWER_LIMIT - 1].points === ranked[GAME_ANSWER_LIMIT].points
+    )
+      warnings.push(
+        `${label}: у 6-го и 7-го вариантов одинаковые очки (${ranked[GAME_ANSWER_LIMIT].points}). На табло попадёт тот, который раньше в списке answers. Проверьте выбор; после импорта порядок можно изменить в библиотеке. Все варианты останутся в статистике.`,
       );
     const key = question.prompt.trim().toLocaleLowerCase("ru");
     const previous = prompts.get(key);
@@ -324,8 +346,8 @@ export default function QuestionImport() {
           <p className="eyebrow">Из опроса — в игру</p>
           <h1>Импорт вопросов</h1>
           <p className="muted">
-            Загрузите готовый JSON, проверьте ответы и сохраните набор в
-            библиотеку.
+            Сохраните все ответы опроса: на табло попадёт ТОП 6, в статистику —
+            каждый вариант.
           </p>
         </div>
         <FileJson
@@ -373,6 +395,11 @@ export default function QuestionImport() {
             отличаться от числа людей; неизвестные сведения лучше оставить
             пустыми.
           </p>
+          <p>
+            Подпись ответа увидят гости, а исходные фразы из поля originals —
+            только организатор. Проверьте шутки и спорные формулировки вручную:
+            автоматической цензуры нет.
+          </p>
           <div className="question-import-actions">
             <button
               type="button"
@@ -418,7 +445,8 @@ export default function QuestionImport() {
           <div>
             <h2>Сохранено вопросов: {savedCount}.</h2>
             <p>
-              Набор готов. Проверьте библиотеку или загрузите следующий файл.
+              Набор готов. В библиотеке можно изменить подписи для гостей и
+              порядок равных ответов. Проверьте их перед созданием игры.
             </p>
             <Link className="button button-primary" to="/admin/questions">
               Открыть библиотеку <ArrowRight size={18} />
@@ -544,8 +572,8 @@ export default function QuestionImport() {
               <p className="eyebrow">JSON прошёл проверку</p>
               <h2>2. Просмотрите вопросы</h2>
               <p className="muted">
-                Проверьте формулировки, очки и сведения об опросе перед
-                сохранением.
+                Проверьте подписи для гостей, ТОП 6 и полный список. Исходные
+                фразы ниже видны только организатору.
               </p>
             </div>
             <CheckCircle2
@@ -639,6 +667,16 @@ export default function QuestionImport() {
               const isUpdate =
                 mode === "update" &&
                 Boolean(question.id && checked.existingIds.has(question.id));
+              const ranked = rankedAnswers(question.answers);
+              const board = boardAnswers(question.answers);
+              const allPoints = question.answers.reduce(
+                (sum, answer) => sum + answer.points,
+                0,
+              );
+              const boardPoints = board.reduce(
+                (sum, answer) => sum + answer.points,
+                0,
+              );
               return (
                 <details
                   className="question-import-question"
@@ -652,11 +690,7 @@ export default function QuestionImport() {
                     <span className="question-import-question-title">
                       <strong>{question.prompt}</strong>
                       <small>
-                        Ответов: {question.answers.length} · Сумма очков:{" "}
-                        {question.answers.reduce(
-                          (sum, answer) => sum + answer.points,
-                          0,
-                        )}
+                        Табло: {board.length} · Все варианты: {ranked.length}
                         {question.isDemo ? " · Демо" : ""}
                       </small>
                     </span>
@@ -667,15 +701,34 @@ export default function QuestionImport() {
                     </span>
                   </summary>
                   <div className="question-import-question-body">
+                    <div className="question-import-answer-totals">
+                      <span>Сумма очков на табло: <strong>{boardPoints}</strong></span>
+                      <span>Сумма очков всего опроса: <strong>{allPoints}</strong></span>
+                    </div>
                     <ol className="question-import-answers">
-                      {question.answers.map((answer, answerIndex) => (
+                      {ranked.map((answer, answerIndex) => (
                         <li key={answer.id ?? answerIndex}>
                           <div>
+                            <span className={`question-import-answer-scope${answerIndex < GAME_ANSWER_LIMIT ? " on-board" : ""}`}>
+                              {answerIndex < GAME_ANSWER_LIMIT
+                                ? `ТОП 6 · табло № ${answerIndex + 1}`
+                                : "Статистика"}
+                            </span>
                             <strong>{answer.text}</strong>
                             {answer.aliases.length > 0 && (
                               <small>
                                 Синонимы: {answer.aliases.join("; ")}
                               </small>
+                            )}
+                            {answer.originals && answer.originals.length > 0 && (
+                              <details className="question-import-originals">
+                                <summary>Исходные фразы · только организатору ({answer.originals.length})</summary>
+                                <ul>
+                                  {answer.originals.map((original, originalIndex) => (
+                                    <li key={originalIndex}>{original}</li>
+                                  ))}
+                                </ul>
+                              </details>
                             )}
                           </div>
                           <span>

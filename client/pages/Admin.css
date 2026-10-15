@@ -749,6 +749,25 @@
   gap: 13px;
   margin-bottom: 22px;
 }
+.admin-content .answer-editor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.admin-content .answer-editor-summary > .muted {
+  font-size: 0.78rem;
+}
+.admin-content .answer-editor-summary > .button {
+  min-height: 40px;
+  font-size: 0.78rem;
+}
+.admin-content .answer-public-note {
+  font-size: 0.84rem;
+  line-height: 1.65;
+  margin: 0 0 22px;
+  max-width: 800px;
+}
 .admin-content .answer-editor-row {
   display: flex;
   align-items: flex-start;
@@ -757,6 +776,13 @@
   border-radius: 13px;
   padding: 18px;
   background: var(--surface);
+}
+.admin-content .answer-statistics-only {
+  border-style: dashed;
+}
+.admin-content .answer-visibility {
+  margin-bottom: 13px;
+  font-size: 0.7rem;
 }
 .admin-content .answer-editor-row > .round-number {
   margin-top: 26px;
@@ -782,6 +808,31 @@
   font-size: 0.73rem;
   min-height: 39px;
   padding: 10px 12px;
+}
+.admin-content .answer-originals {
+  margin-top: 15px;
+  font-size: 0.77rem;
+  line-height: 1.6;
+}
+.admin-content .answer-originals > summary {
+  cursor: pointer;
+  color: var(--primary-ink);
+  width: fit-content;
+  padding-block: 5px;
+}
+.admin-content .answer-originals > p {
+  color: var(--muted);
+  margin: 9px 0;
+}
+.admin-content .answer-originals > ul {
+  margin: 0;
+  padding-left: 22px;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.admin-content .answer-originals li + li {
+  margin-top: 5px;
 }
 .admin-content .answer-editor-row .reorder-actions {
   margin-top: 24px;

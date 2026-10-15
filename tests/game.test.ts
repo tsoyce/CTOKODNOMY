@@ -10,6 +10,7 @@ import {
   teamView,
 } from "../server/game";
 import { defaultBrand } from "../shared/types";
+import { boardAnswers, GAME_ANSWER_LIMIT, rankedAnswers } from "../shared/questionAnswers";
 import type {
   GameCommand,
   GameState,
@@ -26,6 +27,7 @@ function question(id: string, points: number[]): Question {
       text: `Скрытый ответ ${id}-${index}`,
       points: value,
       aliases: [`секретный синоним ${id}-${index}`],
+      originals: [`исходная личная формулировка ${id}-${index}`],
     })),
     source: "Внутренний источник",
     surveyDate: "2026-10-01",
@@ -133,6 +135,153 @@ describe("Создание партии", () => {
     );
     expect(() => makeGame({ multipliers: [0] })).toThrow(/Множители/);
     expect(() => makeGame({ multipliers: [1.5] })).toThrow(/Множители/);
+  });
+});
+
+describe("Шесть ответов на табло и полная статистика опроса", () => {
+  function surveyGame(points: number[]): GameState {
+    return createGame({
+      title: "Опрос",
+      brand: defaultBrand,
+      questions: [question("survey", points), question("future", [10, 1])],
+      teams: [
+        { id: "a", name: "А", color: "#000000" },
+        { id: "b", name: "Б", color: "#ffffff" },
+      ],
+    });
+  }
+
+  it("выбирает самые частые ответы и сохраняет порядок равных частот без изменения исходника", () => {
+    const source = question("rank", [1, 7, 7, 3, 2, 5, 4, 7]).answers;
+    const before = structuredClone(source);
+    expect(rankedAnswers(source).map((answer) => answer.id)).toEqual([
+      "rank-1", "rank-2", "rank-7", "rank-5", "rank-6", "rank-3", "rank-4", "rank-0",
+    ]);
+    expect(boardAnswers(source).map((answer) => answer.id)).toEqual([
+      "rank-1", "rank-2", "rank-7", "rank-5", "rank-6", "rank-3",
+    ]);
+    expect(source).toEqual(before);
+    const game = surveyGame([1, 7, 7, 3, 2, 5, 4, 7]);
+    expect(game.boardAnswerLimit).toBe(GAME_ANSWER_LIMIT);
+    expect(game.questions[0]!.answers.map((answer) => answer.points)).toEqual([
+      7, 7, 7, 5, 4, 3, 2, 1,
+    ]);
+  });
+
+  it("не принимает редкий вариант, а открытие ровно шести лучших завершает раунд", () => {
+    let game = applyCommand(surveyGame([2, 8, 7, 7, 6, 5, 4, 1]), {
+      type: "start", teamId: "a",
+    });
+    const before = structuredClone(game);
+    try {
+      applyCommand(game, { type: "reveal", answerId: "survey-0" });
+      throw new Error("Rare answer was accepted");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GameRuleError);
+      expect((error as GameRuleError).statusCode).toBe(400);
+    }
+    expect(game).toEqual(before);
+    for (const answerId of ["survey-1", "survey-2", "survey-3", "survey-4", "survey-5"])
+      game = applyCommand(game, { type: "reveal", answerId });
+    expect(game.phase).toBe("playing");
+    expect(game.bank).toBe(33);
+    game = applyCommand(game, { type: "reveal", answerId: "survey-6" });
+    expect(game.phase).toBe("round-result");
+    expect(game.teams.map((team) => team.score)).toEqual([37, 0]);
+    expect(publicView(game).answers).toHaveLength(6);
+    expect(publicView(game).roundStats).toMatchObject({
+      boardAnswerCount: 6, totalPoints: 40, awardedPoints: 37,
+    });
+    expect(publicView(game).roundStats!.answers.filter((answer) => !answer.onBoard)).toEqual([
+      expect.objectContaining({ text: "Скрытый ответ survey-0", points: 2, opened: false }),
+      expect.objectContaining({ text: "Скрытый ответ survey-7", points: 1, opened: false }),
+    ]);
+  });
+
+  it("редкий ответ не завершает перехват и не изменяет банк", () => {
+    const game = commands(
+      surveyGame([8, 7, 6, 5, 4, 3, 2]),
+      { type: "start", teamId: "a" },
+      { type: "reveal", answerId: "survey-0" },
+      { type: "strike" }, { type: "strike" }, { type: "strike" },
+    );
+    expect(game.phase).toBe("steal");
+    expect(() => applyCommand(game, { type: "reveal", answerId: "survey-6" })).toThrow(GameRuleError);
+    expect(game.bank).toBe(8);
+    expect(game.teams.map((team) => team.score)).toEqual([0, 0]);
+    expect(applyCommand(game, { type: "reveal", answerId: "survey-1" }).teams[1]!.score).toBe(15);
+  });
+
+  it("раскрывает все 17 вариантов после раунда и считает доли от полного опроса", () => {
+    const self: Participant = {
+      id: "player", gameId: "", teamId: "a", name: "Анна", role: "player",
+    };
+    const game = commands(
+      surveyGame(Array.from({ length: 17 }, () => 1)),
+      { type: "start", teamId: "a" },
+      { type: "reveal", answerId: "survey-0" },
+    );
+    self.gameId = game.id;
+    for (const view of [publicView(game), teamView(game, self, [self])]) {
+      expect(view.answers).toHaveLength(6);
+      expect(view.roundStats).toBeNull();
+      expect(JSON.stringify(view)).not.toContain("Скрытый ответ survey-6");
+      expect(JSON.stringify(view)).not.toContain("Скрытый ответ future");
+    }
+    const ended = applyCommand(game, { type: "award", teamId: "a" });
+    const stats = publicView(ended).roundStats!;
+    expect(stats.answers).toHaveLength(17);
+    expect(stats.totalPoints).toBe(17);
+    expect(stats.boardAnswerCount).toBe(6);
+    expect(stats.answers.filter((answer) => answer.onBoard)).toHaveLength(6);
+    expect(stats.answers.filter((answer) => answer.opened)).toHaveLength(1);
+    for (const answer of stats.answers) expect(answer.share).toBeCloseTo(100 / 17);
+    expect(teamView(ended, self, [self]).roundStats).toEqual(stats);
+    const finished = applyCommand(ended, { type: "finish" });
+    const results = gameResults(finished);
+    expect(results.rounds[0]!.answers).toHaveLength(17);
+    for (const privateValue of ["секретный синоним", "исходная личная формулировка", "Секретная заметка", "Скрытый ответ future"])
+      expect(JSON.stringify(results)).not.toContain(privateValue);
+    const next = applyCommand(ended, { type: "next" });
+    expect(publicView(next).roundStats).toBeNull();
+    expect(JSON.stringify(publicView(next))).not.toContain("Скрытый ответ survey-6");
+  });
+
+  it("не помечает вариант вне табло открытым даже при старой ошибочной записи результата", () => {
+    const ended = commands(
+      surveyGame([8, 7, 6, 5, 4, 3, 2]),
+      { type: "start", teamId: "a" },
+      { type: "award", teamId: "a" },
+    );
+    ended.roundResults[0]!.openedAnswerIds.push("survey-6");
+    expect(publicView(ended).roundStats!.answers[6]).toMatchObject({ onBoard: false, opened: false });
+  });
+
+  it("сохраняет порядок и все строки старой партии; сброс создаёт новое табло из шести", () => {
+    const originalQuestion = question("legacy", [1, 8, 3, 4, 2, 7, 6, 5]);
+    const legacy = surveyGame([1]);
+    legacy.questions = [structuredClone(originalQuestion)];
+    delete legacy.boardAnswerLimit;
+    const normalized = normalizeGameState(legacy);
+    expect(normalized.boardAnswerLimit).toBeUndefined();
+    expect(normalized.questions[0]!.answers).toEqual(originalQuestion.answers);
+    let game = applyCommand(normalized, { type: "start", teamId: "a" });
+    expect(publicView(game).answers).toHaveLength(8);
+    game = applyCommand(game, { type: "reveal", answerId: "legacy-0" });
+    expect(publicView(game).answers[0]).toMatchObject({ opened: true, points: 1 });
+    for (const answer of originalQuestion.answers.slice(1, 6))
+      game = applyCommand(game, { type: "reveal", answerId: answer.id });
+    expect(game.phase).toBe("playing");
+    for (const answer of originalQuestion.answers.slice(6))
+      game = applyCommand(game, { type: "reveal", answerId: answer.id });
+    expect(game.phase).toBe("round-result");
+    expect(publicView(game).roundStats!.boardAnswerCount).toBe(8);
+    expect(publicView(game).roundStats!.answers.every((answer) => answer.onBoard)).toBe(true);
+    expect(publicView(game).roundStats!.answers.map((answer) => answer.points)).toEqual([1, 8, 3, 4, 2, 7, 6, 5]);
+    const restarted = resetGame(game);
+    expect(restarted.boardAnswerLimit).toBe(6);
+    expect(restarted.questions[0]!.answers.map((answer) => answer.points)).toEqual([8, 7, 6, 5, 4, 3, 2, 1]);
+    expect(publicView(applyCommand(restarted, { type: "start", teamId: "a" })).answers).toHaveLength(6);
   });
 });
 
@@ -595,6 +744,7 @@ describe("Статистика раундов и новая партия", () =>
         text: "Скрытый ответ q1-0",
         points: 40,
         opened: true,
+        onBoard: true,
         share: 40,
       },
       {
@@ -602,6 +752,7 @@ describe("Статистика раундов и новая партия", () =>
         text: "Скрытый ответ q1-1",
         points: 35,
         opened: false,
+        onBoard: true,
         share: 35,
       },
       {
@@ -609,6 +760,7 @@ describe("Статистика раундов и новая партия", () =>
         text: "Скрытый ответ q1-2",
         points: 25,
         opened: false,
+        onBoard: true,
         share: 25,
       },
     ]);

@@ -36,6 +36,8 @@ export interface Answer {
   text: string;
   points: number;
   aliases: string[];
+  /** Private source phrases for the organizer; never included in public statistics. */
+  originals?: string[];
 }
 export interface Question {
   id: string;
@@ -113,6 +115,8 @@ export interface GameState extends GameSnapshot {
   title: string;
   brand: Brand;
   questions: Question[];
+  /** Absent in older games, whose original board layout must remain intact. */
+  boardAnswerLimit?: number;
   rules: Rules;
   revision: number;
   events: GameEvent[];
@@ -139,11 +143,13 @@ export interface PublicRoundStats {
   surveyDate: string;
   respondentCount: number | null;
   isDemo: boolean;
+  boardAnswerCount: number;
   answers: Array<{
     position: number;
     text: string;
     points: number;
     opened: boolean;
+    onBoard: boolean;
     /** Percentage of answer weights; not necessarily a population percentage. */
     share: number;
   }>;

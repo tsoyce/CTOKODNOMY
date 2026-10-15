@@ -153,11 +153,17 @@ export default function ResultsPage() {
   const completed = report.rounds.filter((round) => round.completed);
   const guessed = report.rounds.reduce(
     (total, round) =>
-      total + round.answers.filter((answer) => answer.opened).length,
+      total +
+      round.answers.filter(
+        (answer) => answer.onBoard !== false && answer.opened,
+      ).length,
     0,
   );
   const answers = report.rounds.reduce(
-    (total, round) => total + round.answers.length,
+    (total, round) =>
+      total +
+      (round.boardAnswerCount ??
+        round.answers.filter((answer) => answer.onBoard !== false).length),
     0,
   );
   const restored = report.rounds.some((round) => !round.completedAt);
@@ -249,7 +255,8 @@ export default function ResultsPage() {
             <h1 id="results-heading">Итоги игры</h1>
             <p className="results-game-title">{report.title}</p>
             <p className="results-intro-description">
-              Счёт команд, неожиданные ответы и вся картина по каждому вопросу.
+              Счёт команд, облака ответов и вся картина опроса — от популярных
+              мнений до единственного необычного варианта.
             </p>
           </div>
           {report.published && (
@@ -368,8 +375,9 @@ export default function ResultsPage() {
               <p className="eyebrow">За каждым ответом — мнение</p>
               <h2 id="results-questions-heading">Как отвечали на вопросы</h2>
               <p>
-                Здесь открыты все ответы на сыгранные вопросы, включая те, что
-                команды не угадали.
+                На игровом табло были самые популярные варианты. Здесь — все
+                ответы на сыгранные вопросы, включая редкие. Сравнивайте их в
+                списке или переключайтесь на облако ответов.
               </p>
             </div>
             {report.rounds.length > 1 && (

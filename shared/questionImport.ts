@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_QUESTION_ANSWERS } from "./questionAnswers";
 
 /** The same UTF-8 limit applies to a pasted file and to the API request body. */
 export const IMPORT_MAX_BYTES = 3 * 1024 * 1024;
@@ -29,6 +30,16 @@ const answerSchema = z.object({
     )
     .max(30, "У ответа может быть не больше 30 синонимов")
     .default([]),
+  originals: z
+    .array(
+      z
+        .string({ error: "Исходная формулировка должна быть текстом" })
+        .max(500, "Исходная формулировка должна быть не длиннее 500 символов")
+        .refine((value) => value.trim().length > 0, "Исходная формулировка не должна быть пустой"),
+      { error: "Укажите исходные формулировки списком" },
+    )
+    .max(100, "У ответа может быть не больше 100 исходных формулировок")
+    .optional(),
 }, { error: "Ответ должен быть объектом с текстом и очками" });
 
 /** Input shared by manual editing, import preview, and all question API writes. */
@@ -43,7 +54,7 @@ export const questionSchema = z
     answers: z
       .array(answerSchema, { error: "Укажите ответы списком" })
       .min(1, "Добавьте хотя бы один ответ")
-      .max(12, "У вопроса может быть не больше 12 ответов"),
+      .max(MAX_QUESTION_ANSWERS, `У вопроса может быть не больше ${MAX_QUESTION_ANSWERS} ответов`),
     source: z
       .string({ error: "Источник должен быть текстом" })
       .max(1000, "Источник должен быть не длиннее 1000 символов")
@@ -129,6 +140,7 @@ const fieldNames: Record<string, string> = {
   questions: "список вопросов",
   answers: "список ответов",
   aliases: "синонимы",
+  originals: "исходные формулировки",
   id: "идентификатор",
   prompt: "текст вопроса",
   text: "текст",
@@ -151,10 +163,10 @@ export function questionImportIssues(
       const field = issue.path[index];
       const item = issue.path[index + 1];
       if (
-        (field === "questions" || field === "answers" || field === "aliases") &&
+        (field === "questions" || field === "answers" || field === "aliases" || field === "originals") &&
         typeof item === "number"
       ) {
-        const label = { questions: "вопрос", answers: "ответ", aliases: "синоним" }[field];
+        const label = { questions: "вопрос", answers: "ответ", aliases: "синоним", originals: "исходная формулировка" }[field];
         parts.push(`${label} ${item + 1}`);
         index += 1;
       } else parts.push(fieldNames[String(field)] ?? String(field));

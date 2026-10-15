@@ -1,4 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import {
+  GAME_ANSWER_LIMIT,
+  MAX_QUESTION_ANSWERS,
+  gameBoardAnswers,
+  rankedAnswers,
+} from "../shared/questionAnswers";
 import type {
   Brand,
   GameCommand,
@@ -75,6 +81,11 @@ export function createGame(input: CreateGameInput): GameState {
       400,
     );
     requireRule(
+      question.answers.length <= MAX_QUESTION_ANSWERS,
+      `У вопроса может быть не больше ${MAX_QUESTION_ANSWERS} ответов.`,
+      400,
+    );
+    requireRule(
       new Set(question.answers.map((answer) => answer.id)).size ===
         question.answers.length,
       "Идентификаторы ответов вопроса должны быть уникальными.",
@@ -126,7 +137,11 @@ export function createGame(input: CreateGameInput): GameState {
     id: input.id ?? randomUUID(),
     title: cleanText(input.title, 120, "Название игры"),
     brand: structuredClone(input.brand),
-    questions: structuredClone(input.questions),
+    questions: structuredClone(input.questions).map((question) => ({
+      ...question,
+      answers: rankedAnswers(question.answers),
+    })),
+    boardAnswerLimit: GAME_ANSWER_LIMIT,
     rules,
     teams,
     questionIndex: 0,
@@ -365,10 +380,17 @@ export function applyCommand(
     }
     case "reveal": {
       requireLiveRound(game);
-      const answer = game.questions[game.questionIndex]!.answers.find(
+      const question = game.questions[game.questionIndex]!;
+      const board = gameBoardAnswers(game, question);
+      const answer = question.answers.find(
         (candidate) => candidate.id === command.answerId,
       );
       requireRule(answer, "Ответ не принадлежит текущему вопросу.", 400);
+      requireRule(
+        board.some((candidate) => candidate.id === answer.id),
+        "Этот ответ не входит в игровое табло.",
+        400,
+      );
       requireRule(
         !game.openedAnswerIds.includes(answer.id),
         "Этот ответ уже открыт.",
@@ -385,8 +407,7 @@ export function applyCommand(
       message = `Открыт ответ «${answer.text}»: ${answer.points} × ${multiplier(game)}.`;
       if (
         game.phase === "steal" ||
-        game.openedAnswerIds.length ===
-          game.questions[game.questionIndex]!.answers.length
+        board.every((candidate) => game.openedAnswerIds.includes(candidate.id))
       ) {
         awardBank(game, teamById(game, game.activeTeamId).id);
         message += ` Банк ${game.bank} получает команда «${teamById(game, game.activeTeamId).name}».`;
@@ -617,7 +638,7 @@ export function publicView(game: GameState): PublicGame {
         : null,
     resultsAvailable: game.phase === "finished" && game.resultsPublished,
     answers:
-      question?.answers.map((answer, index) =>
+      (question ? gameBoardAnswers(game, question) : []).map((answer, index) =>
         game.openedAnswerIds.includes(answer.id)
           ? {
               position: index + 1,
@@ -626,12 +647,14 @@ export function publicView(game: GameState): PublicGame {
               points: answer.points,
             }
           : { position: index + 1, opened: false },
-      ) ?? [],
+      ),
   };
 }
 
 function roundStats(game: GameState, result: RoundResult): PublicRoundStats {
   const question = game.questions[result.questionIndex]!;
+  const board = gameBoardAnswers(game, question);
+  const boardIds = new Set(board.map((answer) => answer.id));
   const totalPoints = question.answers.reduce(
     (sum, answer) => sum + answer.points,
     0,
@@ -644,11 +667,13 @@ function roundStats(game: GameState, result: RoundResult): PublicRoundStats {
     surveyDate: question.surveyDate,
     respondentCount: question.respondentCount,
     isDemo: question.isDemo,
+    boardAnswerCount: board.length,
     answers: question.answers.map((answer, index) => ({
       position: index + 1,
       text: answer.text,
       points: answer.points,
-      opened: result.openedAnswerIds.includes(answer.id),
+      opened: boardIds.has(answer.id) && result.openedAnswerIds.includes(answer.id),
+      onBoard: boardIds.has(answer.id),
       share: totalPoints > 0 ? (answer.points / totalPoints) * 100 : 0,
     })),
     totalPoints,

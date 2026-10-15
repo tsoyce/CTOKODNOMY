@@ -879,6 +879,101 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     }
   });
 
+  test("full survey variants round-trip privately while only the top six play and all variants become statistics", async () => {
+    const cookie = await initialize();
+    const current = question("Полный опрос", "Ответ А", "Ответ Б");
+    current.respondentCount = 17;
+    current.answers = Array.from({ length: 17 }, (_, index) => ({
+      id: randomUUID(),
+      text: `Вариант полного опроса ${index + 1}`,
+      points: index + 1,
+      aliases: [`private-survey-alias-${index}`],
+      originals: [`private-source-phrase-${index}, с запятой`],
+    }));
+    const future = question("Ещё не сыгранный опрос", "future-private-answer", "future-other-answer");
+    const imported = await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1",
+      questions: [current, future],
+    }, cookie);
+    expect(imported.statusCode, imported.body).toBe(200);
+    expect((await call("GET", "/questions/export")).statusCode).toBe(401);
+    const exported = (await call("GET", "/questions/export", undefined, cookie)).json();
+    expect(exported.questions.find((q: Question) => q.id === current.id)).toEqual(current);
+
+    const created = await call("POST", "/games", {
+      title: "Полный опрос и ТОП-6",
+      questionIds: [current.id, future.id],
+      teams: [{ name: "Первая", color: "#7559ff" }, { name: "Вторая", color: "#edff7a" }],
+    }, cookie);
+    expect(created.statusCode, created.body).toBe(200);
+    let state = created.json<HostGame>();
+    expect(state.boardAnswerLimit).toBe(6);
+    expect(state.questions[0]!.answers).toHaveLength(17);
+    const board = state.questions[0]!.answers.slice(0, 6);
+    expect(board.map((answer) => answer.points)).toEqual([17, 16, 15, 14, 13, 12]);
+    const member = await join(state.teams[0]!.joinCode, "Игрок полного опроса");
+    state = (await call("GET", `/games/${state.id}/host`, undefined, cookie)).json<HostGame>();
+    state = await hostCommand(state, cookie, { type: "start", teamId: state.teams[0]!.id });
+    const publicPlaying = await call("GET", `/games/${state.id}/public`);
+    expect(publicPlaying.json().answers).toHaveLength(6);
+    expect(publicPlaying.json().roundStats).toBeNull();
+    const teamPlaying = await call("GET", `/games/${state.id}/team`, undefined, member.cookie);
+    expect(teamPlaying.json().answers).toHaveLength(6);
+    for (const response of [publicPlaying, teamPlaying]) {
+      for (const answer of current.answers) {
+        expect(response.body).not.toContain(answer.text);
+        expect(response.body).not.toContain(answer.aliases[0]);
+        expect(response.body).not.toContain(answer.originals![0]);
+      }
+      expect(response.body).not.toContain(future.prompt);
+    }
+    const rejected = await call("POST", `/games/${state.id}/commands`, {
+      command: { type: "reveal", answerId: current.answers[0]!.id },
+      revision: state.revision,
+      requestId: randomUUID(),
+    }, cookie);
+    expect(rejected.statusCode).toBe(400);
+    expect((await call("GET", `/games/${state.id}/host`, undefined, cookie)).json().revision).toBe(state.revision);
+
+    // Editing a library caption retains its original phrase and does not alter
+    // the snapshot of an already prepared game.
+    const edited = structuredClone(current);
+    edited.answers[0]!.text = "Исправленная подпись";
+    const saved = await call("PUT", `/questions/${current.id}`, edited, cookie);
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(saved.json().answers[0].originals).toEqual(current.answers[0]!.originals);
+    expect((await call("GET", `/games/${state.id}/host`, undefined, cookie)).json().questions[0].answers)
+      .not.toContainEqual(expect.objectContaining({ text: edited.answers[0]!.text }));
+
+    for (const answer of board) state = await hostCommand(state, cookie, { type: "reveal", answerId: answer.id });
+    expect(state.phase).toBe("round-result");
+    expect(state.teams[0]!.score).toBe(87);
+    const ended = await call("GET", `/games/${state.id}/public`);
+    const stats = ended.json().roundStats;
+    expect(stats.answers).toHaveLength(17);
+    expect(stats.boardAnswerCount).toBe(6);
+    expect(stats.answers.filter((answer: { onBoard: boolean }) => answer.onBoard)).toHaveLength(6);
+    expect(stats.answers.filter((answer: { opened: boolean }) => answer.opened)).toHaveLength(6);
+    expect(stats.totalPoints).toBe(153);
+    expect(stats.answers[0].share).toBeCloseTo(17 / 153 * 100);
+    expect(stats.answers.at(-1)).toMatchObject({ text: current.answers[0]!.text, points: 1, onBoard: false, opened: false });
+    for (const hidden of [future.prompt, future.answers[0]!.text, "private-source-phrase", "private-survey-alias", current.notes])
+      expect(ended.body).not.toContain(hidden);
+    expect((await call("GET", `/games/${state.id}/team`, undefined, member.cookie)).json().roundStats.answers).toHaveLength(17);
+
+    state = await hostCommand(state, cookie, { type: "finish" });
+    expect((await call("GET", `/games/${state.id}/results`)).statusCode).toBe(404);
+    const publish = await call("POST", `/games/${state.id}/results/publication`, { published: true, revision: state.revision }, cookie);
+    expect(publish.statusCode, publish.body).toBe(200);
+    const published = await call("GET", `/games/${state.id}/results`);
+    expect(published.statusCode).toBe(200);
+    expect(published.json().rounds[0].answers).toHaveLength(17);
+    for (const hidden of [future.prompt, future.answers[0]!.text, "private-source-phrase", "private-survey-alias", current.notes])
+      expect(published.body).not.toContain(hidden);
+    expect((await call("GET", "/questions/export", undefined, cookie)).json().questions.find((q: Question) => q.id === current.id).answers)
+      .toHaveLength(17);
+  });
+
   test("completed round statistics reveal survey answers without future questions; publication is explicit and revocable", async () => {
     const cookie = await initialize();
     const { game, questions } = await createFixture(cookie);

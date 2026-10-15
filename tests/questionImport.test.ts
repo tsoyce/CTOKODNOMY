@@ -164,7 +164,7 @@ describe("question import uses one browser/server contract", () => {
     const invalidQuestions = [
       { ...question(), answers: [] },
       { ...question(), answers: [null] },
-      { ...question(), answers: Array.from({ length: 13 }, (_, i) => ({ text: `Ответ ${i}`, points: 1 })) },
+      { ...question(), answers: Array.from({ length: 501 }, (_, i) => ({ text: `Ответ ${i}`, points: 1 })) },
       { ...question(), answers: [{ text: "Ответ", points: 1.5 }] },
       { ...question(), answers: [{ text: "Ответ", points: 1001 }] },
       { ...question(), respondentCount: 0 },
@@ -179,5 +179,39 @@ describe("question import uses one browser/server contract", () => {
     }
     expect(questionPackSchema.safeParse(pack([])).success).toBe(false);
     expect(questionPackSchema.safeParse(pack(Array.from({ length: 501 }, question))).success).toBe(false);
+  });
+
+  test("imports all survey variants and retains private originals without changing them", () => {
+    const input = {
+      ...question(),
+      answers: Array.from({ length: 500 }, (_, index) => ({
+        text: `Вариант ${index + 1}`,
+        points: index % 17,
+        aliases: ["Синоним"],
+        originals: [`  Дословная формулировка №${index + 1}  `],
+      })),
+    };
+    const parsed = questionPackSchema.parse(pack([input]));
+    expect(parsed.questions[0]!.answers).toHaveLength(500);
+    expect(parsed.questions[0]!.answers[0]!.originals).toEqual(["  Дословная формулировка №1  "]);
+    expect(parseQuestionPack(JSON.stringify(parsed))).toEqual({ success: true, data: parsed });
+    expect(questionSchema.parse(question()).answers[0]).not.toHaveProperty("originals");
+  });
+
+  test("rejects invalid private originals and explains the source phrase location", () => {
+    for (const originals of ["Строка вместо списка", [" "], [null], ["я".repeat(501)], Array.from({ length: 101 }, () => "Фраза")]) {
+      expect(questionSchema.safeParse({
+        ...question(), answers: [{ text: "Ответ", points: 1, originals }],
+      }).success).toBe(false);
+    }
+    expect(parseQuestionPack(JSON.stringify(pack([{
+      ...question(), answers: [{ text: "Ответ", points: 1, originals: [""] }],
+    }])))).toEqual({
+      success: false,
+      issues: [{
+        path: "Вопрос 1 → ответ 1 → исходная формулировка 1",
+        message: "Исходная формулировка не должна быть пустой",
+      }],
+    });
   });
 });

@@ -35,6 +35,7 @@ import {
   X,
 } from "lucide-react";
 import QRCode from "qrcode";
+import { gameBoardAnswers } from "../../shared/questionAnswers";
 import type {
   HostCommand,
   HostGame,
@@ -1038,6 +1039,9 @@ export function HostPage() {
       </GameUnavailable>
     );
   const question = game.questions[game.questionIndex];
+  const currentBoardAnswers = question ? gameBoardAnswers(game, question) : [];
+  const boardAnswerIds = new Set(currentBoardAnswers.map((answer) => answer.id));
+  const statisticsOnlyAnswers = question?.answers.filter((answer) => !boardAnswerIds.has(answer.id)) ?? [];
   const multiplier =
     game.rules.multipliers[game.questionIndex] ??
     game.rules.multipliers.at(-1) ??
@@ -1392,7 +1396,7 @@ export function HostPage() {
               )}
               {question && (
                 <div className="host-answer-list">
-                  {question.answers.map((answer, index) => {
+                  {currentBoardAnswers.map((answer, index) => {
                     const opened = game.openedAnswerIds.includes(answer.id);
                     return (
                       <div
@@ -1431,6 +1435,22 @@ export function HostPage() {
                     );
                   })}
                 </div>
+              )}
+              {statisticsOnlyAnswers.length > 0 && (
+                <details className="host-survey-tail">
+                  <summary>Остальные ответы опроса · {statisticsOnlyAnswers.length}</summary>
+                  <p className="form-hint">
+                    Эти варианты появятся в статистике после раунда. В игре открывается только ТОП-6.
+                  </p>
+                  <ul>
+                    {statisticsOnlyAnswers.map((answer) => (
+                      <li key={answer.id}>
+                        <span>{answer.text}</span>
+                        <strong>{answer.points}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
               {question?.source && (
                 <p className="form-hint">

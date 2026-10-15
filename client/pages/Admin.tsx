@@ -47,6 +47,13 @@ import { ApiError, api, useMe, useSite } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
 import { BrandEditor, BrandPreview } from "../components/Branding";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import {
+  boardAnswers,
+  gameBoardAnswers,
+  GAME_ANSWER_LIMIT,
+  MAX_QUESTION_ANSWERS,
+  rankedAnswers,
+} from "../../shared/questionAnswers";
 import type {
   Answer,
   Brand,
@@ -77,6 +84,8 @@ const json = (method: string, data?: unknown): RequestInit => ({
         headers: { "Content-Type": "application/json" },
       }),
 });
+const answerSummary = (answers: Answer[]) =>
+  `${boardAnswers(answers).length} на табло · ${answers.length} в статистике`;
 
 function PageHeading({
   eyebrow,
@@ -666,7 +675,7 @@ export function NewGamePage() {
                         <div>
                           <strong>{question.prompt}</strong>
                           <small className="muted">
-                            {question.answers.length} ответов
+                            {answerSummary(question.answers)}
                             {question.pack ? ` · ${question.pack}` : ""}
                             {question.isDemo ? " · Демо" : ""}
                           </small>
@@ -1276,7 +1285,7 @@ export function GameSettingsPage() {
               <div>
                 <strong>{question.prompt}</strong>
                 <small className="muted">
-                  {question.answers.length} ответов
+                  {gameBoardAnswers(game, question).length} на табло · {question.answers.length} в статистике
                   {question.isDemo ? " · Демонстрационный вопрос" : ""}
                   {question.pack ? ` · ${question.pack}` : ""}
                 </small>
@@ -1576,12 +1585,12 @@ export function QuestionsPage() {
                   </Link>
                 </h2>
                 <p className="muted">
-                  {question.answers.length} ответов ·{" "}
+                  {answerSummary(question.answers)} ·{" "}
                   {question.answers.reduce(
                     (sum, answer) => sum + answer.points,
                     0,
                   )}{" "}
-                  очков
+                  очков всего
                   {question.respondentCount !== null
                     ? ` · ${question.respondentCount} опрошенных`
                     : ""}
@@ -1700,12 +1709,14 @@ export function QuestionEditorPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [aliases, setAliases] = useState<Record<string, string>>({});
+  const savedTexts = useRef(new Map<string, string>());
   useEffect(() => {
     let active = true;
     if (!questionId) {
       const next = freshQuestion();
       setQuestion(next);
       setAliases({});
+      savedTexts.current.clear();
       setLoading(false);
       return;
     }
@@ -1719,6 +1730,9 @@ export function QuestionEditorPage() {
           );
         if (active) {
           setQuestion(next);
+          savedTexts.current = new Map(
+            next.answers.map((answer) => [answer.id, answer.text]),
+          );
           setAliases(
             Object.fromEntries(
               next.answers.map((answer) => [
@@ -1745,9 +1759,20 @@ export function QuestionEditorPage() {
   const updateAnswer = (id: string, patch: Partial<Answer>) =>
     setQuestion((current) => ({
       ...current,
-      answers: current.answers.map((answer) =>
-        answer.id === id ? { ...answer, ...patch } : answer,
-      ),
+      answers: current.answers.map((answer) => {
+        if (answer.id !== id) return answer;
+        const previousText = savedTexts.current.get(id);
+        const archiveText =
+          patch.text !== undefined &&
+          patch.text !== answer.text &&
+          !answer.originals?.length &&
+          previousText?.trim();
+        return {
+          ...answer,
+          ...(archiveText ? { originals: [previousText!] } : {}),
+          ...patch,
+        };
+      }),
     }));
   const moveAnswer = (index: number, delta: number) =>
     setQuestion((current) => {
@@ -1802,6 +1827,10 @@ export function QuestionEditorPage() {
     }
   };
   if (loading) return <Loading />;
+  const topAnswers = boardAnswers(question.answers);
+  const boardPositions = new Map(
+    topAnswers.map((answer, index) => [answer.id, index + 1]),
+  );
   return (
     <>
       <Link className="back-link" to="/admin/questions">
@@ -1843,23 +1872,48 @@ export function QuestionEditorPage() {
         <section className="card form-section">
           <div className="section-heading">
             <div>
-              <h2>Ответы на табло</h2>
+              <h2>Все ответы опроса</h2>
               <p className="muted">
-                Порядок в списке определяет позиции на табло. Обычно популярные
-                ответы располагают выше.
+                В игре на табло попадут до {GAME_ANSWER_LIMIT} самых популярных
+                ответов. В статистике останутся все варианты, включая редкие.
+                При равных очках порядок задают стрелки.
               </p>
             </div>
-            <span className="badge">
-              Всего:{" "}
-              {question.answers.reduce((sum, answer) => sum + answer.points, 0)}{" "}
-              очков
-            </span>
+            <div className="answer-editor-summary">
+              <span className="badge">{answerSummary(question.answers)}</span>
+              <span className="muted">
+                Сумма очков:{" "}
+                {question.answers.reduce((sum, answer) => sum + answer.points, 0)}
+              </span>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => update("answers", rankedAnswers(question.answers))}
+              >
+                <ArrowDown size={16} /> По популярности
+              </button>
+            </div>
           </div>
+          <p className="muted answer-public-note">
+            Поле «Ответ» увидят игроки и гости. Здесь можно смягчить шутку или
+            уточнить название: исходные формулировки сохранятся отдельно и будут
+            доступны только организатору.
+          </p>
           <div className="answer-editor-list">
             {question.answers.map((answer, index) => (
-              <div key={answer.id} className="answer-editor-row">
+              <div
+                key={answer.id}
+                className={`answer-editor-row${boardPositions.has(answer.id) ? "" : " answer-statistics-only"}`}
+              >
                 <span className="round-number">{index + 1}</span>
                 <div className="answer-editor-fields">
+                  <span
+                    className={`badge answer-visibility${boardPositions.has(answer.id) ? " badge-accent" : ""}`}
+                  >
+                    {boardPositions.has(answer.id)
+                      ? `ТОП ${boardPositions.get(answer.id)} · На табло`
+                      : "Только статистика"}
+                  </span>
                   <div className="answer-main-fields">
                     <label className="field">
                       Ответ
@@ -1904,6 +1958,19 @@ export function QuestionEditorPage() {
                       placeholder="Синонимы через запятую · подсказка ведущему"
                     />
                   </label>
+                  {!!answer.originals?.length && (
+                    <details className="answer-originals">
+                      <summary>
+                        Исходные формулировки · {answer.originals.length}
+                      </summary>
+                      <p>Только для организатора. В общий экран не передаются.</p>
+                      <ul>
+                        {answer.originals.map((original, originalIndex) => (
+                          <li key={originalIndex}>{original}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </div>
                 <div className="reorder-actions">
                   <button
@@ -1947,7 +2014,7 @@ export function QuestionEditorPage() {
           <button
             type="button"
             className="button button-secondary"
-            disabled={question.answers.length >= 12}
+            disabled={question.answers.length >= MAX_QUESTION_ANSWERS}
             onClick={() =>
               update("answers", [
                 ...question.answers,
@@ -1960,7 +2027,8 @@ export function QuestionEditorPage() {
           </button>
           <p className="muted">
             Формулировки помогают ведущему принять решение. Совпадение ответа не
-            открывает его автоматически.
+            открывает его автоматически. Можно сохранить до{" "}
+            {MAX_QUESTION_ANSWERS} вариантов на вопрос.
           </p>
         </section>
         <section className="card form-section">

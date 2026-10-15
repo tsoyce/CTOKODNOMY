@@ -1,5 +1,5 @@
-import { useId, useMemo, useState } from "react";
-import { BarChart3, Check, ListOrdered, Trophy } from "lucide-react";
+import { useId, useMemo, useState, type CSSProperties } from "react";
+import { BarChart3, Check, Cloud, ListOrdered, Trophy } from "lucide-react";
 import type { PublicRoundStats, PublicTeam } from "../../shared/types";
 import "./Statistics.css";
 
@@ -29,7 +29,9 @@ export function RoundStatistics({
   compact?: boolean;
 }) {
   const headingId = useId();
+  const visualizationId = useId();
   const [order, setOrder] = useState<"popular" | "board">("popular");
+  const [view, setView] = useState<"list" | "cloud">("list");
   const answers = useMemo(
     () =>
       [...round.answers].sort((a, b) =>
@@ -39,14 +41,20 @@ export function RoundStatistics({
       ),
     [round.answers, order],
   );
-  const guessed = round.answers.filter((answer) => answer.opened).length;
+  // Older saved reports contain only board answers and do not have onBoard.
+  const boardAnswers = round.answers.filter((answer) => answer.onBoard !== false);
+  const boardAnswerCount = round.boardAnswerCount ?? boardAnswers.length;
+  const guessed = boardAnswers.filter((answer) => answer.opened).length;
+  const maxWeight = Math.max(0, ...round.answers.map((answer) => answer.points));
   const winner = teams.find((team) => team.id === round.winnerTeamId);
   const date = surveyDate(round.surveyDate);
   const restored = !round.completedAt;
+  const outsideBoardLabel =
+    boardAnswerCount === 6 ? "Вне ТОП-6" : "Не было на табло";
 
   return (
     <section
-      className={`round-statistics${compact ? " round-statistics-compact" : ""}`}
+      className={`round-statistics${compact ? " round-statistics-compact" : ""}${round.answers.length > boardAnswerCount ? " round-statistics-full-survey" : ""}`}
       aria-labelledby={headingId}
     >
       <header className="statistics-header">
@@ -66,7 +74,7 @@ export function RoundStatistics({
         <span className="statistics-guessed">
           <Check size={17} aria-hidden="true" />
           {restored ? "Сохранено открытий" : "Угадали"} {guessed} из{" "}
-          {round.answers.length}
+          {boardAnswerCount}
         </span>
       </header>
 
@@ -92,85 +100,172 @@ export function RoundStatistics({
       </div>
 
       <div className="statistics-chart-heading">
-        <span>Ответы и их вес на табло</span>
-        <label>
-          <ListOrdered size={16} aria-hidden="true" />
-          <span className="sr-only">Порядок ответов</span>
-          <select
-            aria-label="Порядок ответов"
-            value={order}
-            onChange={(event) =>
-              setOrder(event.target.value as "popular" | "board")
-            }
+        <div className="statistics-chart-title">
+          <strong>Все ответы опроса</strong>
+          <span>
+            Всего вариантов: {number.format(round.answers.length)} · На табло:{" "}
+            {number.format(boardAnswerCount)}
+          </span>
+        </div>
+        <div
+          className="statistics-view-switch"
+          role="group"
+          aria-label="Вид статистики"
+        >
+          <button
+            type="button"
+            aria-pressed={view === "list"}
+            aria-controls={visualizationId}
+            onClick={() => setView("list")}
           >
-            <option value="popular">По популярности</option>
-            <option value="board">Как на табло</option>
-          </select>
-        </label>
+            <BarChart3 size={17} aria-hidden="true" /> Список
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === "cloud"}
+            aria-controls={visualizationId}
+            onClick={() => setView("cloud")}
+          >
+            <Cloud size={18} aria-hidden="true" /> Облако ответов
+          </button>
+        </div>
       </div>
 
-      <ol className="statistics-answer-list">
-        {answers.map((answer) => {
-          const share = Number.isFinite(answer.share)
-            ? Math.max(0, Math.min(100, answer.share))
-            : 0;
-          return (
-            <li
-              className={
-                answer.opened
-                  ? "statistics-answer guessed"
-                  : "statistics-answer"
-              }
-              key={answer.position}
+      <div className="statistics-visualization" id={visualizationId}>
+        {view === "cloud" ? (
+          <>
+            <p className="statistics-cloud-note">
+              Популярные ответы крупнее. Число рядом — вес ответа в опросе;
+              здесь есть и редкие варианты, которые не попали на игровое табло.
+            </p>
+            <ul
+              className="statistics-answer-cloud"
+              aria-label="Облако всех ответов опроса"
+              tabIndex={0}
             >
-              <span
-                className="statistics-answer-position"
-                aria-label={`Ответ ${answer.position}`}
-              >
-                {String(answer.position).padStart(2, "0")}
-              </span>
-              <div className="statistics-answer-main">
-                <div className="statistics-answer-caption">
-                  <strong>{answer.text}</strong>
-                  <span className="statistics-answer-weight">
-                    {number.format(answer.points)} <small>очков</small>
-                  </span>
-                </div>
-                <div className="statistics-bar-row">
-                  <div className="statistics-bar-track" aria-hidden="true">
-                    <div
-                      className="statistics-bar"
-                      style={{ width: `${share}%` }}
-                    />
-                  </div>
-                  <span
-                    className="statistics-answer-share"
-                    aria-label={`${percent.format(share)} процентов суммы очков ответов`}
+              {[...round.answers]
+                .sort((a, b) => b.points - a.points || a.position - b.position)
+                .map((answer) => (
+                  <li
+                    key={answer.position}
+                    className={`statistics-cloud-word${answer.onBoard === false ? " statistics-cloud-word-extra" : ""}`}
+                    style={
+                      {
+                        "--cloud-weight":
+                          maxWeight > 0
+                            ? Math.sqrt(Math.max(0, answer.points) / maxWeight)
+                            : 0,
+                      } as CSSProperties
+                    }
                   >
-                    {percent.format(share)}%
-                  </span>
-                </div>
-                <span className="statistics-answer-outcome">
-                  {answer.opened ? (
-                    <>
-                      <Check size={14} aria-hidden="true" /> Угадали
-                    </>
-                  ) : restored ? (
-                    "Открытие не сохранилось в истории"
-                  ) : (
-                    "Не открыли в игре"
-                  )}
-                </span>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+                    <span className="statistics-cloud-phrase">
+                      {answer.text}
+                    </span>
+                    <span
+                      className="statistics-cloud-count"
+                      aria-label={`Вес ответа: ${number.format(answer.points)}`}
+                    >
+                      {number.format(answer.points)}
+                    </span>
+                    {answer.onBoard === false && (
+                      <span className="statistics-cloud-status">
+                        {outsideBoardLabel}
+                      </span>
+                    )}
+                  </li>
+                ))}
+            </ul>
+          </>
+        ) : (
+          <>
+            <div className="statistics-list-heading">
+              <span>Все ответы и их вес в опросе</span>
+              <label>
+                <ListOrdered size={16} aria-hidden="true" />
+                <span className="sr-only">Порядок ответов</span>
+                <select
+                  aria-label="Порядок ответов"
+                  value={order}
+                  onChange={(event) =>
+                    setOrder(event.target.value as "popular" | "board")
+                  }
+                >
+                  <option value="popular">По популярности</option>
+                  <option value="board">По порядку вариантов</option>
+                </select>
+              </label>
+            </div>
+            <ol
+              className="statistics-answer-list"
+              tabIndex={compact ? 0 : undefined}
+              aria-label="Все ответы опроса"
+            >
+              {answers.map((answer) => {
+                const share = Number.isFinite(answer.share)
+                  ? Math.max(0, Math.min(100, answer.share))
+                  : 0;
+                return (
+                  <li
+                    className={
+                      answer.onBoard !== false && answer.opened
+                        ? "statistics-answer guessed"
+                        : `statistics-answer${answer.onBoard === false ? " statistics-answer-extra" : ""}`
+                    }
+                    key={answer.position}
+                  >
+                    <span
+                      className="statistics-answer-position"
+                      aria-label={`Ответ ${answer.position}`}
+                    >
+                      {String(answer.position).padStart(2, "0")}
+                    </span>
+                    <div className="statistics-answer-main">
+                      <div className="statistics-answer-caption">
+                        <strong>{answer.text}</strong>
+                        <span className="statistics-answer-weight">
+                          {number.format(answer.points)} <small>вес</small>
+                        </span>
+                      </div>
+                      <div className="statistics-bar-row">
+                        <div className="statistics-bar-track" aria-hidden="true">
+                          <div
+                            className="statistics-bar"
+                            style={{ width: `${share}%` }}
+                          />
+                        </div>
+                        <span
+                          className="statistics-answer-share"
+                          aria-label={`${percent.format(share)} процентов суммы весов всех ответов`}
+                        >
+                          {percent.format(share)}%
+                        </span>
+                      </div>
+                      <span className="statistics-answer-outcome">
+                        {answer.onBoard === false ? (
+                          outsideBoardLabel
+                        ) : answer.opened ? (
+                          <>
+                            <Check size={14} aria-hidden="true" /> Угадали
+                          </>
+                        ) : restored ? (
+                          "Открытие не сохранилось в истории"
+                        ) : (
+                          "Не открыли в игре"
+                        )}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </>
+        )}
+      </div>
 
       <footer className="statistics-source">
         <p className="statistics-denominator">
-          Проценты — доля суммы очков ответов на табло, а не доля опрошенных.
-          {round.totalPoints === 0 && " Сумма очков равна нулю."}
+          Проценты — доля суммы весов всех ответов опроса, а не доля опрошенных.
+          {round.totalPoints === 0 && " Сумма весов равна нулю."}
         </p>
         {restored && (
           <p>

@@ -2247,3 +2247,33 @@
     display: none;
   }
 }
+
+.host-survey-tail {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.host-survey-tail summary {
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+.host-survey-tail ul {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+.host-survey-tail li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 9px 0;
+}
+.host-survey-tail li span { overflow-wrap: anywhere; min-width: 0; }
+.host-survey-tail li strong { flex-shrink: 0; font-variant-numeric: tabular-nums; }
