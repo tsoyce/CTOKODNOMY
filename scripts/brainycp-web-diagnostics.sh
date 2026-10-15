@@ -148,6 +148,41 @@ section('Selected current virtual-host routing directives', () => {
   }
 });
 
+section('Existing per-user PHP files and panel template paths (metadata only)', () => {
+  for (const root of ['/etc/php82w', '/etc/php84w']) {
+    if (!fs.existsSync(root)) continue;
+    const visit = (directory, depth) => {
+      if (depth > 3) return;
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true }).slice(0, 200)) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) { if (!/logs?|sessions?|cache/.test(entry.name)) visit(file, depth + 1); continue; }
+        if (!/fpm|tsoy|user/i.test(file)) continue;
+        const stat = fs.lstatSync(file);
+        out(`${file}: bytes=${stat.size} mode=${(stat.mode & 0o7777).toString(8)} modified=${stat.mtime.toISOString()} changed=${stat.ctime.toISOString()}`);
+      }
+    };
+    visit(root, 0);
+  }
+  let visited = 0, found = 0;
+  const visit = (directory, depth) => {
+    if (depth > 7 || visited > 18000 || found > 35) return;
+    let entries; try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.slice(0, 2000)) {
+      visited += 1;
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!/^(?:www|html|htdocs|vendor|node_modules|log|logs|cache|tmp|backups?|sessions?)$/i.test(entry.name)) visit(file, depth + 1);
+      } else if (entry.isFile() && /php.*fpm|fpm.*php|webserver/i.test(entry.name) && /\.(?:service|conf|tpl|template|sh|py|php)$/.test(entry.name)) {
+        const stat = fs.lstatSync(file);
+        out(`Panel template candidate ${file}: bytes=${stat.size} modified=${stat.mtime.toISOString()}`);
+        found += 1;
+      }
+    }
+  };
+  visit('/usr/local/brainycp', 0);
+  out(`Bounded panel filename inspection: entries=${visited} candidates=${found}; no panel source or credentials read`);
+});
+
 section('PHP package state and recent package actions (no command arguments)', () => {
   for (const version of ['82', '84']) {
     const listing = run('dpkg-query', ['-L', `php${version}w-fpm`]);
