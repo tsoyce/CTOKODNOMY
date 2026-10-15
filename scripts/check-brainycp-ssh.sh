@@ -13,6 +13,7 @@ fail() {
 [[ ${APP_PORT:-} =~ ^[0-9]{1,5}$ ]] || fail 'Set a valid application port.'
 (( 10#$APP_PORT >= 1 && 10#$APP_PORT <= 65535 )) || fail 'Port must be between 1 and 65535.'
 [[ ${APP_DOMAIN:-} =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail 'Set a hostname without a scheme or path.'
+[[ -z ${CHECK_PROBE_DOMAIN:-} || ${CHECK_PROBE_DOMAIN:-} =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail 'Set a valid additional hostname without a scheme or path.'
 [[ -n ${DEPLOY_SSH_KEY:-} ]] || fail 'DEPLOY_SSH_KEY secret is missing.'
 [[ -n ${SSH_KNOWN_HOSTS:-} ]] || fail 'SSH_KNOWN_HOSTS secret is missing; add the verified public server key. See docs/DEPLOYMENT.md.'
 
@@ -54,8 +55,15 @@ inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-preflight.sh"
 if [[ ${CHECK_DETAILS:-false} == true ]]; then
   inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-details.sh"
 fi
+if [[ ${CHECK_WEB_SERVICES:-false} == true ]]; then
+  inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-web-diagnostics.sh"
+fi
+inspection_command="bash -s -- '$APP_ROOT' '$APP_USER' '$APP_PORT' '$APP_DOMAIN'"
+if [[ ${CHECK_WEB_SERVICES:-false} == true ]]; then
+  inspection_command+=" '${CHECK_PROBE_DOMAIN:-}'"
+fi
 if report=$(ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
-    "bash -s -- '$APP_ROOT' '$APP_USER' '$APP_PORT' '$APP_DOMAIN'" \
+    "$inspection_command" \
     < "$inspection_script" 2>&1); then
   report_type=notice
 else
@@ -64,7 +72,7 @@ fi
 printf '%s\n' "$report"
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
   # Publish this read-only metadata report via the check API as well as logs.
-  # Escape workflow-command delimiters; no configuration contents are read.
+  # Escape workflow-command delimiters; diagnostic output excludes credentials.
   escaped=${report//%/%25}
   escaped=${escaped//$'\r'/%0D}
   escaped=${escaped//$'\n'/%0A}

@@ -37,6 +37,15 @@ on:
         required: false
         default: false
         type: boolean
+      web_services:
+        description: Read-only health diagnostics for web, PHP and database services
+        required: false
+        default: false
+        type: boolean
+      probe_domain:
+        description: Additional affected hostname for read-only web diagnostics
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -58,6 +67,8 @@ jobs:
           APP_PORT: ${{ inputs.port }}
           APP_DOMAIN: ${{ inputs.domain }}
           CHECK_DETAILS: ${{ inputs.details }}
+          CHECK_WEB_SERVICES: ${{ inputs.web_services }}
+          CHECK_PROBE_DOMAIN: ${{ inputs.probe_domain }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
           SSH_KNOWN_HOSTS: ${{ inputs.known_hosts || secrets.SSH_KNOWN_HOSTS }}
