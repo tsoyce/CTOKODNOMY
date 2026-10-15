@@ -47,7 +47,7 @@ function readLimited(file, limit = 2 * 1024 * 1024) {
 }
 function safeDirective(line) {
   const trimmed = line.trim().replace(/\s+#.*$/, '');
-  if (!/^(?:listen|server_name|root|proxy_pass|fastcgi_pass|include|ServerName|DocumentRoot|ProxyPass)\s/i.test(trimmed)) return null;
+  if (!/^(?:listen|server_name|root|proxy_pass|fastcgi_pass|include|ServerName|DocumentRoot|ProxyPass|ProxyPassMatch|SetHandler)\s/i.test(trimmed)) return null;
   if (/^include\s/i.test(trimmed) && /(?:env|secret|passwd|credential|private|\.key(?:\W|$))/i.test(trimmed)) return null;
   return trimmed
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[redacted]@')
@@ -92,7 +92,7 @@ section('Web, PHP, database and panel service state', () => {
       if (/^[A-Za-z0-9_.@-]+\.service$/.test(unit) && /nginx|httpd|apache|php.*fpm|fpm.*php|mysql|mariadb|brainy/i.test(unit) && !unit.includes('@.')) units.add(unit);
     }
   }
-  const properties = 'Id,Names,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,MainPID,MemoryCurrent,NRestarts,StateChangeTimestamp,ExecMainExitTimestamp,FragmentPath';
+  const properties = 'Id,Names,LoadState,UnitFileState,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,MainPID,MemoryCurrent,NRestarts,StateChangeTimestamp,ExecMainExitTimestamp,FragmentPath';
   const sorted = [...units].sort();
   out(`Discovered matching units: ${sorted.length}`);
   for (const unit of sorted.slice(0, 24)) {
@@ -103,9 +103,22 @@ section('Web, PHP, database and panel service state', () => {
       const split = line.indexOf('=');
       return [line.slice(0, split), line.slice(split + 1)];
     }));
-    out(`  state=${values.ActiveState}/${values.SubState} result=${values.Result} exit=${values.ExecMainCode}/${values.ExecMainStatus} pid=${values.MainPID} restarts=${values.NRestarts} memory=${values.MemoryCurrent}`);
+    out(`  state=${values.LoadState}/${values.ActiveState}/${values.SubState} enabled=${values.UnitFileState} result=${values.Result} exit=${values.ExecMainCode}/${values.ExecMainStatus} pid=${values.MainPID} restarts=${values.NRestarts} memory=${values.MemoryCurrent}`);
     out(`  changed=${values.StateChangeTimestamp} exited=${values.ExecMainExitTimestamp} unit=${values.FragmentPath}`);
   }
+});
+
+section('PHP unit-file and Unix socket metadata', () => {
+  for (const directory of ['/etc/systemd/system', '/lib/systemd/system', '/run/systemd/system', '/run/systemd/transient']) {
+    if (!fs.existsSync(directory)) continue;
+    for (const name of fs.readdirSync(directory).filter(name => /^php.*fpm.*\.service$/i.test(name)).slice(0, 20)) {
+      const file = path.join(directory, name);
+      const stat = fs.lstatSync(file);
+      out(`${file}: ${stat.isSymbolicLink() ? `link=${fs.readlinkSync(file)} exists=${fs.existsSync(file)}` : 'regular'} modified=${stat.mtime.toISOString()}`);
+    }
+  }
+  const result = run('ss', ['-lx']);
+  if (result.status === 0) for (const line of result.stdout.split('\n').filter(line => /php|fpm/i.test(line)).slice(0, 15)) out(line);
 });
 
 section('Listening web and PHP ports (no process arguments)', () => {

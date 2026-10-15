@@ -73,9 +73,16 @@ printf '%s\n' "$report"
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
   # Publish this read-only metadata report via the check API as well as logs.
   # Escape workflow-command delimiters; diagnostic output excludes credentials.
-  escaped=${report//%/%25}
-  escaped=${escaped//$'\r'/%0D}
-  escaped=${escaped//$'\n'/%0A}
-  printf '::%s title=BrainyCP server report::%s\n' "$report_type" "$escaped"
+  remaining=$report
+  report_part=1
+  while [[ -n $remaining ]]; do
+    chunk=${remaining:0:2400}
+    remaining=${remaining:2400}
+    escaped=${chunk//%/%25}
+    escaped=${escaped//$'\r'/%0D}
+    escaped=${escaped//$'\n'/%0A}
+    printf '::%s title=BrainyCP server report part %s::%s\n' "$report_type" "$report_part" "$escaped"
+    report_part=$((report_part + 1))
+  done
 fi
 [[ $report_type == notice ]]
