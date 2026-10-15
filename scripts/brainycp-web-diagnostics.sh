@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process';
 const [appRoot, appUser, appPort, appDomain, probeDomain] = process.argv.slice(2);
 const domains = [...new Set([appDomain, probeDomain].filter(Boolean))];
 let outputBytes = 0;
-const maximumOutput = 12 * 1024;
+const maximumOutput = 24 * 1024;
 function out(value = '') {
   const line = String(value).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').slice(0, 500);
   const size = Buffer.byteLength(line) + 1;
@@ -146,6 +146,149 @@ section('Selected current virtual-host routing directives', () => {
       try { configMetadata(`${directory}/${domain}.conf`); } catch { out(`${directory}/${domain}.conf: metadata unavailable`); }
     }
   }
+});
+
+section('PHP recovery metadata: ownership, runtime sockets and persistent unit files', () => {
+  const unitFiles = new Set();
+  const unitName = /^(?:php.*fpm.*|fpm.*)\.service$/i;
+  function metadata(file) {
+    try {
+      const stat = fs.lstatSync(file);
+      const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isSocket() ? 'socket' : stat.isFile() ? 'file' : 'other';
+      const link = stat.isSymbolicLink() ? ` target=${fs.readlinkSync(file)} targetExists=${fs.existsSync(file)}` : '';
+      out(`${file}: type=${type} mode=${(stat.mode & 0o7777).toString(8)} uid=${stat.uid} gid=${stat.gid} bytes=${stat.size} mtime=${stat.mtime.toISOString()} ctime=${stat.ctime.toISOString()}${link}`);
+      return stat;
+    } catch { out(`${file}: absent or unavailable`); return null; }
+  }
+  for (const file of [`/home/${appUser}`, path.dirname(appRoot), '/var/run/php-fpm', '/etc/systemd/system']) metadata(file);
+  for (const directory of ['/etc/systemd/system', '/lib/systemd/system', '/usr/lib/systemd/system', '/run/systemd/system', '/run/systemd/transient', '/run/phpunits']) {
+    if (!fs.existsSync(directory)) continue;
+    const entries = fs.readdirSync(directory, { withFileTypes: true }).slice(0, 5000);
+    for (const entry of entries.filter(entry => unitName.test(entry.name)).slice(0, 50)) {
+      const file = path.join(directory, entry.name);
+      metadata(file);
+      if (fs.existsSync(file)) unitFiles.add(file);
+    }
+    for (const wants of entries.filter(entry => entry.isDirectory() && /\.wants$/.test(entry.name)).slice(0, 50)) {
+      const wantsDirectory = path.join(directory, wants.name);
+      for (const name of fs.readdirSync(wantsDirectory).filter(name => unitName.test(name)).slice(0, 50)) metadata(path.join(wantsDirectory, name));
+    }
+  }
+  for (const directory of ['/var/run/php-fpm', '/run/php-fpm']) {
+    if (!fs.existsSync(directory)) continue;
+    for (const name of fs.readdirSync(directory).slice(0, 30)) metadata(path.join(directory, name));
+  }
+  for (const file of [...unitFiles].slice(0, 30)) {
+    out(`Safe PHP unit directives: ${file}`);
+    try {
+      for (const source of readLimited(file, 256 * 1024).split('\n')) {
+        const line = source.trim();
+        if (/^(?:User|Group|Type|PIDFile|WorkingDirectory)\s*=/.test(line)) out(`  ${line.slice(0, 220)}`);
+        const start = line.match(/^ExecStart\s*=\s*[-+!:@]*(\/[^\s"']+)/);
+        if (start) out(`  ExecStart executable=${start[1].slice(0, 220)}`);
+      }
+    } catch { out('  Selected unit directives unavailable'); }
+  }
+});
+
+section('PHP recovery metadata: bounded installed runtime and configuration discovery', () => {
+  const roots = new Set();
+  const unitFiles = new Set();
+  const configurations = new Set();
+  const executables = new Set();
+  const safePath = /^\/[A-Za-z0-9_.@%+/-]+$/;
+  function metadata(file) {
+    try {
+      const stat = fs.lstatSync(file);
+      const link = stat.isSymbolicLink() ? ` target=${fs.readlinkSync(file)} targetExists=${fs.existsSync(file)}` : '';
+      out(`${file}: mode=${(stat.mode & 0o7777).toString(8)} uid=${stat.uid} gid=${stat.gid} bytes=${stat.size} mtime=${stat.mtime.toISOString()} ctime=${stat.ctime.toISOString()}${link}`);
+    } catch { out(`${file}: metadata unavailable`); }
+  }
+  // Inspect only PHP-named roots; never recurse through sites, homes or general /opt trees.
+  for (const directory of ['/opt', '/usr/local', '/etc', '/etc/opt/remi', '/opt/remi']) {
+    if (!fs.existsSync(directory)) continue;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).slice(0, 2000)) {
+      if (/^php[A-Za-z0-9_.-]*$/i.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) roots.add(path.join(directory, entry.name));
+    }
+  }
+  let visited = 0;
+  const maximumEntries = 10000;
+  function discover(directory, depth) {
+    if (depth > 5 || visited >= maximumEntries) return;
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (++visited > maximumEntries) break;
+      const file = path.join(directory, entry.name);
+      if (!safePath.test(file)) continue;
+      if (entry.isDirectory()) {
+        if (/^lib(?:64)?$/i.test(entry.name)) {
+          if (fs.existsSync(path.join(file, 'systemd'))) discover(path.join(file, 'systemd'), depth + 2);
+        } else if (!/^(?:share|include|doc|docs|man|test|tests|cache|sessions|tmp)$/i.test(entry.name)) discover(file, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      if (/^php-fpm(?:[0-9.]+)?$/i.test(entry.name)) executables.add(file);
+      if (/^(?:php.*fpm.*|fpm.*)\.service$/i.test(entry.name)) unitFiles.add(file);
+      if (/^php-fpm\.conf$/i.test(entry.name) || entry.name === `${appUser}.conf`) configurations.add(file);
+    }
+  }
+  for (const root of [...roots].slice(0, 40)) {
+    metadata(root);
+    // Do not follow installation-root symlinks into unrelated trees.
+    try { if (fs.lstatSync(root).isDirectory()) discover(root, 0); } catch {}
+  }
+  out(`Bounded PHP scan: roots=${roots.size} entries=${visited} maxDepth=5 entryLimit=${maximumEntries}`);
+  for (const file of [...executables].slice(0, 30)) metadata(file);
+  out(`PHP-FPM executables found=${executables.size}; no PHP executable was run`);
+  for (const file of [...unitFiles].slice(0, 30)) {
+    metadata(file);
+    try {
+      for (const source of readLimited(file, 256 * 1024).split('\n')) {
+        const line = source.trim();
+        if (/^(?:User|Group|Type|PIDFile|WorkingDirectory)\s*=/.test(line)) out(`  ${line.slice(0, 220)}`);
+        const start = line.match(/^ExecStart\s*=\s*[-+!:@]*(\/[^\s"']+)/);
+        if (start) out(`  ExecStart executable=${start[1].slice(0, 220)}`);
+      }
+    } catch { out('  Selected unit directives unavailable'); }
+  }
+  for (const file of [...configurations].slice(0, 50)) {
+    metadata(file);
+    try {
+      for (const source of readLimited(file, 512 * 1024).split('\n')) {
+        const line = source.trim();
+        const match = line.match(/^(include|pid|listen|user|group|error_log|daemonize)\s*=\s*([^;#]*)/i);
+        if (!match) continue;
+        const value = match[2].trim();
+        if (!/^[A-Za-z0-9_./*:@%+ -]+$/.test(value) || /(?:secret|passwd|credential|\.env(?:\W|$))/i.test(value)) continue;
+        out(`  ${match[1]}=${value.slice(0, 200)}`);
+      }
+    } catch { out('  Selected PHP-FPM directives unavailable'); }
+  }
+});
+
+section('Application-account PHP socket mapping (safe Apache metadata only)', () => {
+  const directory = '/etc/httpd/vhost.d';
+  if (!fs.existsSync(directory)) { out('Apache virtual-host directory unavailable'); return; }
+  const accountSites = path.dirname(appRoot);
+  const filenames = fs.readdirSync(directory).filter(name => /^[A-Za-z0-9_.-]+\.conf$/.test(name)).slice(0, 150);
+  const mappings = new Set();
+  for (const filename of filenames) {
+    let content;
+    try { content = readLimited(path.join(directory, filename), 512 * 1024); } catch { continue; }
+    for (const block of content.matchAll(/<VirtualHost\b[^>]*>([\s\S]*?)<\/VirtualHost>/gi)) {
+      const lines = block[1].split('\n').map(line => line.trim()).filter(line => !line.startsWith('#'));
+      const documentRoots = lines.map(line => line.match(/^DocumentRoot\s+["']?(\/[^"'\s]+)/i)?.[1]).filter(Boolean);
+      if (!documentRoots.some(root => root === accountSites || root.startsWith(`${accountSites}/`))) continue;
+      const domains = lines.map(line => line.match(/^ServerName\s+([A-Za-z0-9][A-Za-z0-9.-]*)(?:\s|$)/i)?.[1]).filter(Boolean);
+      const sockets = lines.filter(line => /^SetHandler\s+/i.test(line)).flatMap(line => [...line.matchAll(/unix:(\/[A-Za-z0-9_.@/-]*\/php[0-9]+w?-[A-Za-z0-9_-]+\.sock)/gi)].map(match => match[1]));
+      for (const domain of domains) for (const socket of sockets) {
+        if (path.basename(socket).endsWith(`-${appUser}.sock`)) mappings.add(`${domain} -> ${socket}`);
+      }
+    }
+  }
+  out(`Scanned account-scoped Apache files (bounded): ${filenames.length}; mappings=${mappings.size}`);
+  for (const mapping of [...mappings].sort().slice(0, 60)) out(mapping);
 });
 
 section('Loaded Nginx listen/server_name inventory (routing metadata only)', () => {
