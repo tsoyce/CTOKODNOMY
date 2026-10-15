@@ -148,6 +148,38 @@ section('Selected current virtual-host routing directives', () => {
   }
 });
 
+section('PHP package state and recent package actions (no command arguments)', () => {
+  const packages = run('dpkg-query', ['-W', '-f=${Package}\t${Status}\t${Version}\n', '*php*']);
+  if (packages.status === 0 || packages.stdout) {
+    for (const line of (packages.stdout || '').split('\n').filter(line => /php(?:8[1-4]w|.*fpm)|brainyphp/i.test(line)).slice(0, 60)) out(line);
+  }
+  for (const directory of ['/usr/bin', '/usr/sbin', '/usr/local/bin', '/usr/local/sbin']) {
+    if (!fs.existsSync(directory)) continue;
+    for (const name of fs.readdirSync(directory).filter(name => /^php(?:[0-9.w-]*|-fpm[0-9.w-]*)$/i.test(name)).slice(0, 25)) {
+      const file = path.join(directory, name);
+      const stat = fs.lstatSync(file);
+      out(`${file}: mode=${(stat.mode & 0o7777).toString(8)} bytes=${stat.size} ctime=${stat.ctime.toISOString()}${stat.isSymbolicLink() ? ` target=${fs.readlinkSync(file)} exists=${fs.existsSync(file)}` : ''}`);
+    }
+  }
+  for (const file of ['/var/log/apt/history.log', '/var/log/dpkg.log']) {
+    if (!fs.existsSync(file)) continue;
+    const content = readLimited(file, 8 * 1024 * 1024);
+    if (file.includes('/apt/')) {
+      for (const block of content.split('\n\n').filter(block => /php|nginx|httpd|certbot/i.test(block)).slice(-10)) {
+        out(`Package history start=${block.match(/^Start-Date:\s*(.+)$/m)?.[1] || 'unknown'} end=${block.match(/^End-Date:\s*(.+)$/m)?.[1] || 'unknown'}`);
+        const command = block.match(/^Commandline:\s*(.+)$/m)?.[1] || '';
+        out(`  action=${command.match(/\b(?:autoremove|autopurge|remove|purge|install|upgrade|dist-upgrade|full-upgrade)\b/)?.[0] || 'other'}`);
+        for (const line of block.split('\n').filter(line => /^(Install|Remove|Purge|Upgrade):/.test(line))) {
+          const names = [...line.matchAll(/\b((?:php|brainyphp|nginx|httpd|certbot)[A-Za-z0-9+_.-]*)(?::[A-Za-z0-9_-]+)?\s*\(/g)].map(match => match[1]);
+          if (names.length) out(`  ${line.split(':')[0]}: ${names.join(', ')}`);
+        }
+      }
+    } else {
+      for (const line of content.split('\n').filter(line => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (?:remove|purge|upgrade|install|status) (?:[a-z-]+ )?(?:php|brainyphp|nginx|httpd|certbot)[A-Za-z0-9+_.:-]*\b/.test(line)).slice(-35)) out(line);
+    }
+  }
+});
+
 section('PHP recovery metadata: ownership, runtime sockets and persistent unit files', () => {
   const unitFiles = new Set();
   const unitName = /^(?:php.*fpm.*|fpm.*)\.service$/i;
@@ -228,7 +260,7 @@ section('PHP recovery metadata: bounded installed runtime and configuration disc
         continue;
       }
       if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-      if (/^php-fpm(?:[0-9.]+)?$/i.test(entry.name)) executables.add(file);
+      if (/^php-fpm(?:[0-9.]+)?$/i.test(entry.name) && (fs.statSync(file).mode & 0o111)) executables.add(file);
       if (/^(?:php.*fpm.*|fpm.*)\.service$/i.test(entry.name)) unitFiles.add(file);
       if (/^(?:php.*fpm|fpm).*\.conf$/i.test(entry.name) || (entry.name.endsWith('.conf') && entry.name.includes(appUser))) configurations.add(file);
     }
