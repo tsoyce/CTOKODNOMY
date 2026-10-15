@@ -149,6 +149,23 @@ section('Selected current virtual-host routing directives', () => {
 });
 
 section('PHP package state and recent package actions (no command arguments)', () => {
+  for (const version of ['82', '84']) {
+    const listing = run('dpkg-query', ['-L', `php${version}w-fpm`]);
+    out(`Installed FPM package file metadata: php${version}w-fpm`);
+    for (const file of (listing.stdout || '').split('\n').filter(file => /^\//.test(file) && /php-fpm|\.service$|systemd/.test(file)).slice(0, 30)) {
+      try {
+        const stat = fs.lstatSync(file);
+        out(`  ${file}: type=${stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file'} mode=${(stat.mode & 0o7777).toString(8)} bytes=${stat.size}${stat.isSymbolicLink() ? ` target=${fs.readlinkSync(file)} exists=${fs.existsSync(file)}` : ''}`);
+        if (stat.isFile() && file.endsWith('.service')) for (const line of readLimited(file, 128 * 1024).split('\n')) {
+          if (/^(?:Type|PIDFile|User|Group)=/.test(line)) out(`    ${line}`);
+          const executable = line.match(/^ExecStart=[-+!:@]*(\/[^\s]+)/)?.[1];
+          if (executable) out(`    executable=${executable}`);
+          const config = line.match(/(?:--fpm-config(?:=|\s+)|-y\s+)(\/[A-Za-z0-9_.@%+/-]+)/)?.[1];
+          if (config) out(`    fpmConfig=${config}`);
+        }
+      } catch { out(`  ${file}: MISSING`); }
+    }
+  }
   const packages = run('dpkg-query', ['-W', '-f=${Package}\t${Status}\t${Version}\n', '*php*']);
   if (packages.status === 0 || packages.stdout) {
     for (const line of (packages.stdout || '').split('\n').filter(line => /php(?:8[1-4]w|.*fpm)|brainyphp/i.test(line)).slice(0, 60)) out(line);
@@ -237,7 +254,7 @@ section('PHP recovery metadata: bounded installed runtime and configuration disc
     } catch { out(`${file}: metadata unavailable`); }
   }
   // Inspect only PHP-named roots; never recurse through sites, homes or general /opt trees.
-  for (const directory of ['/opt', '/usr/local', '/etc', '/etc/opt/remi', '/opt/remi']) {
+  for (const directory of ['/opt', '/usr/local', '/usr/bin', '/usr/sbin', '/etc', '/etc/opt/remi', '/opt/remi']) {
     if (!fs.existsSync(directory)) continue;
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).slice(0, 2000)) {
       if (/^php[A-Za-z0-9_.-]*$/i.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) roots.add(path.join(directory, entry.name));
