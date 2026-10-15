@@ -9,7 +9,7 @@ import {
   readFile,
   unlink,
 } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseEnv } from "node:util";
 
@@ -54,7 +54,17 @@ function command(
     maxBuffer: 1_048_576,
     ...options,
   });
-  if (result.error || result.status !== 0) fail(message);
+  if (result.error || result.status !== 0) {
+    // Never include child arguments, input, environment or stderr here: they
+    // can contain database credentials. A signal is evidence to investigate,
+    // not a reason to retry through another executable.
+    const reason = result.signal
+      ? `terminated by ${result.signal}`
+      : result.error
+        ? `could not run (${String(result.error.code ?? "execution error").replace(/[^A-Za-z0-9_ ]/g, "")})`
+        : `exited with status ${result.status}`;
+    fail(`${message} ${basename(file)} ${reason}; no retry was attempted.`);
+  }
   return result.stdout?.trim() ?? "";
 }
 function peer(sql, database = "postgres") {
@@ -88,14 +98,14 @@ function peer(sql, database = "postgres") {
     "PostgreSQL administration failed. The managed config was preserved for retry.",
   );
 }
-async function secureParent(file, owner) {
+async function secureParent(file, owner, create = false) {
   const directory = dirname(file);
   let current = "/";
   for (const component of directory.split("/").filter(Boolean)) {
     current = resolve(current, component);
     let entry = await stat(current);
     if (!entry) {
-      if (!owner) fail("The destination directory does not exist.");
+      if (!owner || !create) fail("The destination directory does not exist.");
       try {
         await mkdir(current, { mode: 0o700 });
         await chown(current, owner.uid, owner.gid);
@@ -168,11 +178,9 @@ function postgresEnv(config) {
     PGDATABASE: config.name,
   });
 }
-async function prepare(args) {
-  if (args.length !== 6 || process.getuid?.() !== 0)
-    fail(
-      "prepare requires root and CONFIG_FILE APP_USER PUBLIC_ORIGIN APP_PORT MEDIA_DIR DATABASE_NAME.",
-    );
+function deploymentArgs(args) {
+  if (args.length !== 6)
+    fail("Expected CONFIG_FILE APP_USER PUBLIC_ORIGIN APP_PORT MEDIA_DIR DATABASE_NAME.");
   const [fileArg, appUser, originArg, port, mediaArg, name] = args;
   const file = validPath(fileArg),
     media = validPath(mediaArg);
@@ -202,10 +210,38 @@ async function prepare(args) {
   if (
     !Number.isSafeInteger(owner.uid) ||
     owner.uid <= 0 ||
-    !Number.isSafeInteger(owner.gid)
+    !Number.isSafeInteger(owner.gid) ||
+    owner.gid < 0
   )
     fail("A non-root app user is required.");
-  await secureParent(file, owner);
+  return { file, media, appUser, port, name, origin, owner };
+}
+function matchingConfig(config, deployment) {
+  if (
+    config.name !== deployment.name ||
+    config.env.APP_ORIGIN !== deployment.origin.origin ||
+    config.env.PORT !== deployment.port ||
+    config.env.MEDIA_DIR !== deployment.media
+  )
+    fail("The existing config does not match this deployment. Nothing was changed.");
+}
+async function check(args) {
+  const deployment = deploymentArgs(args);
+  // Deliberately omit creation: a missing or unsafe path stops a release
+  // update instead of silently provisioning a new installation.
+  await secureParent(deployment.file, deployment.owner);
+  matchingConfig(
+    await loadConfig(deployment.file, deployment.owner.uid),
+    deployment,
+  );
+  console.log("CONFIG_READY");
+}
+async function prepare(args) {
+  if (process.getuid?.() !== 0)
+    fail("prepare requires root and CONFIG_FILE APP_USER PUBLIC_ORIGIN APP_PORT MEDIA_DIR DATABASE_NAME.");
+  const deployment = deploymentArgs(args);
+  const { file, media, appUser, port, name, origin, owner } = deployment;
+  await secureParent(file, owner, true);
   const exists = await stat(file);
   const state = JSON.parse(
     peer(
@@ -219,15 +255,7 @@ async function prepare(args) {
   let config;
   if (exists) {
     config = await loadConfig(file, owner.uid);
-    if (
-      config.name !== name ||
-      config.env.APP_ORIGIN !== origin.origin ||
-      config.env.PORT !== port ||
-      config.env.MEDIA_DIR !== media
-    )
-      fail(
-        "The existing config does not match this deployment. Nothing was changed.",
-      );
+    matchingConfig(config, deployment);
   } else {
     const password = randomBytes(32).toString("hex");
     const env = {
@@ -345,9 +373,10 @@ async function backup(args) {
 }
 try {
   const [operation, ...args] = process.argv.slice(2);
-  if (operation === "prepare") await prepare(args);
+  if (operation === "check") await check(args);
+  else if (operation === "prepare") await prepare(args);
   else if (operation === "backup") await backup(args);
-  else fail("Usage: native-db.mjs prepare|backup ...");
+  else fail("Usage: native-db.mjs check|prepare|backup ...");
 } catch (error) {
   const safeErrors = new Set([
     "EACCES",

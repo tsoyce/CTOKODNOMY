@@ -1,177 +1,180 @@
 #!/usr/bin/env bash
-# Activate one checked release in the existing BrainyCP service.
+# Release-only update. Infrastructure is provisioned separately by its operator.
 set -Eeuo pipefail
-trap 'printf "Activation failed at line %s.\n" "$LINENO" >&2' ERR
-trap 'result=$?; if (( result != 0 )); then printf "Activation aborted at line %s (exit %s).\n" "$LINENO" "$result" >&2; fi' EXIT
 umask 077
-nginx_test() {
-  local check_output
-  if check_output=$(nginx -t 2>&1); then
-    printf '%s\n' "$check_output" | tail -n 2
-  else
-    printf '%s\n' "$check_output" >&2
-    return 1
-  fi
-}
-[[ $# -eq 9 && $(id -u) == 0 ]] || { echo 'Activation needs nine arguments and root.'; exit 2; }
-base=$1 app_user=$2 port=$3 domain=$4 sha=$5 node_version=$6 node_digest=$7 app_digest=$8 incoming=$9
-[[ $base =~ ^/[A-Za-z0-9_/-]+$ && $base != / && $(readlink -e "$base") == "$base" ]] || { echo 'Application path is not physical.'; exit 2; }
-[[ $app_user =~ ^[a-z_][a-z0-9_-]*$ && $port =~ ^[1-9][0-9]{0,4}$ ]] || { echo 'Invalid application user or port.'; exit 2; }
-[[ $domain =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && $sha =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid domain or commit.'; exit 2; }
-[[ $node_version =~ ^24\.[0-9]+\.[0-9]+$ && $node_digest =~ ^[a-f0-9]{64}$ && $app_digest =~ ^[a-f0-9]{64}$ ]] || { echo 'Invalid runtime version or artifact digests.'; exit 2; }
-[[ $incoming == "/var/lib/ctokodnomy-deploy/${app_user}-${port}/$sha" && -d $incoming && ! -L $incoming && $(stat -c %u "$incoming") == 0 ]] || { echo 'Incoming path or root ownership does not match.'; exit 2; }
-[[ $(uname -m) == x86_64 && $(stat -c %U "$base") == "$app_user" ]] || { echo 'CPU architecture or application owner does not match.'; exit 2; }
+helper_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$helper_dir/brainycp-guards.sh"
+trap 'deployment_error "$?" "$LINENO"' ERR
+fail() { printf 'Activation refused: %s\n' "$*" >&2; exit 2; }
+[[ $# -eq 9 && $(id -u) == 0 ]] || fail 'Expected nine arguments and root.'
+base=$1 app_user=$2 port=$3 domain=$4 sha=$5 app_digest=$6 incoming=$7 node_bin=$8 php_checks=$9
+[[ $base =~ ^/[A-Za-z0-9_/-]+$ && $base != / && $(readlink -e "$base") == "$base" ]] || fail 'Application path must be physical.'
+[[ $app_user =~ ^[a-z_][a-z0-9_-]*$ && $(id -u "$app_user") -gt 0 ]] || fail 'Expected an unprivileged application user.'
+[[ $port =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) || fail 'Invalid application port.'
+[[ $domain =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && $sha =~ ^[a-f0-9]{40}$ && $app_digest =~ ^[a-f0-9]{64}$ ]] || fail 'Invalid domain, commit or checksum.'
+validate_php_checks "https://$domain/"
+validate_php_checks "$php_checks"
+[[ $incoming == "/var/lib/ctokodnomy-deploy/${app_user}-${port}/$sha" && -d $incoming && ! -L $incoming && $(readlink -e "$incoming") == "$incoming" && $(stat -c %u "$incoming") == 0 ]] || fail 'Invalid private incoming directory.'
+for directory in /var/lib/ctokodnomy-deploy "$(dirname "$incoming")"; do
+  [[ -d $directory && ! -L $directory && $(readlink -e "$directory") == "$directory" && $(stat -c %u "$directory") == 0 ]] && (( (8#$(stat -c %a "$directory") & 8#022) == 0 )) || fail 'Deployment parents must be physical, root-owned and not writable by group/others.'
+  if [[ $directory == "$(dirname "$incoming")" ]]; then [[ $(stat -c %a "$directory") == 700 ]] || fail 'Private deployment parent must have mode 0700.'; fi
+done
+[[ -d $base && $(stat -c %U "$base") == "$app_user" ]] || fail 'Application directory owner does not match.'
+[[ $node_bin =~ ^/[A-Za-z0-9_./-]+$ && -x $node_bin && -f $node_bin && $(readlink -e "$node_bin") == "$node_bin" ]] || fail 'Select the existing physical Node.js executable.'
+# Helpers run as root: never execute a runtime writable by the application user.
+runtime_path=$node_bin
+while [[ $runtime_path != / ]]; do
+  [[ $(stat -c %u "$runtime_path") == 0 ]] && (( (8#$(stat -c %a "$runtime_path") & 8#022) == 0 )) || fail 'Node.js and its parents must be root-owned and not writable by group/others.'
+  runtime_path=$(dirname "$runtime_path")
+done
+[[ $("$node_bin" --version) =~ ^v24\.[0-9]+\.[0-9]+$ ]] || fail 'The existing application runtime must be Node.js 24.'
+for utility in nginx pg_dump pg_restore runuser curl flock sha256sum cp ln mv; do command -v "$utility" >/dev/null; done
+panel_main=/etc/brainy/conf/server_control/main
+site="/etc/nginx/conf.d/$domain-game.conf"
+[[ -f $site && ! -L $site && $(readlink -e "$site") == "$site" ]] || fail 'A separately provisioned conf.d/<domain>-game.conf is required.'
 unit="nodejs@$port.service"
-[[ $(systemctl show "$unit" -p RootDirectory --value) == '' ]] || { echo 'A jailed service needs a separate adapter.'; exit 1; }
-working=$(systemctl show "$unit" -p WorkingDirectory --value)
-[[ $working == "$base" || $working == "$base/current" ]] || { echo 'Service directory does not match this application.'; exit 1; }
-site="/etc/nginx/sites-available/$domain.conf"
-[[ -f $site && ! -L $site ]] || { echo 'Expected BrainyCP site configuration not found.'; exit 1; }
-grep -Fq "$domain" "$site"
-bind_ip=$(awk '$1 == "listen" && $2 ~ /^[0-9.]+:80;$/ {split($2, p, ":"); print p[1]; exit}' "$site")
-listen_prefix=''
-if [[ -n $bind_ip ]]; then listen_prefix="$bind_ip:"; fi
-for command in certbot nginx psql pg_dump pg_restore runuser openssl curl; do command -v "$command" >/dev/null; done
-app_group=$(id -gn "$app_user")
 app_home=$(getent passwd "$app_user" | cut -d: -f6)
-app_home=$(readlink -e "$app_home")
-[[ $app_home =~ ^/[A-Za-z0-9_/-]+$ && $app_home != / ]] || { echo 'Application home is not a physical directory.'; exit 2; }
+[[ $app_home =~ ^/[A-Za-z0-9_/-]+$ && $app_home != / && $(readlink -e "$app_home") == "$app_home" ]] || fail 'Application home must be physical.'
 data="$app_home/.local/share/ctokodnomy/$port"
 config="$app_home/.config/ctokodnomy/native-$port.env"
 database="ctokodnomy_${app_user}_$port"
-runtime="/opt/ctokodnomy-node"
-node_root="$runtime/node-v$node_version-linux-x64"
-node_bin="$node_root/bin/node"
 release="$base/releases/$sha"
-dropin="/etc/systemd/system/$unit.d/50-ctokodnomy.conf"
-stamp=$(date -u +%Y%m%dT%H%M%SZ)
-backup="$data/backups/$stamp-$sha"
-for dir in "$base/shared" "$base/shared/runtime" "$data" "$data/uploads" "$data/backups"; do
-  [[ ! -L $dir ]] || exit 2
-  if [[ ! -e $dir ]]; then install -d -o "$app_user" -g "$app_group" -m 700 "$dir"; fi
-  [[ -d $dir && $(stat -c %U "$dir") == "$app_user" ]] || exit 2
-done
-[[ ! -L $runtime ]] || exit 2
-if [[ ! -e $runtime ]]; then install -d -o root -g root -m 755 "$runtime"; fi
-[[ -d $runtime && $(stat -c %u "$runtime") == 0 && $(stat -c %a "$runtime") == 755 ]] || exit 2
-# The official runtime has a root-owned location outside writable app folders.
-if [[ ! -e $node_root ]]; then
-  printf '%s  %s\n' "$node_digest" "$incoming/node.tar.xz" | sha256sum --check --status
-  tar -xJf "$incoming/node.tar.xz" -C "$runtime" --no-same-owner
-  chown -R root:root "$node_root"
+[[ -L $base/current ]] || fail 'An existing working current release symlink is required.'
+old_current=$(readlink -e "$base/current")
+[[ $old_current =~ ^$base/releases/[a-f0-9]{40}$ && -d $old_current ]] || fail 'current must select an existing release under this application.'
+[[ -f $old_current/app.mjs && ! -L $old_current/app.mjs && -f $old_current/dist/server/index.js && ! -L $old_current/dist/server/index.js && -L $old_current/.env && $(readlink -e "$old_current/.env") == "$config" ]] || fail 'Previous release files and environment must be available for rollback.'
+[[ ! -e $release && ! -L $release ]] || fail 'Release already exists; review it before any retry.'
+service_state() {
+  systemctl show "$unit" -p User -p Group -p RootDirectory -p WorkingDirectory -p EnvironmentFiles -p FragmentPath -p DropInPaths
+}
+[[ $(systemctl show "$unit" -p User --value) == "$app_user" ]] || fail 'Service user does not match.'
+[[ $(systemctl show "$unit" -p RootDirectory --value) == '' ]] || fail 'A jailed service needs a separate adapter.'
+[[ $(systemctl show "$unit" -p WorkingDirectory --value) == "$base/current" ]] || fail 'Service must already run in APP_ROOT/current.'
+validate_service_exec() {
+  local exec_start
+  exec_start=$(systemctl show "$unit" -p ExecStart --value)
+  [[ $exec_start == "{ path=$node_bin ; argv[]=$node_bin $base/current/app.mjs ; "* && ${exec_start#?} != *'{'* ]] || fail 'Service must already run NODE_BIN APP_ROOT/current/app.mjs.'
+}
+validate_service_exec
+[[ $(systemctl show "$unit" -p EnvironmentFiles --value) == "$config (ignore_errors=no)" ]] || fail 'Service must use the existing private application environment file.'
+"$node_bin" "$helper_dir/native-db.mjs" check "$config" "$app_user" "https://$domain" "$port" "$data/uploads" "$database"
+brainycp_guard "$panel_main"
+if nginx -t >/dev/null 2>&1; then :; else
+  status=$?
+  printf 'Existing Nginx configuration check failed; ask its operator to investigate.\n' >&2
+  deployment_error "$status" "$LINENO"
+  exit "$status"
 fi
-[[ ! -L $node_root && $(stat -c %u "$node_root") == 0 ]] || exit 2
-[[ $("$node_bin" --version) == "v$node_version" ]] || exit 2
-[[ ! -e $base/shared/runtime/node24 || -L $base/shared/runtime/node24 ]] || exit 2
-ln -sfnT "$node_root" "$base/shared/runtime/node24"
-echo 'Application Node.js 24 runtime ready.'
-bash "$incoming/brainycp-stage.sh" "$base" "$app_user" "$sha" "$incoming/app.tar.gz" "$app_digest" "$node_bin"
-install -d -m 700 "$backup"
-"$node_bin" "$incoming/native-copy.mjs" "$site" "$backup/nginx.conf"
-if [[ -f $dropin ]]; then "$node_bin" "$incoming/native-copy.mjs" "$dropin" "$backup/service.conf"; fi
-old_current=''
-if [[ -L $base/current ]]; then old_current=$(readlink "$base/current"); elif [[ -e $base/current ]]; then echo 'current is not a release symlink.'; exit 1; fi
-stopped=0
-activated=0
+# Inspect active includes without logging other sites' configuration.
+nginx -T 2>/dev/null | awk -v expected="# configuration file $site:" '$0 == expected {found++} END {exit(found != 1)}' || {
+  pipeline_status=("${PIPESTATUS[@]}")
+  for status in "${pipeline_status[@]}"; do
+    if (( status == 137 )); then deployment_error "$status" "$LINENO"; exit "$status"; fi
+  done
+  fail 'The dedicated proxy configuration must already be loaded exactly once.'
+}
+systemctl is-active --quiet "$unit" || fail 'The existing game service is not running.'
+app_health() {
+  local url body
+  for url in "http://127.0.0.1:$port/api/health" "https://$domain/api/health"; do
+    body=$(curl --disable --noproxy '*' --connect-timeout 5 --max-time 15 --max-filesize 65536 --fail --silent --show-error "$url") || return $?
+    [[ $body == *'"ok":true'* ]] || return 1
+  done
+}
+app_health
+php_baseline=$(php_snapshot "$php_checks")
+files_state=$(sha256sum "$panel_main" "$site" "$config")
+file_modes=$(stat -c '%u:%g:%a' "$panel_main" "$site" "$config")
+unit_state=$(service_state)
+unit_text=$(systemctl cat "$unit")
+assert_unchanged() {
+  brainycp_guard "$panel_main"
+  validate_service_exec
+  [[ $(sha256sum "$panel_main" "$site" "$config") == "$files_state" && $(stat -c '%u:%g:%a' "$panel_main" "$site" "$config") == "$file_modes" ]] || fail 'Panel, proxy or application configuration changed during deployment.'
+  [[ $(service_state) == "$unit_state" && $(systemctl cat "$unit") == "$unit_text" ]] || fail 'Service configuration changed during deployment.'
+}
+# Serialize even deployments started outside GitHub Actions, after read-only checks.
+exec {lock_fd}> "$(dirname "$incoming")/deploy.lock"
+flock --nonblock "$lock_fd" || fail 'Another deployment is in progress.'
+assert_unchanged
+[[ $(readlink -e "$base/current") == "$old_current" ]] || fail 'Current release changed during preflight.'
+backup_parent="$(dirname "$incoming")/backups"
+if [[ ! -e $backup_parent && ! -L $backup_parent ]]; then mkdir -m 700 "$backup_parent"; fi
+[[ -d $backup_parent && ! -L $backup_parent && $(readlink -e "$backup_parent") == "$backup_parent" && $(stat -c %u "$backup_parent") == 0 && $(stat -c %a "$backup_parent") == 700 ]] || fail 'Backup parent must be a physical root-owned 0700 directory.'
+backup="$backup_parent/$(date -u +%Y%m%dT%H%M%SZ)-$sha"
+mkdir -m 700 "$backup"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "$panel_main" "$backup/brainy-main.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "$site" "$backup/nginx-game.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "$config" "$backup/application.env"
+printf '%s\n' "$unit_state" > "$backup/service-state.txt"
+printf '%s\n' "$unit_text" > "$backup/service.conf"
+printf '%s\n' "$old_current" > "$backup/previous-release.txt"
+printf '%s\n' "$files_state" > "$backup/configuration.sha256"
+printf '%s\n' "$php_baseline" > "$backup/php-health.txt"
+"$node_bin" "$helper_dir/native-db.mjs" backup "$config" "$backup/database.dump"
+echo "Private backup verified: $backup."
+# npm/extraction failures leave the working release and service untouched.
+bash "$helper_dir/brainycp-stage.sh" "$base" "$app_user" "$sha" "$incoming/app.tar.gz" "$app_digest" "$node_bin"
+assert_unchanged
+php_snapshot "$php_checks" "$php_baseline" >/dev/null
+[[ $(readlink -e "$base/current") == "$old_current" ]] || fail 'Current release changed while staging.'
+[[ ! -e $release/.env && ! -L $release/.env ]] || fail 'Unexpected environment in the new release.'
+runuser -u "$app_user" -- ln -s "$config" "$release/.env"
+temporary="$base/.ctokodnomy-current-$sha"
+rollback_temporary="$base/.ctokodnomy-rollback-$sha"
+[[ ! -e $temporary && ! -L $temporary && ! -e $rollback_temporary && ! -L $rollback_temporary ]] || fail 'Unexpected pending release link; review it first.'
+restart_attempted=0
 rollback() {
-  result=$?
-  if (( result != 0 && stopped == 1 && activated == 0 )); then
-    systemctl stop "$unit" || true
-    if [[ -f $backup/service.conf ]]; then "$node_bin" "$incoming/native-copy.mjs" "$backup/service.conf" "$dropin"; else rm -f "$dropin"; fi
-    if [[ -n $old_current ]]; then ln -sfnT "$old_current" "$base/current"; else rm -f "$base/current"; fi
-    systemctl daemon-reload
-    systemctl reset-failed "$unit" || true
-    systemctl start "$unit" || true
-    echo 'The previous application service was restored; database/configuration were retained.'
+  local result=$? rollback_result=0 current_target
+  trap - EXIT ERR INT TERM HUP
+  if (( result != 0 )); then
+    set +e
+    deployment_error "$result" 'release transaction'
+    current_target=$(readlink -e "$base/current")
+    if [[ $current_target == "$release" ]]; then
+      runuser -u "$app_user" -- ln -s "$old_current" "$rollback_temporary" && runuser -u "$app_user" -- mv -Tf "$rollback_temporary" "$base/current"
+      rollback_result=$?
+      if (( rollback_result == 0 )); then
+        systemctl restart "$unit"
+        rollback_result=$?
+        if (( rollback_result == 0 )); then app_health; rollback_result=$?; fi
+      fi
+      if (( rollback_result == 0 )); then
+        echo 'Previous game code restored. Database was retained; startup migrations may already have run.' >&2
+      else
+        echo "GAME ROLLBACK FAILED. Review $backup; no other services or infrastructure were modified." >&2
+      fi
+    elif [[ $current_target != "$old_current" ]]; then
+      echo 'Current release changed externally; automatic rollback refused to overwrite it.' >&2
+    elif (( restart_attempted == 1 )); then
+      echo 'Game restart failed before release verification; inspect the application service.' >&2
+    fi
+    runuser -u "$app_user" -- rm -f -- "$temporary"
+    php_snapshot "$php_checks" "$php_baseline" >/dev/null || echo 'PHP health check still fails. No PHP or web-server recovery was attempted.' >&2
   fi
-  if (( result != 0 )); then "$node_bin" "$incoming/native-copy.mjs" "$backup/nginx.conf" "$site"; nginx_test && systemctl reload nginx || true; fi
   exit "$result"
 }
 trap rollback EXIT
-# Give ACME an explicit static challenge location, while retaining the old app.
-cat > "$site" <<NGINX
-server {
-    listen ${listen_prefix}80;
-    server_name $domain;
-    location ^~ /.well-known/acme-challenge/ { root $base; try_files \$uri =404; }
-    location / {
-        proxy_pass http://127.0.0.1:$port;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-    }
-}
-NGINX
-nginx_test
-systemctl reload nginx
-cert_name="ctokodnomy-$port"
-(umask 022; certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
-  --webroot --webroot-path "$base" --cert-name "$cert_name" --domain "$domain" \
-  --deploy-hook 'systemctl reload nginx')
-echo 'Public HTTPS certificate ready.'
-systemctl stop "$unit"
-stopped=1
-"$node_bin" "$incoming/native-db.mjs" prepare "$config" "$app_user" "https://$domain" "$port" "$data/uploads" "$database"
-"$node_bin" "$incoming/native-db.mjs" backup "$config" "$backup/database.dump"
-[[ ! -e $release/.env && ! -L $release/.env ]] || exit 2
-ln -s "$config" "$release/.env"
-ln -sfnT "$release" "$base/current"
-install -d -m 755 "$(dirname "$dropin")"
-cat > "$dropin" <<UNIT
-[Service]
-User=$app_user
-Group=$app_group
-WorkingDirectory=$base/current
-ExecStart=
-ExecStart=$node_bin $base/current/app.mjs
-EnvironmentFile=
-EnvironmentFile=$config
-UNIT
-cat > "$site" <<NGINX
-server {
-    listen ${listen_prefix}80;
-    server_name $domain;
-    location ^~ /.well-known/acme-challenge/ { root $base; try_files \$uri =404; }
-    location / { return 301 https://$domain\$request_uri; }
-}
-server {
-    listen ${listen_prefix}443 ssl;
-    server_name $domain;
-    ssl_certificate /etc/letsencrypt/live/$cert_name/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$cert_name/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    client_max_body_size 3m;
-    location / {
-        proxy_pass http://127.0.0.1:$port;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 90s;
-    }
-}
-NGINX
-nginx_test
-systemctl daemon-reload
-systemctl start "$unit"
-systemctl enable "$unit"
-for attempt in $(seq 1 30); do
-  if curl --disable --noproxy '*' --fail --silent "http://127.0.0.1:$port/api/health" | grep -q '"ok":true'; then break; fi
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+runuser -u "$app_user" -- ln -s "$release" "$temporary"
+assert_unchanged
+runuser -u "$app_user" -- mv -Tf "$temporary" "$base/current"
+restart_attempted=1
+systemctl restart "$unit"
+# Only connection/startup readiness is retried; command signal137 always aborts.
+for (( attempt=1; attempt<=30; attempt++ )); do
+  status=0
+  body=$(curl --disable --noproxy '*' --connect-timeout 2 --max-time 3 --max-filesize 65536 --fail --silent "http://127.0.0.1:$port/api/health") || status=$?
+  if (( status == 137 )); then exit 137; fi
+  if (( status == 0 )) && [[ $body == *'"ok":true'* ]]; then break; fi
+  if (( attempt == 30 )); then fail 'New game release did not become healthy.'; fi
   sleep 1
 done
-curl --disable --noproxy '*' --fail --silent "http://127.0.0.1:$port/api/health" | grep -q '"ok":true'
-[[ $(systemctl show "$unit" -p User --value) == "$app_user" ]]
-systemctl reload nginx
-tls_address=${bind_ip:-127.0.0.1}
-for attempt in $(seq 1 30); do
-  if curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent "https://$domain/api/health" | grep -q '"ok":true'; then break; fi
-  sleep 1
-done
-echo 'Expected public certificate:'
-openssl x509 -in "/etc/letsencrypt/live/$cert_name/fullchain.pem" -noout -subject -issuer -dates
-curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/api/health" | grep -q '"ok":true'
-curl --disable --noproxy '*' --resolve "$domain:443:$tls_address" --fail --silent --show-error "https://$domain/" | grep -q 'id="root"'
-activated=1
-echo "Deployment verified: https://$domain; user $app_user; loopback port $port."
-echo "Release: $sha. Private backups: $backup."
+app_health
+assert_unchanged
+php_snapshot "$php_checks" "$php_baseline" >/dev/null
+trap - EXIT INT TERM HUP
+echo "Release verified: $sha; https://$domain; service $unit."
+echo 'Nginx, BrainyCP, PHP, systemd configuration, certificates and runtime were left untouched.'

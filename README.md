@@ -117,4 +117,4 @@ DOCKER_CONFIG=/workspace/.cache/docker docker build --network=host --add-host "$
 - [Размещение, ручной деплой и восстановление](docs/DEPLOYMENT.md).
 - [Памятка по SSH, PowerShell и GitHub Secrets](docs/SSH_DEPLOY_GUIDE.md).
 
-Push запускает проверки. **Deploy BrainyCP (manual)** размещает игру через существующую службу панели: отдельный Node.js 24, PostgreSQL, HTTPS и проверки сайта. **Build BrainyCP release (manual)** создаёт архив для ручной установки. **Deploy Docker (manual)** — отдельный сценарий для размещения Docker. Наличие SSH-секрета само по себе не подтверждает готовность сервера.
+Push запускает проверки. **Deploy BrainyCP (manual)** обновляет уже работающую игру: проверяет `back_server` и PHP-сайты, сохраняет резервные копии и перезапускает только службу игры. Настройки BrainyCP, Nginx, PHP и systemd при обновлении не меняются. Условия запуска и новые поля `node_bin` и `php_checks` описаны в [инструкции BrainyCP](docs/BRAINYCP.md). **Build BrainyCP release (manual)** создаёт архив для ручной установки. **Deploy Docker (manual)** — отдельный сценарий для размещения Docker. Наличие SSH-секрета само по себе не подтверждает готовность сервера.
