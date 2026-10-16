@@ -82,6 +82,7 @@ const account = run('getent', ['passwd', appUser]);
 const accountFields = account.status === 0 ? account.stdout.trim().split(':') : [];
 const home = accountFields[0] === appUser ? accountFields[5] : '';
 if (safePath(home)) {
+  console.log(`Account home configured path: ${JSON.stringify(home)}; realpath: ${resolved(home)}`);
   const config = join(home, '.config/ctokodnomy', `native-${port}.env`);
   console.log(`Expected private config: ${config}; ${metadata(config)}`);
   let marker = false;
