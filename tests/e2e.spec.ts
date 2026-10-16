@@ -66,6 +66,190 @@ test.afterAll(async () => {
   await pool.end();
 });
 
+test("organizer keeps a local light theme, navigates on a phone and safely controls the audience board", async ({
+  browser,
+  page,
+  baseURL,
+}) => {
+  const pageErrors: string[] = [];
+  const settingsWrites: string[] = [];
+  const commands: HostCommand[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "PUT" && pathname === "/api/settings")
+      settingsWrites.push(pathname);
+    if (request.method() === "POST" && pathname.endsWith("/commands"))
+      commands.push(request.postDataJSON().command as HostCommand);
+  });
+  expect((await page.request.post("/api/setup", { data: {
+    token: await issueSetupToken(pool), username: "organizer", password: PASSWORD,
+    brand: defaultBrand,
+  } })).ok()).toBe(true);
+  await page.goto("/admin");
+  const appearance = page.getByLabel("Тема интерфейса", { exact: true });
+  await expect(appearance).toHaveValue("light");
+  await expect(page.locator(".app")).toHaveAttribute("data-theme", "light");
+  await appearance.selectOption("dark");
+  await expect(page.locator(".app")).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(appearance).toHaveValue("dark");
+  await appearance.selectOption("brand");
+  await expect(page.locator(".app")).toHaveAttribute("data-theme", "dark");
+  await appearance.selectOption("light");
+  await page.reload();
+  await expect(appearance).toHaveValue("light");
+  expect(settingsWrites).toEqual([]);
+  expect(await (await page.request.get("/api/settings")).json()).toEqual(defaultBrand);
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/admin/questions/import");
+  const navigation = page.getByRole("navigation", { name: "Разделы администрирования", exact: true });
+  await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
+  await expect(navigation.getByRole("link", { name: "Вопросы", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Импорт вопросов", exact: true })).toBeVisible();
+  await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await navigation.getByRole("link", { name: "Аккаунт", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/account$/);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.getByRole("heading", { name: "Мой аккаунт", exact: true })).toBeInViewport();
+  await navigation.getByRole("link", { name: "Вопросы", exact: true }).click();
+  await page.getByRole("link", { name: "Импорт JSON", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/questions\/import$/);
+  const breadcrumbs = page.getByRole("navigation", { name: "Путь к странице", exact: true });
+  await expect(breadcrumbs).toBeVisible();
+  await expect(breadcrumbs.getByRole("link", { name: "Вопросы", exact: true })).toHaveAttribute("href", "/admin/questions");
+  await breadcrumbs.getByRole("link", { name: "Вопросы", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/questions$/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: "test-results/admin-light-ui.png", fullPage: true });
+
+  const question: Question = {
+    id: randomUUID(), prompt: "Что помогает команде придумать хороший ответ?",
+    answers: Array.from({ length: 8 }, (_, index) => ({
+      id: randomUUID(), text: `Вариант команды ${index + 1}`, points: 8 - index, aliases: [],
+      ...(index === 7 ? { originals: ["Приватный исходный текст"] } : {}),
+    })),
+    source: "Вымышленный опрос для проверки пульта", surveyDate: "2026-10-15",
+    respondentCount: 36, notes: "Только для организатора", isDemo: true, pack: "Пульт",
+  };
+  expect((await page.request.post("/api/questions/import", {
+    data: { format: "ctokodnomy-questions-v1", questions: [question] },
+  })).ok()).toBe(true);
+  const created = await page.request.post("/api/games", { data: {
+    title: "Репетиция с удобным пультом", questionIds: [question.id],
+    teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
+  } });
+  expect(created.ok()).toBe(true);
+  const game = await created.json() as HostGame;
+  expect(game.brand).toEqual(defaultBrand);
+  const guestContext = await browser.newContext({ baseURL, viewport: { width: 1280, height: 720 } });
+  try {
+    const board = await guestContext.newPage();
+    board.on("pageerror", (error) => pageErrors.push(error.message));
+    await board.goto(`/board/${game.id}`);
+    const projector = board.getByRole("button", { name: "Для проектора", exact: true });
+    if (await projector.getAttribute("aria-pressed") !== "true") await projector.click();
+    await expect(board.locator(".board-page")).toHaveAttribute("data-theme", "light");
+    await page.goto(`/host/${game.id}`);
+    const shortcuts = page.getByRole("checkbox", { name: "Горячие клавиши", exact: true });
+    await expect(shortcuts).not.toBeChecked();
+    await page.getByRole("button", { name: "Начать игру", exact: true }).click();
+    await expect(board.locator(".board-answer.closed")).toHaveCount(6);
+    await page.locator("h1").click();
+    await page.keyboard.press("1");
+    await expect(board.locator(".board-answer.closed")).toHaveCount(6);
+    expect(commands.map((command) => command.type)).toEqual(["start"]);
+    await shortcuts.check();
+
+    // Typing, modifiers and repeated keydowns must never issue game commands.
+    await page.getByText("Исправить счёт", { exact: true }).click();
+    const reason = page.getByLabel("Причина исправления", { exact: true });
+    await reason.focus();
+    await page.keyboard.type("1p");
+    await expect(reason).toHaveValue("1p");
+    await page.locator("h1").click();
+    await page.keyboard.press("Control+1");
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", repeat: true, bubbles: true })));
+    await expect(board.locator(".board-answer.closed")).toHaveCount(6);
+    expect(commands.map((command) => command.type)).toEqual(["start"]);
+    await page.keyboard.press("1");
+    await expect(board.locator(".board-answer.closed")).toHaveCount(5);
+    await expect(page.locator(".host-answer").first().getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Пауза", exact: true })).toBeEnabled();
+    await page.keyboard.press("p");
+    await expect(page.getByRole("button", { name: "Продолжить игру", exact: true })).toBeEnabled();
+    await page.keyboard.press("p");
+    await expect(page.getByRole("button", { name: "Пауза", exact: true })).toBeEnabled();
+    await page.keyboard.press("u");
+    const confirmation = page.getByRole("dialog", { name: "Подтвердите решение", exact: true });
+    await expect(confirmation).toBeVisible();
+    const beforeConfirmation = commands.length;
+    await page.keyboard.press("2");
+    await page.keyboard.press("p");
+    expect(commands).toHaveLength(beforeConfirmation);
+    await expect(board.locator(".board-answer.closed")).toHaveCount(5);
+    await confirmation.getByRole("button", { name: "Отмена", exact: true }).click();
+    await page.locator("h1").click();
+    await page.keyboard.press("u");
+    await confirmation.getByRole("button", { name: "Подтвердить", exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Продолжить игру", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Продолжить игру", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Пауза", exact: true })).toBeVisible();
+    const hostNavigation = page.getByRole("navigation", { name: "Разделы пульта", exact: true });
+    for (const link of await hostNavigation.getByRole("link").all()) {
+      const target = await link.getAttribute("href");
+      expect(target).toMatch(/^#host-/);
+      await expect(page.locator(target!)).toHaveCount(1);
+    }
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    await page.screenshot({ path: "test-results/host-desktop-ui.png", fullPage: true });
+    await page.setViewportSize({ width: 320, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    const mobileReveal = page.locator(".host-answer").nth(1).getByRole("button", { name: "Открыть", exact: true });
+    await mobileReveal.click({ trial: true });
+    expect((await mobileReveal.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect(await mobileReveal.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest("button") === element;
+    })).toBe(true);
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    await page.screenshot({ path: "test-results/host-mobile-ui.png", fullPage: true });
+    await page.screenshot({ path: "test-results/host-mobile-viewport-ui.png", fullPage: false });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await board.screenshot({ path: "test-results/board-light-ui.png", fullPage: true });
+
+    for (let index = 1; index < 6; index++)
+      await page.locator(".host-answer").nth(index).getByRole("button", { name: "Открыть", exact: true }).click();
+    await expect(board.locator(".statistics-answer-list > li")).toHaveCount(8);
+    const beforeView = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    await page.getByRole("button", { name: "Облако на табло", exact: true }).click();
+    await expect(board.locator(".statistics-answer-cloud > li")).toHaveCount(8);
+    await page.getByRole("button", { name: "Список на табло", exact: true }).click();
+    await expect(board.locator(".statistics-answer-list > li")).toHaveCount(8);
+    // A host's explicit choice also overrides a guest's local visualization,
+    // even when that choice repeats the server's current preference.
+    await board.getByRole("button", { name: "Облако ответов", exact: true }).click();
+    await expect(board.locator(".statistics-answer-cloud > li")).toHaveCount(8);
+    await page.getByRole("button", { name: "Список на табло", exact: true }).click();
+    await expect(board.locator(".statistics-answer-list > li")).toHaveCount(8);
+    const afterView = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    expect(afterView.teams.map((team) => team.score)).toEqual(beforeView.teams.map((team) => team.score));
+    expect(afterView.brand).toEqual(defaultBrand);
+    expect(settingsWrites).toEqual([]);
+    await expect(board.locator("body")).not.toContainText("Приватный исходный текст");
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await guestContext.close();
+  }
+});
+
 test("a full survey keeps only its top six on the board and publishes every reviewed phrase in the list and cloud", async ({
   browser,
   page,
@@ -1048,8 +1232,8 @@ test("organizer installs and brands the event; independent phones collaborate wh
       firstAnswer.text,
     );
     await expect(captain.locator(".pending-team-answer")).toHaveCount(0);
-    await expect(page.locator(".host-status-bar")).toContainText(
-      `Банк: ${firstAnswer.points}`,
+    await expect(page.locator(".host-status-bar .host-bank > strong")).toHaveText(
+      String(firstAnswer.points),
     );
     expect(publicFrames.length).toBeGreaterThan(0);
     for (const frame of publicFrames) {

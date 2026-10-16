@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -15,6 +16,38 @@ import {
   type SiteInfo,
 } from "../shared/types";
 import { isLightBrand, themeTokens } from "./theme";
+
+export type AppearanceMode = "light" | "dark" | "brand";
+const appearanceStorageKey = "ctokodnomy:appearance";
+function isAppearanceMode(value: string | null): value is AppearanceMode {
+  return value === "light" || value === "dark" || value === "brand";
+}
+function readAppearance(): AppearanceMode {
+  try {
+    const stored = localStorage.getItem(appearanceStorageKey);
+    return isAppearanceMode(stored) ? stored : "light";
+  } catch {
+    return "light";
+  }
+}
+function resolveBrandAppearance(brand: Brand, mode: AppearanceMode): Brand {
+  if (mode === "brand") return brand;
+  return {
+    ...brand,
+    ...(mode === "light"
+      ? { background: "#f4f7fb", textColor: "#142036" }
+      : { background: "#111827", textColor: "#f3f6fc" }),
+  };
+}
+const AppearanceContext = createContext<{
+  mode: AppearanceMode;
+  setMode: (mode: AppearanceMode) => void;
+  resolveAppearance: (brand: Brand) => Brand;
+}>({
+  mode: "light",
+  setMode: () => {},
+  resolveAppearance: (brand) => resolveBrandAppearance(brand, "light"),
+});
 
 export class ApiError extends Error {
   constructor(
@@ -62,9 +95,36 @@ const MeContext = createContext<{
   refresh: () => Promise<void>;
 }>({ me: null, refresh: async () => {} });
 export function AppProvider({ children }: { children: ReactNode }) {
+  const [mode, setAppearance] = useState<AppearanceMode>(readAppearance);
   const [site, setSite] = useState<SiteInfo | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState("");
+  const setMode = useCallback((next: AppearanceMode) => {
+    if (!isAppearanceMode(next)) return;
+    setAppearance(next);
+    try {
+      localStorage.setItem(appearanceStorageKey, next);
+    } catch {
+      /* Appearance still works when browser storage is unavailable. */
+    }
+  }, []);
+  useEffect(() => {
+    const syncAppearance = (event: StorageEvent) => {
+      if (event.key !== appearanceStorageKey && event.key !== null) return;
+      setAppearance(isAppearanceMode(event.newValue) ? event.newValue : "light");
+    };
+    window.addEventListener("storage", syncAppearance);
+    return () => window.removeEventListener("storage", syncAppearance);
+  }, []);
+  const appearance = useMemo(
+    () => ({
+      mode,
+      setMode,
+      resolveAppearance: (brand: Brand) => resolveBrandAppearance(brand, mode),
+    }),
+    [mode, setMode],
+  );
+  const displayBrand = appearance.resolveAppearance(site?.brand ?? defaultBrand);
   const refreshSite = useCallback(async () => {
     const nextSite = await api<SiteInfo>("/site");
     setSite({ ...nextSite, brand: { ...defaultBrand, ...nextSite.brand } });
@@ -86,10 +146,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const brand = site?.brand ?? defaultBrand;
     document.title = [brand.title, brand.organizer].filter(Boolean).join(" · ");
-    document.documentElement.style.backgroundColor = brand.background;
-    document.documentElement.style.colorScheme = isLightBrand(brand)
-      ? "light"
-      : "dark";
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (brand.faviconUrl) {
       if (!favicon) {
@@ -100,38 +156,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
       favicon.href = brand.faviconUrl;
     } else favicon?.remove();
   }, [site]);
+  useEffect(() => {
+    document.documentElement.style.backgroundColor = displayBrand.background;
+    document.documentElement.style.colorScheme = isLightBrand(displayBrand)
+      ? "light"
+      : "dark";
+  }, [displayBrand.background]);
   return (
-    <SiteContext.Provider value={{ site, refresh: refreshSite }}>
-      <MeContext.Provider value={{ me, refresh: refreshMe }}>
-        <div
-          className="app"
-          data-theme={
-            isLightBrand(site?.brand ?? defaultBrand) ? "light" : "dark"
-          }
-          style={brandStyle(site?.brand ?? defaultBrand)}
-        >
-          {error && (
-            <div className="service-alert" role="alert">
-              {error}{" "}
-              <button
-                onClick={() =>
-                  Promise.all([refreshSite(), refreshMe()]).catch((e) =>
-                    setError(e.message),
-                  )
-                }
-              >
-                Повторить
-              </button>
-            </div>
-          )}
-          {children}
-        </div>
-      </MeContext.Provider>
-    </SiteContext.Provider>
+    <AppearanceContext.Provider value={appearance}>
+      <SiteContext.Provider value={{ site, refresh: refreshSite }}>
+        <MeContext.Provider value={{ me, refresh: refreshMe }}>
+          <div
+            className="app"
+            data-theme={isLightBrand(displayBrand) ? "light" : "dark"}
+            data-appearance={mode}
+            style={brandStyle(displayBrand)}
+          >
+            {error && (
+              <div className="service-alert" role="alert">
+                {error}{" "}
+                <button
+                  onClick={() =>
+                    Promise.all([refreshSite(), refreshMe()]).catch((e) =>
+                      setError(e.message),
+                    )
+                  }
+                >
+                  Повторить
+                </button>
+              </div>
+            )}
+            {children}
+          </div>
+        </MeContext.Provider>
+      </SiteContext.Provider>
+    </AppearanceContext.Provider>
   );
 }
 export const useSite = () => useContext(SiteContext);
 export const useMe = () => useContext(MeContext);
+export const useAppearance = () => useContext(AppearanceContext);
 
 export function useLiveGame<T extends { revision: number }>(
   id: string | undefined,

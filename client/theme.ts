@@ -53,18 +53,38 @@ function inkOn(background: string) {
     : "#ffffff";
 }
 
+function readableColor(color: string, backgrounds: string[], fallback: string) {
+  const readable = (candidate: string) =>
+    backgrounds.every(
+      (background) => contrastRatio(background, candidate) >= 4.5,
+    );
+  if (readable(color)) return color;
+  for (let amount = 0.1; amount < 1; amount += 0.1) {
+    const adjusted = mix(color, fallback, amount);
+    if (readable(adjusted)) return adjusted;
+  }
+  return fallback;
+}
+
 export function themeTokens(brand: BrandColors): Record<string, string> {
   const light = isLightBrand(brand),
     readableInk =
       contrastRatio(brand.background, brand.textColor) >= 7
         ? brand.textColor
         : inkOn(brand.background),
-    primaryInk =
-      contrastRatio(brand.background, brand.primary) >= 4.5
-        ? brand.primary
-        : readableInk,
+    surface = light
+      ? mix(brand.background, "#ffffff", 0.82)
+      : mix(brand.background, readableInk, 0.035),
+    surfaceSoft = mix(brand.background, readableInk, light ? 0.04 : 0.06),
+    surfaceRaised = light
+      ? "#ffffff"
+      : mix(brand.background, readableInk, 0.07),
+    backgrounds = [brand.background, surface, surfaceSoft, surfaceRaised],
+    primaryInk = readableColor(brand.primary, backgrounds, readableInk),
     accentInk =
-      contrastRatio(brand.background, brand.accent) >= 4.5
+      backgrounds.every(
+        (background) => contrastRatio(background, brand.accent) >= 4.5,
+      )
         ? brand.accent
         : primaryInk;
   return {
@@ -72,19 +92,15 @@ export function themeTokens(brand: BrandColors): Record<string, string> {
     "--accent": brand.accent,
     "--bg": brand.background,
     "--text": readableInk,
-    "--surface": mix(brand.background, readableInk, light ? 0.015 : 0.03),
-    "--surface-soft": mix(brand.background, readableInk, light ? 0.04 : 0.06),
-    "--surface-raised": mix(
-      brand.background,
-      readableInk,
-      light ? 0.015 : 0.06,
-    ),
+    "--surface": surface,
+    "--surface-soft": surfaceSoft,
+    "--surface-raised": surfaceRaised,
     "--input-bg": light
       ? brand.background
       : mix(brand.background, "#000000", 0.12),
-    "--muted": mix(brand.background, readableInk, light ? 0.86 : 0.73),
-    "--border": mix(brand.background, readableInk, light ? 0.35 : 0.18),
-    "--border-strong": mix(brand.background, readableInk, light ? 0.6 : 0.35),
+    "--muted": mix(brand.background, readableInk, light ? 0.75 : 0.73),
+    "--border": mix(brand.background, readableInk, light ? 0.22 : 0.2),
+    "--border-strong": mix(brand.background, readableInk, light ? 0.44 : 0.38),
     "--button-text": inkOn(brand.accent),
     "--primary-text": inkOn(brand.primary),
     "--primary-ink": primaryInk,
@@ -96,7 +112,9 @@ export function themeTokens(brand: BrandColors): Record<string, string> {
     "--success-bg": light ? "#edf8ef" : "#b5cf9408",
     "--warning": light ? "#783b09" : "#f8d08b",
     "--warning-bg": light ? "#fff7e6" : "#e0be8c0a",
-    "--card-shadow": light ? "0 3px 16px #11182708" : "none",
+    "--card-shadow": light
+      ? "0 1px 2px #14203605, 0 4px 18px #14203604"
+      : "0 1px 2px #00000014",
     "--overlay": light ? "#11182780" : "#070710bb",
     "--chart-bar":
       contrastRatio(brand.background, brand.primary) >= 3

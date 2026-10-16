@@ -1,0 +1,111 @@
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 200;
+  padding: 14px 20px;
+  border: 2px solid var(--primary-ink);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 700;
+  transform: translateY(calc(-100% - 20px));
+}
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.public-page .public-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 22px;
+}
+.public-header .brand-link,
+.public-header .brand-mark,
+.public-header .brand-mark > span:last-child {
+  min-width: 0;
+}
+.public-header .brand-mark {
+  width: fit-content;
+}
+.public-page .public-header nav {
+  gap: 22px;
+}
+.app .public-header nav .public-nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.app .public-header nav .public-nav-link:hover,
+.app .public-header nav .public-nav-link[aria-current="page"] {
+  color: var(--primary-ink);
+}
+.app .public-header nav .public-nav-link[aria-current="page"] {
+  text-decoration: underline;
+  text-underline-offset: 7px;
+  text-decoration-thickness: 2px;
+}
+.public-header nav .button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+.public-header > .appearance-control {
+  justify-self: end;
+}
+
+@media (max-width: 900px) {
+  .public-page .public-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
+    min-height: 100px;
+    padding-block: 17px 12px;
+    gap: 10px 16px;
+  }
+  .public-header > .appearance-control {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .public-page .public-header nav {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    gap: 22px;
+    font-size: 0.82rem;
+  }
+  .public-page .public-header nav > a:first-child {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 480px) {
+  .public-page .public-header {
+    gap: 10px;
+  }
+  .public-header .brand-mark {
+    gap: 8px;
+    font-size: 0.92rem;
+  }
+  .public-header .brand-mark .brand-icon {
+    width: 35px;
+    height: 35px;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+  .public-header .brand-mark small {
+    font-size: 0.61rem;
+  }
+  .public-header .appearance-control select {
+    max-width: 145px;
+  }
+  .public-page .public-header nav {
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 0.76rem;
+  }
+  .public-header nav .button {
+    padding-inline: 10px;
+    font-size: 0.76rem;
+    gap: 6px;
+  }
+}

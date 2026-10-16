@@ -130,6 +130,7 @@ const hostCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("resume") }),
   z.object({ type: z.literal("undo") }),
   z.object({ type: z.literal("finish") }),
+  z.object({ type: z.literal("statistics-view"), view: z.enum(["list", "cloud"]) }),
   z.object({
     type: z.literal("adjust"),
     teamId: idSchema,

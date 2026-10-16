@@ -21,7 +21,9 @@ import {
   ArrowRight,
   ArrowUp,
   BarChart3,
+  BookOpen,
   Check,
+  ChevronRight,
   Clipboard,
   Crown,
   Download,
@@ -47,6 +49,8 @@ import { ApiError, api, useMe, useSite } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
 import { BrandEditor, BrandPreview } from "../components/Branding";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { SkipLink } from "../components/AppNavigation";
+import { ThemeToggle } from "../components/ThemeToggle";
 import {
   boardAnswers,
   gameBoardAnswers,
@@ -186,8 +190,26 @@ export function AdminLayout() {
     ["/admin/settings", "Оформление", <Palette size={19} />],
     ["/admin/account", "Аккаунт", <ShieldCheck size={19} />],
   ] as const;
+  const section =
+    links.find(
+      ([path]) =>
+        path !== "/admin" &&
+        (location.pathname === path || location.pathname.startsWith(`${path}/`)),
+    ) ?? links[0];
+  const nestedPage = location.pathname === "/admin/games/new"
+    ? "Новая игра"
+    : location.pathname.startsWith("/admin/games/")
+      ? "Настройки игры"
+      : location.pathname === "/admin/questions/import"
+        ? "Импорт вопросов"
+        : location.pathname === "/admin/questions/new"
+          ? "Новый вопрос"
+          : location.pathname.startsWith("/admin/questions/")
+            ? "Редактирование вопроса"
+            : null;
   return (
     <div className="admin-shell">
+      <SkipLink target="admin-main" />
       <aside className="admin-sidebar">
         <Link to="/" className="admin-brand">
           {site?.brand.gameLogoUrl || site?.brand.logoUrl ? (
@@ -218,6 +240,17 @@ export function AdminLayout() {
             </NavLink>
           ))}
         </nav>
+        <div className="admin-screen-guide">
+          <Gamepad2 size={19} aria-hidden="true" />
+          <div>
+            <strong>Два экрана одной игры</strong>
+            <p>
+              Пульт — для ведущего.
+              <br />
+              Табло — для гостей в зале.
+            </p>
+          </div>
+        </div>
         <div className="admin-sidebar-bottom">
           <span className="badge">
             <ShieldCheck size={14} /> Организатор
@@ -232,9 +265,41 @@ export function AdminLayout() {
           </Link>
         </div>
       </aside>
-      <main className="admin-content">
-        <Outlet />
-      </main>
+      <div className="admin-workspace">
+        <header className="admin-topbar">
+          <nav className="admin-breadcrumbs" aria-label="Путь к странице">
+            <ol>
+              <li>
+                <Link to="/admin">Организатор</Link>
+              </li>
+              <li>
+                <ChevronRight size={15} aria-hidden="true" />
+                {nestedPage ? (
+                  <Link to={section[0]}>{section[1]}</Link>
+                ) : (
+                  <span aria-current="page">{section[1]}</span>
+                )}
+              </li>
+              {nestedPage && (
+                <li>
+                  <ChevronRight size={15} aria-hidden="true" />
+                  <span aria-current="page">{nestedPage}</span>
+                </li>
+              )}
+            </ol>
+          </nav>
+          <div className="admin-topbar-actions">
+            <Link className="admin-help-link" to="/help">
+              <BookOpen size={18} aria-hidden="true" />
+              <span>Правила и помощь</span>
+            </Link>
+            <ThemeToggle />
+          </div>
+        </header>
+        <main id="admin-main" tabIndex={-1} className="admin-content">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

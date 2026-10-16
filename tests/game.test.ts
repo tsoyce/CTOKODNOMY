@@ -1045,3 +1045,82 @@ function legacy(state: GameState): GameState {
   }
   return old;
 }
+
+describe("Управление статистикой с пульта", () => {
+  it("меняет представление доски без пересчёта очков и возвращает прежний вид по отмене", () => {
+    const round = commands(
+      playing(),
+      { type: "reveal", answerId: "q1-0" },
+      { type: "award", teamId: "a" },
+    );
+    const before = structuredClone(round);
+    const cloud = applyCommand(round, { type: "statistics-view", view: "cloud" });
+    expect(round).toEqual(before);
+    expect(cloud.revision).toBe(round.revision + 1);
+    expect(cloud.events.at(-1)?.type).toBe("statistics-view");
+    expect(cloud.history.at(-1)?.statisticsView).toBe("list");
+    expect(publicView(cloud)).toEqual({
+      ...publicView(round),
+      statisticsView: "cloud",
+      revision: round.revision + 1,
+    });
+    expect(cloud.questions).toEqual(round.questions);
+    expect(cloud.teams).toEqual(round.teams);
+    expect(cloud.openedAnswerIds).toEqual(round.openedAnswerIds);
+    expect(cloud.roundResults).toEqual(round.roundResults);
+    const self: Participant = {
+      id: "player-a", gameId: round.id, teamId: "a", name: "Игрок", role: "player",
+    };
+    expect(teamView(cloud, self, [self]).statisticsView).toBe("cloud");
+    const audience = JSON.stringify(publicView(cloud));
+    for (const hidden of ["исходная личная формулировка", "секретный синоним", "Секретная заметка", "SECRET-A", "Вопрос q2?"])
+      expect(audience).not.toContain(hidden);
+    const restored = applyCommand(cloud, { type: "undo" });
+    expect(restored.statisticsView).toBe("list");
+    expect(restored.roundResults).toEqual(round.roundResults);
+    expect(restored.teams).toEqual(round.teams);
+  });
+
+  it("не показывает статистику в лобби, активном раунде и перехвате, даже при старых результатах", () => {
+    const later = commands(playing(), { type: "award", teamId: "a" }, { type: "next" });
+    for (const game of [makeGame(), playing(), steal(), later, applyCommand(makeGame(), { type: "finish" })]) {
+      expect(() => applyCommand(game, { type: "statistics-view", view: "cloud" })).toThrow(GameRuleError);
+      expect(game.statisticsView).toBe("list");
+    }
+    const malformed = playing();
+    malformed.phase = "round-result";
+    expect(() => applyCommand(malformed, { type: "statistics-view", view: "cloud" })).toThrow(GameRuleError);
+  });
+
+  it("поддерживает итоги, паузу после раунда и прерванный сыгранный раунд, но отклоняет неизвестный вид", () => {
+    const round = commands(playing(), { type: "award", teamId: "a" });
+    const paused = applyCommand(round, { type: "pause" });
+    expect(applyCommand(paused, { type: "statistics-view", view: "cloud" }).paused).toBe(true);
+    for (const finished of [applyCommand(round, { type: "finish" }), applyCommand(playing(), { type: "finish" })]) {
+      const changed = applyCommand(finished, { type: "statistics-view", view: "cloud" });
+      expect(changed.statisticsView).toBe("cloud");
+      expect(changed.teams).toEqual(finished.teams);
+      expect(changed.phase).toBe("finished");
+    }
+    expect(() => applyCommand(round, { type: "statistics-view", view: "private-source" } as unknown as GameCommand))
+      .toThrow("Выберите список или облако ответов.");
+  });
+
+  it("нормализует старые и повреждённые сохранения, включая историю, и сбрасывает вид новой попытки", () => {
+    const round = commands(playing(), { type: "award", teamId: "a" });
+    const cloud = applyCommand(round, { type: "statistics-view", view: "cloud" });
+    expect(resetGame(cloud).statisticsView).toBe("list");
+    delete round.statisticsView;
+    for (const item of round.history) delete item.statisticsView;
+    expect(publicView(round).statisticsView).toBe("list");
+    expect(applyCommand(round, { type: "undo" }).statisticsView).toBe("list");
+    const corrupted = structuredClone(cloud);
+    for (const item of [corrupted, ...corrupted.history])
+      (item as unknown as Record<string, unknown>).statisticsView = { secret: "private-value" };
+    const normalized = normalizeGameState(corrupted);
+    expect(normalized.statisticsView).toBe("list");
+    expect(normalized.history.every((item) => item.statisticsView === "list")).toBe(true);
+    expect(publicView(corrupted).statisticsView).toBe("list");
+    expect(JSON.stringify(publicView(corrupted))).not.toContain("private-value");
+  });
+});

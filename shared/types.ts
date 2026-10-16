@@ -109,6 +109,8 @@ export interface GameSnapshot {
   suggestions: Suggestion[];
   roundResults: RoundResult[];
   resultsPublished: boolean;
+  /** Missing in older saved games; shown as a list until the host changes it. */
+  statisticsView?: "list" | "cloud";
 }
 export interface GameState extends GameSnapshot {
   id: string;
@@ -179,6 +181,7 @@ export interface PublicGame {
   answers: PublicAnswer[];
   isDemo: boolean;
   roundStats: PublicRoundStats | null;
+  statisticsView: "list" | "cloud";
   resultsAvailable: boolean;
 }
 export interface PublicGameResults {
@@ -210,6 +213,7 @@ export type HostCommand =
   | { type: "turn"; teamId: string }
   | { type: "pause" | "resume" | "undo" | "finish" }
   | { type: "adjust"; teamId: string; delta: number; reason: string }
+  | { type: "statistics-view"; view: "list" | "cloud" }
   | { type: "join-toggle"; teamId: string; open: boolean };
 export type GameCommand =
   | HostCommand

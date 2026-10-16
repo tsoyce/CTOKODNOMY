@@ -1,5 +1,11 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  NavLink,
+  Navigate,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import {
   ArrowRight,
   ChevronLeft,
@@ -17,6 +23,8 @@ import { defaultBrand, type Brand, type Me } from "../../shared/types";
 import { api, useMe, useSite } from "../lib";
 import { BrandMark, ErrorMessage, Loading } from "../components/Common";
 import { BrandEditor, BrandPreview } from "../components/Branding";
+import { SkipLink } from "../components/AppNavigation";
+import { ThemeToggle } from "../components/ThemeToggle";
 
 function PublicFrame({
   children,
@@ -30,12 +38,18 @@ function PublicFrame({
   const brand = site?.brand ?? defaultBrand;
   return (
     <div className={`public-page ${compact ? "public-page-compact" : ""}`}>
+      <SkipLink target="page-main" />
       <header className="public-header container">
         <div className="brand-link">
           <BrandMark />
         </div>
         <nav aria-label="Основная навигация">
-          <Link to="/help">Как играть</Link>
+          <NavLink className="public-nav-link" to="/help">
+            Как играть
+          </NavLink>
+          <NavLink className="public-nav-link" to="/join">
+            В команду
+          </NavLink>
           <Link
             className="button secondary small"
             to={me?.admin ? "/admin" : "/login"}
@@ -43,6 +57,7 @@ function PublicFrame({
             {me?.admin ? "Админка" : "Ведущему"} <ArrowRight size={16} />
           </Link>
         </nav>
+        <ThemeToggle />
       </header>
       {children}
       <footer className="public-footer container">
@@ -93,7 +108,7 @@ export function HomePage() {
   const gameToWatch = activeGames[0] ?? games[0];
   return (
     <PublicFrame>
-      <main>
+      <main id="page-main" tabIndex={-1}>
         <section className="hero container">
           <div className="hero-content">
             {brand.organizer && (
@@ -322,7 +337,7 @@ export function SetupPage() {
   if (site?.initialized)
     return (
       <PublicFrame compact>
-        <main className="container auth-page">
+        <main id="page-main" tabIndex={-1} className="container auth-page">
           <div className="card auth-card">
             <div className="feature-icon lime">
               <ShieldCheck size={28} />
@@ -397,7 +412,7 @@ export function SetupPage() {
   }
   return (
     <PublicFrame compact>
-      <main className="container setup-page" data-step={step}>
+      <main id="page-main" tabIndex={-1} className="container setup-page" data-step={step}>
         <div className="page-header">
           <p className="eyebrow">Первый запуск · три простых шага</p>
           <h1>Всё начинается с вас</h1>
@@ -624,7 +639,7 @@ export function LoginPage() {
   }
   return (
     <PublicFrame compact>
-      <main className="container auth-page">
+      <main id="page-main" tabIndex={-1} className="container auth-page">
         <div className="card auth-card">
           <div className="feature-icon">
             <KeyRound size={27} />
@@ -711,7 +726,7 @@ export function JoinPage() {
   }
   return (
     <PublicFrame compact>
-      <main className="container auth-page">
+      <main id="page-main" tabIndex={-1} className="container auth-page">
         <div className="card auth-card join-card">
           <div className="feature-icon lime">
             <Users size={28} />
@@ -783,7 +798,7 @@ export function JoinPage() {
 export function HelpPage() {
   return (
     <PublicFrame>
-      <main className="container help-page">
+      <main id="page-main" tabIndex={-1} className="container help-page">
         <div className="page-header">
           <p className="eyebrow">Правила и помощь</p>
           <h1>
@@ -903,7 +918,7 @@ export function HelpPage() {
 export function NotFoundPage() {
   return (
     <PublicFrame compact>
-      <main className="container auth-page">
+      <main id="page-main" tabIndex={-1} className="container auth-page">
         <div className="card auth-card empty-state">
           <span className="not-found-number">404</span>
           <h1>Кажется, это не тот ответ</h1>

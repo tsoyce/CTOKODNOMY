@@ -156,6 +156,7 @@ export function createGame(input: CreateGameInput): GameState {
     suggestions: [],
     roundResults: [],
     resultsPublished: false,
+    statisticsView: "list",
     revision: 0,
     events: [],
     history: [],
@@ -178,6 +179,7 @@ function snapshot(game: GameState): GameSnapshot {
     suggestions: game.suggestions,
     roundResults: game.roundResults,
     resultsPublished: game.resultsPublished,
+    statisticsView: game.statisticsView,
   });
 }
 
@@ -250,6 +252,7 @@ function normalizeSnapshot(
   }
   state.resultsPublished =
     state.phase === "finished" && state.resultsPublished === true;
+  state.statisticsView = state.statisticsView === "cloud" ? "cloud" : "list";
 }
 
 function legacyResult(
@@ -545,6 +548,26 @@ export function applyCommand(
       message = `Вход в команду «${team.name}» ${command.open ? "открыт" : "закрыт"}.`;
       break;
     }
+    case "statistics-view": {
+      requireRule(
+        command.view === "list" || command.view === "cloud",
+        "Выберите список или облако ответов.",
+        400,
+      );
+      requireRule(
+        (game.phase === "round-result" &&
+          game.roundResults.some(
+            (result) => result.questionIndex === game.questionIndex && result.completed,
+          )) ||
+          (game.phase === "finished" && game.roundResults.length > 0),
+        "Вид статистики можно изменить после сыгранного раунда.",
+      );
+      game.statisticsView = command.view;
+      message = command.view === "cloud"
+        ? "На доске показано облако ответов."
+        : "На доске показан список ответов.";
+      break;
+    }
     case "suggest":
     case "submit": {
       requireLiveRound(game);
@@ -637,6 +660,7 @@ export function publicView(game: GameState): PublicGame {
         ? roundStats(game, result)
         : null,
     resultsAvailable: game.phase === "finished" && game.resultsPublished,
+    statisticsView: game.statisticsView ?? "list",
     answers:
       (question ? gameBoardAnswers(game, question) : []).map((answer, index) =>
         game.openedAnswerIds.includes(answer.id)

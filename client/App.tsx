@@ -1,5 +1,5 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { lazy, Suspense } from "react";
+import { BrowserRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import { lazy, Suspense, useLayoutEffect } from "react";
 import { AppProvider } from "./lib";
 import { Loading } from "./components/Common";
 const publicPage = (name: keyof typeof import("./pages/Public")) =>
@@ -18,7 +18,7 @@ const HomePage = publicPage("HomePage"),
   NotFoundPage = publicPage("NotFoundPage");
 const BoardPage = gamePage("BoardPage"),
   TeamPage = gamePage("TeamPage"),
-  HostPage = gamePage("HostPage");
+  HostPage = lazy(async () => ({ default: (await import("./pages/Host"))["HostPage"] }));
 const AdminLayout = adminPage("AdminLayout"),
   DashboardPage = adminPage("DashboardPage"),
   GamesPage = adminPage("GamesPage"),
@@ -28,9 +28,22 @@ const AdminLayout = adminPage("AdminLayout"),
   QuestionEditorPage = adminPage("QuestionEditorPage"),
   SettingsPage = adminPage("SettingsPage"),
   AccountPage = adminPage("AccountPage");
+
+function PageScroll() {
+  const { pathname, search, hash, key } = useLocation();
+  const navigationType = useNavigationType();
+  useLayoutEffect(() => {
+    // New sections start at their heading; the browser owns history and anchors.
+    if (navigationType !== "POP" && !hash)
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [pathname, search, hash, key, navigationType]);
+  return null;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
+      <PageScroll />
       <AppProvider>
         <Suspense fallback={<Loading />}>
           <Routes>

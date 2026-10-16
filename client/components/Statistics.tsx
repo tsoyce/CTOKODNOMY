@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useId, useMemo, useState, type CSSProperties } from "react";
 import { BarChart3, Check, Cloud, ListOrdered, Trophy } from "lucide-react";
 import type { PublicRoundStats, PublicTeam } from "../../shared/types";
 import "./Statistics.css";
@@ -23,15 +23,23 @@ export function RoundStatistics({
   round,
   teams,
   compact = false,
+  preferredView,
+  preferenceRevision,
 }: {
   round: PublicRoundStats;
   teams: PublicTeam[];
   compact?: boolean;
+  preferredView?: "list" | "cloud";
+  preferenceRevision?: number;
 }) {
   const headingId = useId();
   const visualizationId = useId();
   const [order, setOrder] = useState<"popular" | "board">("popular");
-  const [view, setView] = useState<"list" | "cloud">("list");
+  const [view, setView] = useState<"list" | "cloud">(preferredView ?? "list");
+  // A repeated command from the host must also override a local selection.
+  useEffect(() => {
+    if (preferredView) setView(preferredView);
+  }, [preferredView, preferenceRevision]);
   const answers = useMemo(
     () =>
       [...round.answers].sort((a, b) =>

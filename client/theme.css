@@ -164,6 +164,54 @@
   background: var(--bg);
   color: var(--text);
 }
+.app .appearance-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--muted);
+}
+.app .appearance-control > svg {
+  position: absolute;
+  left: 12px;
+  z-index: 1;
+  pointer-events: none;
+}
+.app .appearance-control select {
+  width: auto;
+  max-width: 180px;
+  min-height: 44px;
+  padding: 9px 28px 9px 36px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.app .appearance-control select:hover {
+  border-color: var(--border-strong);
+}
+.app .appearance-control:focus-within {
+  color: var(--primary-ink);
+}
+.app :is(button, .button):active:not(:disabled) {
+  transform: translateY(0);
+}
+.app input[type="checkbox"] {
+  accent-color: var(--primary-ink);
+}
+.app .button {
+  text-wrap: balance;
+}
+.app :is(h1, h2, h3) {
+  text-wrap: balance;
+}
+.app :is(p, li) {
+  overflow-wrap: anywhere;
+}
 .app .field small,
 .app .summary-list > div > span {
   color: var(--muted);

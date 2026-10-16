@@ -974,6 +974,78 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       .toHaveLength(17);
   });
 
+  test("host statistics controls are durable, revision checked and retry safe; audience and team see only the selected view", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Игрок");
+    let state = (await call("GET", `/games/${game.id}/host`, undefined, cookie)).json<HostGame>();
+    const url = `/games/${game.id}/commands`;
+    const envelope = (view = "cloud") => ({
+      command: { type: "statistics-view", view },
+      revision: state.revision,
+      requestId: randomUUID(),
+    });
+    expect((await call("POST", url, envelope())).statusCode).toBe(401);
+    expect((await call("POST", url, envelope(), member.cookie)).statusCode).toBe(401);
+    expect((await call("POST", url, envelope(), cookie, "https://unrelated.example")).statusCode).toBe(403);
+    expect((await call("POST", url, envelope("private-source"), cookie)).statusCode).toBe(400);
+    expect((await call("POST", url, envelope(), cookie)).statusCode).toBe(409);
+    state = await hostCommand(state, cookie, { type: "start", teamId: game.teams[0]!.id });
+    expect((await call("POST", url, envelope(), cookie)).statusCode).toBe(409);
+    state = await hostCommand(state, cookie, { type: "reveal", answerId: questions[0]!.answers[0]!.id });
+    state = await hostCommand(state, cookie, { type: "award", teamId: game.teams[0]!.id });
+    const before = state;
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("HTTP listener is unavailable");
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/ws/games/${game.id}`);
+    const nextFrame = () => new Promise<unknown>((resolve) => {
+      socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))), { once: true });
+    });
+    try {
+      expect(await nextFrame()).toEqual({ type: "changed", revision: state.revision });
+      const request = envelope();
+      const update = nextFrame();
+      const changed = await call("POST", url, request, cookie);
+      expect(changed.statusCode, changed.body).toBe(200);
+      state = changed.json<HostGame>();
+      expect(await update).toEqual({ type: "changed", revision: before.revision + 1 });
+      expect(state.statisticsView).toBe("cloud");
+      expect(state.teams).toEqual(before.teams);
+      expect(state.openedAnswerIds).toEqual(before.openedAnswerIds);
+      expect(state.roundResults).toEqual(before.roundResults);
+      expect(state.questions).toEqual(before.questions);
+      const replay = await call("POST", url, request, cookie);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(state);
+      expect((await call("POST", url, { ...request, command: { type: "statistics-view", view: "list" } }, cookie)).json().code)
+        .toBe("REQUEST_ID");
+      expect((await call("POST", url, { ...envelope("list"), revision: before.revision }, cookie)).json().code)
+        .toBe("REVISION");
+      const publicState = await call("GET", `/games/${game.id}/public`);
+      const teamState = await call("GET", `/games/${game.id}/team`, undefined, member.cookie);
+      expect(publicState.json()).toMatchObject({ statisticsView: "cloud", revision: state.revision });
+      expect(teamState.json()).toMatchObject({ statisticsView: "cloud", revision: state.revision });
+      for (const response of [publicState, teamState]) {
+        for (const hidden of ["private-organizer-notes", "private-alias", game.teams[0]!.joinCode, questions[1]!.prompt])
+          expect(response.body).not.toContain(hidden);
+      }
+      expect((await call("GET", `/games/${game.id}/host`, undefined, cookie)).json().statisticsView).toBe("cloud");
+      state = await hostCommand(state, cookie, { type: "undo" });
+      expect((await call("GET", `/games/${game.id}/public`)).json().statisticsView).toBe("list");
+      expect(state.teams).toEqual(before.teams);
+      state = await hostCommand(state, cookie, { type: "finish" });
+      state = await hostCommand(state, cookie, { type: "statistics-view", view: "cloud" });
+      expect(state.phase).toBe("finished");
+      const reset = await call("POST", `/games/${game.id}/reset`, { revision: state.revision, requestId: randomUUID() }, cookie);
+      expect(reset.statusCode).toBe(200);
+      expect(reset.json().statisticsView).toBe("list");
+      expect((await call("GET", `/games/${game.id}/public`)).json().statisticsView).toBe("list");
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.close();
+    }
+  });
+
   test("completed round statistics reveal survey answers without future questions; publication is explicit and revocable", async () => {
     const cookie = await initialize();
     const { game, questions } = await createFixture(cookie);
