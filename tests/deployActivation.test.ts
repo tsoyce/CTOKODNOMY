@@ -59,6 +59,18 @@ function fixture(scenario = "success") {
   put(site, "# Existing, operator-provisioned game proxy\n");
   put(service, "[Service]\n# Existing game unit owned by the operator\n");
   put(config, "DATABASE_URL=postgresql://fixture/fixture\n");
+  let configuredHome = home;
+  if (scenario === "home-dot-segment") configuredHome = `${dirname(home)}/./player`;
+  if (scenario === "home-repeated-dot-segments") configuredHome = `${dirname(home)}/././player/./.`;
+  if (scenario === "home-trailing-slashes") configuredHome = `${home}///`;
+  if (scenario === "home-parent-segment") configuredHome = `${home}/../player`;
+  if (scenario === "home-double-slash") configuredHome = `${dirname(home)}//player`;
+  if (scenario === "home-root") configuredHome = "/./";
+  if (scenario === "home-symlink" || scenario === "home-symlink-with-dot") {
+    const alias = join(root, "home-alias");
+    symlinkSync(home, alias);
+    configuredHome = scenario === "home-symlink-with-dot" ? `${root}/./home-alias/.` : alias;
+  }
   if (scenario !== "old-entry-missing") put(join(oldRelease, "app.mjs"), "// previous working release\n");
   if (scenario !== "old-server-missing") put(join(oldRelease, "dist/server/index.js"), "// previous server entry\n");
   const oldEnvironment = scenario === "old-environment-wrong" ? `${config}.wrong` : config;
@@ -170,7 +182,7 @@ fi`);
     FIXTURE_SITE: site,
     FIXTURE_SERVICE: service,
     FIXTURE_BASE: base,
-    FIXTURE_HOME: home,
+    FIXTURE_HOME: configuredHome,
     FIXTURE_NODE: node,
     FIXTURE_CONFIG: config,
     FIXTURE_CURRENT: current,
@@ -191,6 +203,30 @@ function expectOnlyGameRestarts(events: string[], count: number) {
 }
 
 describe("BrainyCP release activation transaction", () => {
+  test.each(["home-dot-segment", "home-repeated-dot-segments", "home-trailing-slashes"])("accepts harmless lexical home spelling: %s", (scenario) => {
+    const f = fixture(scenario);
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(readlinkSync(f.current)).toBe(f.newRelease);
+    expect(readlinkSync(join(f.newRelease, ".env"))).toBe(f.config);
+    expect(f.fingerprint()).toEqual(f.before);
+    expect(f.events().indexOf("db-backup")).toBeLessThan(f.events().indexOf("stage"));
+    expectOnlyGameRestarts(f.events(), 1);
+    expect(result.stdout).toContain("Release verified");
+  });
+
+  test.each(["home-symlink", "home-symlink-with-dot", "home-parent-segment", "home-double-slash", "home-root"])("rejects unsafe home without changing the release or services: %s", (scenario) => {
+    const f = fixture(scenario);
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Application home must be physical");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    expect(existsSync(f.newRelease)).toBe(false);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(f.events().filter(Boolean)).toEqual([]);
+    expect(f.fingerprint()).toEqual(f.before);
+  });
+
   test.each(["old-entry-missing", "old-server-missing", "old-environment-wrong", "multiple-exec-start"])("refuses unsafe rollback prerequisites: %s", (scenario) => {
     const f = fixture(scenario);
     const result = f.run();

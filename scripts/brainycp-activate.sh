@@ -34,6 +34,11 @@ site="/etc/nginx/conf.d/$domain-game.conf"
 [[ -f $site && ! -L $site && $(readlink -e "$site") == "$site" ]] || fail 'A separately provisioned conf.d/<domain>-game.conf is required.'
 unit="nodejs@$port.service"
 app_home=$(getent passwd "$app_user" | cut -d: -f6)
+# BrainyCP may record the same home as /home/account/./sites. Remove only
+# harmless dot segments and trailing slashes; do not resolve links or '..'.
+while [[ $app_home == *'/./'* ]]; do app_home=${app_home//\/.\//\/}; done
+if [[ $app_home == */. ]]; then app_home=${app_home%.}; fi
+while [[ $app_home == */ && $app_home != / ]]; do app_home=${app_home%/}; done
 [[ $app_home =~ ^/[A-Za-z0-9_/-]+$ && $app_home != / && $(readlink -e "$app_home") == "$app_home" ]] || fail 'Application home must be physical.'
 data="$app_home/.local/share/ctokodnomy/$port"
 config="$app_home/.config/ctokodnomy/native-$port.env"
