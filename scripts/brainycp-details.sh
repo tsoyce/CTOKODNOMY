@@ -90,11 +90,12 @@ if (safePath(home)) {
 }
 try {
   const panel = '/etc/brainy/conf/server_control/main';
-  const lines = text(panel).split('\n').filter(line => !/^\s*[#;]/.test(line) && /^\s*back_server(?:[^A-Za-z0-9_]|$)/.test(line));
+  const lines = text(panel).split(/\r?\n/).filter(line => !/^\s*[#;]/.test(line) && /^\s*back_server(?:[^A-Za-z0-9_]|$)/.test(line));
   const value = lines[0]?.match(/^\s*back_server(?:\s*=\s*|\s+)(.*)$/)?.[1] ?? '';
   const supported = /^(?:[A-Za-z0-9_./:+-]+|"[A-Za-z0-9_./:+-]+"|'[A-Za-z0-9_./:+-]+')\s*(?:[#;].*)?$/.test(value);
   console.log(`back_server active_count=${lines.length}; single_nonempty_supported=${lines.length === 1 && supported}; physical=${resolved(panel) === panel} (authoritative guard runs during deployment)`);
   console.log(`back_server selected value (comments omitted): ${JSON.stringify(value.split(/[;#]/)[0].trim().slice(0, 120))}`);
+  console.log(`back_server selected entry (comments omitted): ${JSON.stringify((lines[0] ?? '').split(/[;#]/)[0].slice(0, 160))}`);
 } catch { console.log('back_server metadata unavailable'); }
 const dedicated = `/etc/nginx/conf.d/${domain}-game.conf`;
 console.log(`Dedicated proxy: ${dedicated}; ${metadata(dedicated)}; physical=${resolved(dedicated) === dedicated}`);

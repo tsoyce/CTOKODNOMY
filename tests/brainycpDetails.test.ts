@@ -16,7 +16,7 @@ function fixture() {
   for (const path of [bin, app, home, php, join(etc, "httpd/vhost.d"), join(etc, "nginx/conf.d"), join(etc, "brainy/conf/server_control"), join(home, ".config/ctokodnomy"), join(app, "releases/previous")]) mkdirSync(path, { recursive: true });
   symlinkSync(join(app, "releases/previous"), join(app, "current"));
   writeFileSync(join(home, ".config/ctokodnomy/native-3003.env"), "CTOKODNOMY_MANAGED_CONFIG=1\nDATABASE_URL=DO_NOT_PRINT_DATABASE_SECRET\n", { mode: 0o600 });
-  writeFileSync(join(etc, "brainy/conf/server_control/main"), "# back_server=old\nback_server=apache\nPANEL_SECRET=DO_NOT_PRINT_PANEL_SECRET\n");
+  writeFileSync(join(etc, "brainy/conf/server_control/main"), "# back_server=old\r\nback_server=apache\r\nPANEL_SECRET=DO_NOT_PRINT_PANEL_SECRET\r\n");
   writeFileSync(join(etc, "nginx/conf.d/game.example-game.conf"), "# DO_NOT_PRINT_NGINX_SECRET\n");
   writeFileSync(join(etc, "httpd/vhost.d/php.example.conf"), `<VirtualHost *:443>\nServerName php.example\nDocumentRoot ${php}\n<FilesMatch \\.php$>\nSetHandler \"proxy:unix:/run/php-fpm/php84-player.sock|fcgi://localhost\"\n</FilesMatch>\n</VirtualHost>\n`);
   writeFileSync(join(php, "index.php"), "<?php $password='DO_NOT_PRINT_PHP_SOURCE'; echo 'ok';");
