@@ -26,6 +26,7 @@ import {
 } from "../../shared/questionAnswers";
 import type { Question } from "../../shared/types";
 import { ApiError, api } from "../lib";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 import "./QuestionImport.css";
 
 const EXAMPLE_PACK = {
@@ -136,6 +137,7 @@ function savingPack(pack: QuestionPack, mode: ImportMode): QuestionPack {
 export default function QuestionImport() {
   const [text, setText] = useState("");
   const [filename, setFilename] = useState("");
+  const [packName, setPackName] = useState("");
   const [issues, setIssues] = useState<QuestionImportIssue[]>([]);
   const [checked, setChecked] = useState<CheckedPack | null>(null);
   const [mode, setMode] = useState<ImportMode>("update");
@@ -166,6 +168,21 @@ export default function QuestionImport() {
     () => new TextEncoder().encode(text).byteLength,
     [text],
   );
+  const trimmedPackName = packName.trim();
+  const packNameIssue =
+    packName && !trimmedPackName
+      ? "Название не может состоять только из пробелов. Введите название или оставьте поле пустым."
+      : trimmedPackName.length > 100
+        ? "Название набора должно быть не длиннее 100 символов."
+        : "";
+  const suggestedPackName = filename.replace(/\.json$/i, "").trim().slice(0, 100).trim();
+  const previewPacks = useMemo(() => {
+    const packs = new Map<string, number>();
+    checked?.pack.questions.forEach((question) => {
+      packs.set(question.pack, (packs.get(question.pack) ?? 0) + 1);
+    });
+    return [...packs];
+  }, [checked]);
   const matching =
     checked?.pack.questions.filter(
       (question) => question.id && checked.existingIds.has(question.id),
@@ -187,6 +204,12 @@ export default function QuestionImport() {
     setReplaceConfirmed(false);
     setMode("update");
     preparedSave.current = null;
+  };
+
+  const updatePackName = (value: string) => {
+    if (saveLock.current) return;
+    invalidate();
+    setPackName(value);
   };
 
   const readFile = async (file: File) => {
@@ -222,11 +245,24 @@ export default function QuestionImport() {
     if (busy || saveLock.current) return;
     invalidate();
     const current = operation.current;
+    if (packNameIssue) {
+      setIssues([{ path: "Название набора", message: packNameIssue }]);
+      return;
+    }
     const parsed = parseQuestionPack(text);
     if (!parsed.success) {
       setIssues(parsed.issues);
       return;
     }
+    const pack: QuestionPack = trimmedPackName
+      ? {
+          ...parsed.data,
+          questions: parsed.data.questions.map((question) => ({
+            ...question,
+            pack: trimmedPackName,
+          })),
+        }
+      : parsed.data;
     setChecking(true);
     const request = new AbortController();
     controller.current = request;
@@ -236,11 +272,11 @@ export default function QuestionImport() {
       });
       if (operation.current !== current) return;
       setChecked({
-        pack: parsed.data,
+        pack,
         existingIds: new Set(
           library.map((question) => question.id.toLowerCase()),
         ),
-        warnings: importWarnings(parsed.data),
+        warnings: importWarnings(pack),
       });
     } catch (cause) {
       if (operation.current === current)
@@ -287,6 +323,7 @@ export default function QuestionImport() {
       setSavedCount(result.count);
       setText("");
       setFilename("");
+      setPackName("");
       setChecked(null);
       setReplaceConfirmed(false);
       preparedSave.current = null;
@@ -455,88 +492,129 @@ export default function QuestionImport() {
         </div>
       )}
 
-      <section
-        className="question-import-input"
-        aria-labelledby="import-source-heading"
-      >
-        <div className="question-import-section-heading">
-          <div>
-            <h2 id="import-source-heading">1. Добавьте готовый набор</h2>
-            <p className="muted">
-              Файл .json до 3 МБ или текст, который подготовил ИИ.
-            </p>
+      <section aria-labelledby="import-source-heading">
+        <CollapsibleCard
+          className="question-import-input"
+          defaultOpen
+          header={
+            <div className="question-import-section-heading">
+              <div>
+                <h2 id="import-source-heading">1. Добавьте готовый набор</h2>
+                <p className="muted">
+                  Файл .json до 3 МБ или текст, который подготовил ИИ.
+                </p>
+              </div>
+              <FileJson size={26} className="question-import-valid-icon" aria-hidden="true" />
+            </div>
+          }
+        >
+          <div className="question-import-file-toolbar">
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={saving}
+              onClick={() => fileInput.current?.click()}
+            >
+              <FileUp size={18} /> Выбрать JSON-файл
+            </button>
           </div>
-          <button
-            type="button"
-            className="button button-secondary"
+          <input
+            ref={fileInput}
+            className="question-import-file"
+            type="file"
+            accept=".json,application/json"
+            aria-label="JSON-файл с вопросами"
             disabled={saving}
-            onClick={() => fileInput.current?.click()}
-          >
-            <FileUp size={18} /> Выбрать JSON-файл
-          </button>
-        </div>
-        <input
-          ref={fileInput}
-          className="question-import-file"
-          type="file"
-          accept=".json,application/json"
-          aria-label="JSON-файл с вопросами"
-          disabled={saving}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = "";
-            if (file) void readFile(file);
-          }}
-        />
-        <label className="field question-import-editor">
-          <span id="import-json-label">Готовый JSON</span>
-          <textarea
-            aria-labelledby="import-json-label"
-            ref={editor}
-            value={text}
-            rows={10}
-            spellCheck={false}
-            disabled={saving}
-            placeholder={
-              '{\n  "format": "ctokodnomy-questions-v1",\n  "questions": [...]\n}'
-            }
-            aria-describedby="import-editor-hint"
             onChange={(event) => {
-              if (saveLock.current) return;
-              invalidate();
-              setFilename("");
-              setText(event.target.value);
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) void readFile(file);
             }}
           />
-        </label>
-        <div className="question-import-editor-footer">
-          <p className="form-hint" id="import-editor-hint">
-            {reading
-              ? "Читаем файл…"
-              : filename
-                ? `Файл: ${filename}`
-                : "Вставьте весь JSON, включая внешние фигурные скобки."}
-            <span
-              className={
-                byteCount > IMPORT_MAX_BYTES ? "question-import-size-error" : ""
+          <label className="field question-import-editor">
+            <span id="import-json-label">Готовый JSON</span>
+            <textarea
+              aria-labelledby="import-json-label"
+              ref={editor}
+              value={text}
+              rows={10}
+              spellCheck={false}
+              disabled={saving}
+              placeholder={
+                '{\n  "format": "ctokodnomy-questions-v1",\n  "questions": [...]\n}'
               }
+              aria-describedby="import-editor-hint"
+              onChange={(event) => {
+                if (saveLock.current) return;
+                invalidate();
+                setFilename("");
+                setText(event.target.value);
+              }}
+            />
+          </label>
+          <div className="question-import-pack-name">
+            <label className="field">
+              <span>Название набора</span>
+              <input
+                type="text"
+                value={packName}
+                maxLength={100}
+                disabled={saving || reading}
+                placeholder="Например, День социолога"
+                aria-describedby={`import-pack-name-hint${packNameIssue ? " import-pack-name-error" : ""}`}
+                aria-invalid={Boolean(packNameIssue)}
+                onChange={(event) => updatePackName(event.target.value)}
+              />
+            </label>
+            <p className="form-hint" id="import-pack-name-hint">
+              Один набор для всех вопросов этого импорта; пустое поле сохраняет
+              наборы из файла. Потом название можно изменить в библиотеке.
+            </p>
+            {packNameIssue && (
+              <p className="question-import-pack-name-error" id="import-pack-name-error" role="alert">
+                {packNameIssue}
+              </p>
+            )}
+            {suggestedPackName && (
+              <button
+                type="button"
+                className="button button-secondary question-import-filename-button"
+                disabled={saving || reading}
+                onClick={() => updatePackName(suggestedPackName)}
+              >
+                Использовать имя файла: {suggestedPackName}
+              </button>
+            )}
+          </div>
+          <div className="question-import-editor-footer">
+            <p className="form-hint" id="import-editor-hint">
+              {reading
+                ? "Читаем файл…"
+                : filename
+                  ? `Файл: ${filename}`
+                  : "Вставьте весь JSON, включая внешние фигурные скобки."}
+              <span
+                className={
+                  byteCount > IMPORT_MAX_BYTES ? "question-import-size-error" : ""
+                }
+              >
+                {(byteCount / 1024).toLocaleString("ru", {
+                  maximumFractionDigits: 1,
+                })}{" "}
+                КБ / 3 МБ
+              </span>
+            </p>
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={busy}
+              onClick={() => void check()}
             >
-              {(byteCount / 1024).toLocaleString("ru", {
-                maximumFractionDigits: 1,
-              })}{" "}
-              КБ / 3 МБ
-            </span>
-          </p>
-          <button
-            type="button"
-            className="button button-primary"
-            disabled={busy}
-            onClick={() => void check()}
-          >
-            <CheckCircle2 size={18} />{" "}
-            {checking ? "Проверяем…" : "Проверить вопросы"}
-          </button>
-        </div>
+              <CheckCircle2 size={18} />{" "}
+              {checking ? "Проверяем…" : "Проверить вопросы"}
+            </button>
+          </div>
+        </CollapsibleCard>
       </section>
 
       {issues.length > 0 && (
@@ -545,7 +623,7 @@ export default function QuestionImport() {
             <AlertTriangle size={22} />
             <h2>Исправьте ошибки</h2>
           </div>
-          <p>Вопросы ещё не сохранены. Исправьте JSON и повторите проверку.</p>
+          <p>Вопросы ещё не сохранены. Исправьте отмеченные поля или JSON и повторите проверку.</p>
           <ul>
             {issues.map((issue, index) => (
               <li key={`${issue.path}-${index}`}>
@@ -563,266 +641,285 @@ export default function QuestionImport() {
       )}
 
       {checked && (
-        <section
-          className="question-import-preview"
-          aria-label="Предпросмотр вопросов"
-        >
-          <div className="question-import-section-heading">
-            <div>
-              <p className="eyebrow">JSON прошёл проверку</p>
-              <h2>2. Просмотрите вопросы</h2>
-              <p className="muted">
-                Проверьте подписи для гостей, ТОП 6 и полный список. Исходные
-                фразы ниже видны только организатору.
-              </p>
-            </div>
-            <CheckCircle2
-              className="question-import-valid-icon"
-              size={32}
-              aria-hidden="true"
-            />
-          </div>
-          <div
-            className="question-import-counts"
-            aria-label="Результат проверки"
+        <section aria-label="Предпросмотр вопросов">
+          <CollapsibleCard
+            className="question-import-preview"
+            defaultOpen
+            header={
+              <div className="question-import-section-heading">
+                <div>
+                  <p className="eyebrow">JSON прошёл проверку</p>
+                  <h2>2. Просмотрите вопросы</h2>
+                  <p className="muted">
+                    Проверьте подписи для гостей, ТОП 6 и полный список. Исходные
+                    фразы ниже видны только организатору.
+                  </p>
+                </div>
+                <CheckCircle2
+                  className="question-import-valid-icon"
+                  size={32}
+                  aria-hidden="true"
+                />
+              </div>
+            }
           >
-            <span>
-              Всего: <strong>{total}</strong>
-            </span>
-            <span>
-              Новых: <strong>{total - updating}</strong>
-            </span>
-            <span>
-              Обновляемых: <strong>{updating}</strong>
-            </span>
-          </div>
-          {matching > 0 && (
-            <fieldset className="question-import-mode" disabled={saving}>
-              <legend>
-                В библиотеке уже есть совпадающие вопросы: {matching}
-              </legend>
-              <p className="form-hint">
-                Совпадение определяется по идентификатору из экспорта, а не по
-                тексту вопроса.
-              </p>
-              <label>
-                <input
-                  type="radio"
-                  name="question-import-mode"
-                  aria-label="Обновить совпадающие"
-                  value="update"
-                  checked={mode === "update"}
-                  onChange={() => {
-                    setMode("update");
-                    setReplaceConfirmed(false);
-                    preparedSave.current = null;
-                  }}
-                />
-                <span>
-                  <strong>Обновить совпадающие</strong>
-                  <small>Заменить содержимое этих вопросов в библиотеке.</small>
-                </span>
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="question-import-mode"
-                  aria-label="Добавить все как новые"
-                  value="copy"
-                  checked={mode === "copy"}
-                  onChange={() => {
-                    setMode("copy");
-                    setReplaceConfirmed(false);
-                    preparedSave.current = null;
-                  }}
-                />
-                <span>
-                  <strong>Добавить все как новые</strong>
-                  <small>
-                    Создать отдельный набор с новыми идентификаторами.
-                  </small>
-                </span>
-              </label>
-            </fieldset>
-          )}
-          {checked.warnings.length > 0 && (
-            <details className="question-import-warnings">
-              <summary>
-                <AlertTriangle size={19} />
-                <span>Обратите внимание: {checked.warnings.length}</span>
-              </summary>
-              <p>
-                Это не мешает сохранению. Проверьте, что данные соответствуют
-                вашему замыслу.
-              </p>
+            <div
+              className="question-import-counts"
+              aria-label="Результат проверки"
+            >
+              <span>
+                Всего: <strong>{total}</strong>
+              </span>
+              <span>
+                Новых: <strong>{total - updating}</strong>
+              </span>
+              <span>
+                Обновляемых: <strong>{updating}</strong>
+              </span>
+            </div>
+            <div className="question-import-pack-preview">
+              <h3>Наборы после импорта</h3>
               <ul>
-                {checked.warnings.map((warning, index) => (
-                  <li key={index}>{warning}</li>
+                {previewPacks.map(([name, count]) => (
+                  <li key={name}>
+                    <strong>{name || "Без набора"}</strong>
+                    <span>Вопросов: {count}</span>
+                  </li>
                 ))}
               </ul>
-            </details>
-          )}
-          <div className="question-import-question-list">
-            {checked.pack.questions.map((question, index) => {
-              const isUpdate =
-                mode === "update" &&
-                Boolean(question.id && checked.existingIds.has(question.id));
-              const ranked = rankedAnswers(question.answers);
-              const board = boardAnswers(question.answers);
-              const allPoints = question.answers.reduce(
-                (sum, answer) => sum + answer.points,
-                0,
-              );
-              const boardPoints = board.reduce(
-                (sum, answer) => sum + answer.points,
-                0,
-              );
-              return (
-                <details
-                  className="question-import-question"
-                  open={total <= 3 ? true : undefined}
-                  key={question.id ?? index}
-                >
-                  <summary>
-                    <span className="question-import-question-number">
-                      {index + 1}
-                    </span>
-                    <span className="question-import-question-title">
-                      <strong>{question.prompt}</strong>
-                      <small>
-                        Табло: {board.length} · Все варианты: {ranked.length}
-                        {question.isDemo ? " · Демо" : ""}
-                      </small>
-                    </span>
-                    <span
-                      className={`question-import-kind${isUpdate ? " updating" : ""}`}
-                    >
-                      {isUpdate ? "Обновление" : "Новый"}
-                    </span>
-                  </summary>
-                  <div className="question-import-question-body">
-                    <div className="question-import-answer-totals">
-                      <span>Сумма очков на табло: <strong>{boardPoints}</strong></span>
-                      <span>Сумма очков всего опроса: <strong>{allPoints}</strong></span>
-                    </div>
-                    <ol className="question-import-answers">
-                      {ranked.map((answer, answerIndex) => (
-                        <li key={answer.id ?? answerIndex}>
-                          <div>
-                            <span className={`question-import-answer-scope${answerIndex < GAME_ANSWER_LIMIT ? " on-board" : ""}`}>
-                              {answerIndex < GAME_ANSWER_LIMIT
-                                ? `ТОП 6 · табло № ${answerIndex + 1}`
-                                : "Статистика"}
+              <p className="form-hint">
+                Именованный набор можно целиком выбрать при настройке игры.
+              </p>
+            </div>
+            {matching > 0 && (
+              <fieldset className="question-import-mode" disabled={saving}>
+                <legend>
+                  В библиотеке уже есть совпадающие вопросы: {matching}
+                </legend>
+                <p className="form-hint">
+                  Совпадение определяется по идентификатору из экспорта, а не по
+                  тексту вопроса.
+                </p>
+                <label>
+                  <input
+                    type="radio"
+                    name="question-import-mode"
+                    aria-label="Обновить совпадающие"
+                    value="update"
+                    checked={mode === "update"}
+                    onChange={() => {
+                      setMode("update");
+                      setReplaceConfirmed(false);
+                      preparedSave.current = null;
+                    }}
+                  />
+                  <span>
+                    <strong>Обновить совпадающие</strong>
+                    <small>Заменить содержимое этих вопросов в библиотеке.</small>
+                  </span>
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="question-import-mode"
+                    aria-label="Добавить все как новые"
+                    value="copy"
+                    checked={mode === "copy"}
+                    onChange={() => {
+                      setMode("copy");
+                      setReplaceConfirmed(false);
+                      preparedSave.current = null;
+                    }}
+                  />
+                  <span>
+                    <strong>Добавить все как новые</strong>
+                    <small>
+                      Создать копии вопросов. Для отдельного набора задайте
+                      другое название перед проверкой.
+                    </small>
+                  </span>
+                </label>
+              </fieldset>
+            )}
+            {checked.warnings.length > 0 && (
+              <details className="question-import-warnings">
+                <summary>
+                  <AlertTriangle size={19} />
+                  <span>Обратите внимание: {checked.warnings.length}</span>
+                </summary>
+                <p>
+                  Это не мешает сохранению. Проверьте, что данные соответствуют
+                  вашему замыслу.
+                </p>
+                <ul>
+                  {checked.warnings.map((warning, index) => (
+                    <li key={index}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            <div className="question-import-question-list">
+              {checked.pack.questions.map((question, index) => {
+                const isUpdate =
+                  mode === "update" &&
+                  Boolean(question.id && checked.existingIds.has(question.id));
+                const ranked = rankedAnswers(question.answers);
+                const board = boardAnswers(question.answers);
+                const allPoints = question.answers.reduce(
+                  (sum, answer) => sum + answer.points,
+                  0,
+                );
+                const boardPoints = board.reduce(
+                  (sum, answer) => sum + answer.points,
+                  0,
+                );
+                return (
+                  <details
+                    className="question-import-question"
+                    open={total <= 3 ? true : undefined}
+                    key={question.id ?? index}
+                  >
+                    <summary>
+                      <span className="question-import-question-number">
+                        {index + 1}
+                      </span>
+                      <span className="question-import-question-title">
+                        <strong>{question.prompt}</strong>
+                        <small>
+                          Табло: {board.length} · Все варианты: {ranked.length}
+                          {question.isDemo ? " · Демо" : ""}
+                        </small>
+                      </span>
+                      <span
+                        className={`question-import-kind${isUpdate ? " updating" : ""}`}
+                      >
+                        {isUpdate ? "Обновление" : "Новый"}
+                      </span>
+                    </summary>
+                    <div className="question-import-question-body">
+                      <div className="question-import-answer-totals">
+                        <span>Сумма очков на табло: <strong>{boardPoints}</strong></span>
+                        <span>Сумма очков всего опроса: <strong>{allPoints}</strong></span>
+                      </div>
+                      <ol className="question-import-answers">
+                        {ranked.map((answer, answerIndex) => (
+                          <li key={answer.id ?? answerIndex}>
+                            <div>
+                              <span className={`question-import-answer-scope${answerIndex < GAME_ANSWER_LIMIT ? " on-board" : ""}`}>
+                                {answerIndex < GAME_ANSWER_LIMIT
+                                  ? `ТОП 6 · табло № ${answerIndex + 1}`
+                                  : "Статистика"}
+                              </span>
+                              <strong>{answer.text}</strong>
+                              {answer.aliases.length > 0 && (
+                                <small>
+                                  Синонимы: {answer.aliases.join("; ")}
+                                </small>
+                              )}
+                              {answer.originals && answer.originals.length > 0 && (
+                                <details className="question-import-originals">
+                                  <summary>Исходные фразы · только организатору ({answer.originals.length})</summary>
+                                  <ul>
+                                    {answer.originals.map((original, originalIndex) => (
+                                      <li key={originalIndex}>{original}</li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              )}
+                            </div>
+                            <span>
+                              {answer.points}
+                              <small>очков</small>
                             </span>
-                            <strong>{answer.text}</strong>
-                            {answer.aliases.length > 0 && (
-                              <small>
-                                Синонимы: {answer.aliases.join("; ")}
-                              </small>
-                            )}
-                            {answer.originals && answer.originals.length > 0 && (
-                              <details className="question-import-originals">
-                                <summary>Исходные фразы · только организатору ({answer.originals.length})</summary>
-                                <ul>
-                                  {answer.originals.map((original, originalIndex) => (
-                                    <li key={originalIndex}>{original}</li>
-                                  ))}
-                                </ul>
-                              </details>
-                            )}
-                          </div>
-                          <span>
-                            {answer.points}
-                            <small>очков</small>
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
-                    <dl className="question-import-metadata">
-                      <div>
-                        <dt>Источник</dt>
-                        <dd>{question.source || "Не указан"}</dd>
-                      </div>
-                      <div>
-                        <dt>Дата опроса</dt>
-                        <dd>{question.surveyDate || "Неизвестна"}</dd>
-                      </div>
-                      <div>
-                        <dt>Опрошено</dt>
-                        <dd>
-                          {question.respondentCount?.toLocaleString("ru") ??
-                            "Неизвестно"}
-                        </dd>
-                      </div>
-                      {question.pack && (
+                          </li>
+                        ))}
+                      </ol>
+                      <dl className="question-import-metadata">
+                        <div>
+                          <dt>Источник</dt>
+                          <dd>{question.source || "Не указан"}</dd>
+                        </div>
+                        <div>
+                          <dt>Дата опроса</dt>
+                          <dd>{question.surveyDate || "Неизвестна"}</dd>
+                        </div>
+                        <div>
+                          <dt>Опрошено</dt>
+                          <dd>
+                            {question.respondentCount?.toLocaleString("ru") ??
+                              "Неизвестно"}
+                          </dd>
+                        </div>
                         <div>
                           <dt>Набор</dt>
-                          <dd>{question.pack}</dd>
+                          <dd>{question.pack || "Без набора"}</dd>
                         </div>
-                      )}
-                      <div>
-                        <dt>Данные</dt>
-                        <dd>
-                          {question.isDemo
-                            ? "Учебные, вымышленные"
-                            : "Без пометки «Демо»"}
-                        </dd>
-                      </div>
-                      {question.notes && (
-                        <div className="question-import-notes">
-                          <dt>Заметки ведущему</dt>
-                          <dd>{question.notes}</dd>
+                        <div>
+                          <dt>Данные</dt>
+                          <dd>
+                            {question.isDemo
+                              ? "Учебные, вымышленные"
+                              : "Без пометки «Демо»"}
+                          </dd>
                         </div>
-                      )}
-                    </dl>
-                  </div>
-                </details>
-              );
-            })}
-          </div>
+                        {question.notes && (
+                          <div className="question-import-notes">
+                            <dt>Заметки ведущему</dt>
+                            <dd>{question.notes}</dd>
+                          </div>
+                        )}
+                      </dl>
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </CollapsibleCard>
         </section>
       )}
 
-      <section
-        className="question-import-save"
-        aria-labelledby="import-save-heading"
-      >
-        <div>
-          <h2 id="import-save-heading">3. Сохраните в библиотеку</h2>
-          <p className="muted">
-            Снимки созданных игр не изменятся. Новый набор можно выбрать при
-            создании следующей игры.
-          </p>
-          {checked && updating > 0 && (
-            <label className="question-import-confirm">
-              <input
-                type="checkbox"
-                aria-label="Заменить совпадающие вопросы в библиотеке"
-                checked={replaceConfirmed}
-                disabled={saving}
-                onChange={(event) => setReplaceConfirmed(event.target.checked)}
-              />
-              <span>
-                Заменить совпадающие вопросы в библиотеке
-                <strong>
-                  Будет заменено: {updating}. Экспорт библиотеки позволит
-                  заранее сохранить копию.
-                </strong>
-              </span>
-            </label>
-          )}
-          {!checked && savedCount === null && (
-            <p className="form-hint">Сначала загрузите и проверьте вопросы.</p>
-          )}
-        </div>
-        <button
-          type="button"
-          className="button button-primary"
-          disabled={!canSave}
-          onClick={() => void save()}
+      <section aria-labelledby="import-save-heading">
+        <CollapsibleCard
+          className="question-import-save"
+          defaultOpen
+          header={<h2 id="import-save-heading">3. Сохраните в библиотеку</h2>}
         >
-          <Check size={19} /> {saving ? "Сохраняем…" : "Сохранить вопросы"}
-        </button>
+          <div>
+            <p className="muted">
+              Снимки созданных игр не изменятся. Новый набор можно выбрать при
+              создании следующей игры.
+            </p>
+            {checked && updating > 0 && (
+              <label className="question-import-confirm">
+                <input
+                  type="checkbox"
+                  aria-label="Заменить совпадающие вопросы в библиотеке"
+                  checked={replaceConfirmed}
+                  disabled={saving}
+                  onChange={(event) => setReplaceConfirmed(event.target.checked)}
+                />
+                <span>
+                  Заменить совпадающие вопросы в библиотеке
+                  <strong>
+                    Будет заменено: {updating}. Экспорт библиотеки позволит
+                    заранее сохранить копию.
+                  </strong>
+                </span>
+              </label>
+            )}
+            {!checked && savedCount === null && (
+              <p className="form-hint">Сначала загрузите и проверьте вопросы.</p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={!canSave}
+            onClick={() => void save()}
+          >
+            <Check size={19} /> {saving ? "Сохраняем…" : "Сохранить вопросы"}
+          </button>
+        </CollapsibleCard>
       </section>
     </div>
   );

@@ -14,7 +14,16 @@
   display: flex;
   align-items: center;
   gap: 13px;
-  margin-bottom: 14px;
+  margin-bottom: 0;
+}
+.brand-editor-section > .collapsible-card-heading {
+  min-height: 48px;
+}
+.brand-editor-section > .collapsible-card-body {
+  padding-top: 18px;
+}
+.brand-editor-section .collapsible-card-title .brand-section-kicker {
+  margin-bottom: 6px;
 }
 .brand-section-icon {
   display: grid;

@@ -30,6 +30,7 @@ import {
   questionPackSchema,
   questionImportIssues,
 } from "../shared/questionImport.js";
+import { MAX_QUESTION_BATCH } from "../shared/questionPacks.js";
 import {
   createGame,
   applyCommand,
@@ -62,6 +63,24 @@ class ApiError extends Error {
   }
 }
 const idSchema = z.uuid();
+const questionBatchIdsSchema = z
+  .array(idSchema.transform((value) => value.toLowerCase()))
+  .min(1, "Выберите хотя бы один вопрос")
+  .max(MAX_QUESTION_BATCH, `Можно выбрать не больше ${MAX_QUESTION_BATCH} вопросов`)
+  .refine((ids) => new Set(ids).size === ids.length, "Идентификаторы вопросов должны отличаться");
+const questionBatchSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("move"),
+    ids: questionBatchIdsSchema,
+    pack: z.string().max(100, "Название набора должно быть не длиннее 100 символов"),
+  }),
+  z.object({ action: z.literal("delete"), ids: questionBatchIdsSchema }),
+]);
+const questionPackRenameSchema = z.object({
+  // Legacy names are matched exactly, including their surrounding spaces.
+  from: z.string().min(1).max(100),
+  to: z.string().trim().min(1, "Введите название набора").max(100, "Название набора должно быть не длиннее 100 символов"),
+});
 const questionImportRequestSchema = questionPackSchema.safeExtend({
   replaceIds: z
     .array(
@@ -165,6 +184,17 @@ const mapQuestion = (value: unknown): Question => {
     answers: q.answers.map((a) => ({ ...a, id: a.id ?? randomUUID() })),
   };
 };
+/** Serialize library writes, including imports, without blocking ordinary reads. */
+const questionTransaction = <T>(
+  pool: Database,
+  operation: (client: Transaction) => Promise<T>,
+) => transaction(pool, async (client) => {
+  // A pack is an existing JSON field rather than a separate table. Holding this
+  // lock from validation through the last write prevents phantom target packs,
+  // partial batches and opposite-order import deadlocks across app instances.
+  await client.query("LOCK TABLE questions IN SHARE ROW EXCLUSIVE MODE");
+  return operation(client);
+});
 const players = async (
   db: Database | Transaction,
   id: string,
@@ -640,10 +670,10 @@ export async function buildApp(
   app.post("/api/questions/demo", async (request) => {
     await requireAdmin(request);
     const questions = createDemoQuestions();
-    await transaction(pool, async (client) => {
+    await questionTransaction(pool, async (client) => {
       for (const question of questions)
         await client.query(
-          "INSERT INTO questions(id,data) VALUES($1,$2::jsonb)",
+          "INSERT INTO questions(id,data,created_at) VALUES($1,$2::jsonb,clock_timestamp())",
           [question.id, JSON.stringify(question)],
         );
     });
@@ -652,30 +682,79 @@ export async function buildApp(
   app.post("/api/questions", async (request) => {
     await requireAdmin(request);
     const question = mapQuestion(request.body);
-    await pool.query("INSERT INTO questions(id,data) VALUES($1,$2::jsonb)", [
-      question.id,
-      JSON.stringify(question),
-    ]);
+    await questionTransaction(pool, (client) => client.query(
+      "INSERT INTO questions(id,data,created_at) VALUES($1,$2::jsonb,clock_timestamp())",
+      [question.id, JSON.stringify(question)],
+    ));
     return question;
   });
   app.put("/api/questions/:id", async (request) => {
     await requireAdmin(request);
     const id = gameId(request).toLowerCase();
     const question = { ...mapQuestion(request.body), id };
-    const result = await pool.query(
+    const result = await questionTransaction(pool, (client) => client.query(
       "UPDATE questions SET data=$2::jsonb WHERE id=$1",
       [id, JSON.stringify(question)],
-    );
+    ));
     if (!result.rowCount) throw new ApiError(404, "Вопрос не найден");
     return question;
   });
   app.delete("/api/questions/:id", async (request) => {
     await requireAdmin(request);
-    const result = await pool.query("DELETE FROM questions WHERE id=$1", [
-      gameId(request),
-    ]);
+    const result = await questionTransaction(pool, (client) => client.query(
+      "DELETE FROM questions WHERE id=$1", [gameId(request)],
+    ));
     if (!result.rowCount) throw new ApiError(404, "Вопрос не найден");
     return { ok: true };
+  });
+  app.post("/api/questions/batch", async (request) => {
+    await requireAdmin(request);
+    const body = questionBatchSchema.parse(request.body);
+    return questionTransaction(pool, async (client) => {
+      const existing = await client.query(
+        "SELECT id FROM questions WHERE id=ANY($1::uuid[])", [body.ids],
+      );
+      if (existing.rowCount !== body.ids.length)
+        throw new ApiError(404, "Один из выбранных вопросов больше не существует", "NOT_FOUND");
+      let pack = body.action === "move" ? body.pack.trim() : "";
+      if (body.action === "move" && body.pack !== pack) {
+        // Existing imported names are exact grouping keys, even when padded.
+        // Normalize a newly entered name only if it is not an existing pack.
+        const exact = await client.query(
+          "SELECT 1 FROM questions WHERE data->>'pack'=$1 LIMIT 1", [body.pack],
+        );
+        if (exact.rowCount) pack = body.pack;
+      }
+      const result = body.action === "delete"
+        ? await client.query("DELETE FROM questions WHERE id=ANY($1::uuid[])", [body.ids])
+        : await client.query(
+            "UPDATE questions SET data=jsonb_set(data,'{pack}',to_jsonb($2::text),true) WHERE id=ANY($1::uuid[])",
+            [body.ids, pack],
+          );
+      return { count: result.rowCount! };
+    });
+  });
+  app.post("/api/questions/packs/rename", async (request) => {
+    await requireAdmin(request);
+    const body = questionPackRenameSchema.parse(request.body);
+    return questionTransaction(pool, async (client) => {
+      const source = await client.query(
+        "SELECT count(*)::int AS count FROM questions WHERE data->>'pack'=$1", [body.from],
+      );
+      const count = source.rows[0].count as number;
+      if (!count) throw new ApiError(404, "Набор больше не существует", "NOT_FOUND");
+      if (body.from === body.to) return { count, pack: body.to };
+      const target = await client.query(
+        "SELECT 1 FROM questions WHERE data->>'pack'=$1 LIMIT 1", [body.to],
+      );
+      if (target.rowCount)
+        throw new ApiError(409, "Набор с таким названием уже существует. Выберите другое название.", "PACK_EXISTS");
+      await client.query(
+        "UPDATE questions SET data=jsonb_set(data,'{pack}',to_jsonb($2::text),true) WHERE data->>'pack'=$1",
+        [body.from, body.to],
+      );
+      return { count, pack: body.to };
+    });
   });
   app.post("/api/questions/import", async (request) => {
     await requireAdmin(request);
@@ -690,18 +769,18 @@ export async function buildApp(
       );
     const body = parsed.data;
     const questions = body.questions.map(mapQuestion);
-    await transaction(pool, async (client) => {
+    await questionTransaction(pool, async (client) => {
       for (const question of questions) {
         const values = [question.id, JSON.stringify(question)];
         // The wizard's confirmation applies only to these UUIDs. Checking in
         // the upsert also covers another tab inserting a UUID after preview.
         const result = body.replaceIds === undefined
           ? await client.query(
-              "INSERT INTO questions(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data RETURNING id",
+              "INSERT INTO questions(id,data,created_at) VALUES($1,$2::jsonb,clock_timestamp()) ON CONFLICT(id) DO UPDATE SET data=excluded.data RETURNING id",
               values,
             )
           : await client.query(
-              "INSERT INTO questions(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE questions.id=ANY($3::uuid[]) OR questions.data=excluded.data RETURNING id",
+              "INSERT INTO questions(id,data,created_at) VALUES($1,$2::jsonb,clock_timestamp()) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE questions.id=ANY($3::uuid[]) OR questions.data=excluded.data RETURNING id",
               [...values, body.replaceIds],
             );
         if (!result.rowCount)

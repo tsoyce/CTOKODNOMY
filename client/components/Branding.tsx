@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { defaultBrand, type Brand } from "../../shared/types";
 import { brandStyle } from "../lib";
+import { CollapsibleCard } from "./CollapsibleCard";
 import {
   contrastRatio,
   isLightBrand,
@@ -371,17 +372,22 @@ function EditorSection({
   children: ReactNode;
 }) {
   return (
-    <section className="brand-editor-section">
-      <div className="brand-editor-section-heading">
-        <span className="brand-section-icon">{icon}</span>
-        <div>
-          <p className="brand-section-kicker">{number}</p>
-          <h2>{title}</h2>
+    <CollapsibleCard
+      className="brand-editor-section"
+      defaultOpen
+      header={
+        <div className="brand-editor-section-heading">
+          <span className="brand-section-icon" aria-hidden="true">{icon}</span>
+          <div>
+            <p className="brand-section-kicker">{number}</p>
+            <h2>{title}</h2>
+          </div>
         </div>
-      </div>
+      }
+    >
       <p className="brand-section-description">{description}</p>
       {children}
-    </section>
+    </CollapsibleCard>
   );
 }
 

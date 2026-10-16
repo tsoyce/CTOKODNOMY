@@ -10,6 +10,9 @@ const adminPage = (name: keyof typeof import("./pages/Admin")) =>
   lazy(async () => ({ default: (await import("./pages/Admin"))[name] }));
 const ResultsPage = lazy(() => import("./pages/Results"));
 const QuestionImportPage = lazy(() => import("./pages/QuestionImport"));
+const QuestionsPage = lazy(async () => ({
+  default: (await import("./pages/Questions")).QuestionsPage,
+}));
 const HomePage = publicPage("HomePage"),
   SetupPage = publicPage("SetupPage"),
   LoginPage = publicPage("LoginPage"),
@@ -24,7 +27,6 @@ const AdminLayout = adminPage("AdminLayout"),
   GamesPage = adminPage("GamesPage"),
   NewGamePage = adminPage("NewGamePage"),
   GameSettingsPage = adminPage("GameSettingsPage"),
-  QuestionsPage = adminPage("QuestionsPage"),
   QuestionEditorPage = adminPage("QuestionEditorPage"),
   SettingsPage = adminPage("SettingsPage"),
   AccountPage = adminPage("AccountPage");

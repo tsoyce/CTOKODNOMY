@@ -746,6 +746,231 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       .toEqual(expect.arrayContaining([replacement]));
   });
 
+  test("question batches enforce access and all-or-nothing validation while preserving private data and game snapshots", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Участник");
+    const detailed = {
+      ...questions[0]!,
+      answers: questions[0]!.answers.map((answer) => ({
+        ...answer, originals: [`private-original-${answer.id}`],
+      })),
+    };
+    expect((await call("PUT", `/questions/${detailed.id}`, detailed, cookie)).statusCode).toBe(200);
+    const current = (await call("GET", `/games/${game.id}/host`, undefined, cookie)).json<HostGame>();
+    const state = await hostCommand(current, cookie, { type: "start", teamId: game.teams[0]!.id });
+    const snapshot = (await pool.query("SELECT state FROM games WHERE id=$1", [state.id])).rows[0].state;
+    const savedResponse = await call("POST", "/games", {
+      title: "Подготовленная игра", questionIds: questions.map((item) => item.id),
+      teams: [{ name: "А", color: "#1646a0" }, { name: "Б", color: "#8b2a16" }],
+    }, cookie);
+    expect(savedResponse.statusCode).toBe(200);
+    const savedId = savedResponse.json<HostGame>().id;
+    const savedSnapshot = (await pool.query("SELECT state FROM games WHERE id=$1", [savedId])).rows[0].state;
+    const library = [detailed, questions[1]!];
+    const ids = questions.map((item) => item.id);
+    const move = { action: "move", ids, pack: "Новый набор" };
+    const rename = { from: "Тест", to: "Другое имя" };
+    for (const visitor of [undefined, member.cookie]) {
+      expect((await call("POST", "/questions/batch", move, visitor)).statusCode).toBe(401);
+      expect((await call("POST", "/questions/packs/rename", rename, visitor)).statusCode).toBe(401);
+    }
+    for (const [url, payload] of [["/questions/batch", move], ["/questions/packs/rename", rename]] as const)
+      expect((await call("POST", url, payload, cookie, "https://other.example")).statusCode).toBe(403);
+
+    for (const payload of [
+      { ...move, ids: [] },
+      { ...move, ids: [ids[0], ids[0]!.toUpperCase()] },
+      { ...move, ids: ["not-a-uuid"] },
+      { ...move, ids: Array.from({ length: 501 }, () => randomUUID()) },
+      { ...move, pack: "я".repeat(101) },
+      { ...move, action: "unknown" },
+    ]) {
+      expect((await call("POST", "/questions/batch", payload, cookie)).statusCode).toBe(400);
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+    }
+    for (const action of ["move", "delete"]) {
+      const missing = await call("POST", "/questions/batch", {
+        action, ids: [ids[0], randomUUID()], pack: "Не сохранять частично",
+      }, cookie);
+      expect(missing.statusCode).toBe(404);
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+    }
+    // The exact upper bound passes validation, even when the selected records
+    // have disappeared; the request then fails atomically as a missing batch.
+    expect((await call("POST", "/questions/batch", {
+      action: "delete", ids: Array.from({ length: 500 }, () => randomUUID()),
+    }, cookie)).statusCode).toBe(404);
+
+    const moved = await call("POST", "/questions/batch", {
+      ...move, ids: ids.map((id) => id.toUpperCase()), pack: "  Праздник  ",
+    }, cookie);
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toEqual({ count: 2 });
+    const expected = library.map((item) => ({ ...item, pack: "Праздник" }));
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(expected);
+    const exported = (await call("GET", "/questions/export", undefined, cookie)).json();
+    expect(questionPackSchema.parse(exported).questions).toEqual(expected);
+    expect((await call("POST", "/questions/import", exported, cookie)).statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(expected);
+    expect((await call("POST", "/questions/batch", {
+      action: "move", ids: [ids[0]], pack: "   ",
+    }, cookie)).json()).toEqual({ count: 1 });
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([
+      { ...detailed, pack: "" }, expected[1],
+    ]);
+    const deleted = await call("POST", "/questions/batch", { action: "delete", ids }, cookie);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ count: 2 });
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([]);
+    expect((await pool.query("SELECT state FROM games WHERE id=$1", [state.id])).rows[0].state).toEqual(snapshot);
+    expect((await pool.query("SELECT state FROM games WHERE id=$1", [savedId])).rows[0].state).toEqual(savedSnapshot);
+    const publicGame = await call("GET", `/games/${state.id}/public`);
+    for (const privateValue of ["private-original-", "private-alias", "private-organizer-notes"])
+      expect(publicGame.body).not.toContain(privateValue);
+  });
+
+  test("batch moves join exact legacy pack names while normalizing only newly entered names", async () => {
+    const cookie = await initialize();
+    const legacy = { ...question("Репетиция", "А", "Б"), pack: " Репетиция " };
+    const other = { ...question("Переносимый вопрос", "В", "Г"), pack: "" };
+    expect((await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions: [legacy, other],
+    }, cookie)).statusCode).toBe(200);
+    const move = (pack: string) => call("POST", "/questions/batch", {
+      action: "move", ids: [other.id], pack,
+    }, cookie);
+    expect((await move(legacy.pack)).json()).toEqual({ count: 1 });
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([
+      legacy, { ...other, pack: legacy.pack },
+    ]);
+    expect((await move("  Новый набор  ")).statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([
+      legacy, { ...other, pack: "Новый набор" },
+    ]);
+    expect((await move("  ")).statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([legacy, other]);
+
+    const whitespaceLegacy = { ...question("Старое имя из пробелов", "Д", "Е"), pack: "   " };
+    expect((await call("POST", "/questions", whitespaceLegacy, cookie)).statusCode).toBe(200);
+    expect((await move(whitespaceLegacy.pack)).statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([
+      legacy, { ...other, pack: whitespaceLegacy.pack }, whitespaceLegacy,
+    ]);
+  });
+
+  test("renaming question packs matches legacy names exactly and refuses collisions without merging", async () => {
+    const cookie = await initialize();
+    const first = { ...question("Первый", "А", "Б"), pack: "  Старое имя  " };
+    const second = { ...question("Второй", "В", "Г"), pack: first.pack };
+    const other = { ...question("Третий", "Д", "Е"), pack: "Занято" };
+    const library = [first, second, other];
+    expect((await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions: library,
+    }, cookie)).statusCode).toBe(200);
+    for (const [payload, status] of [
+      [{ from: "Старое имя", to: "Новое" }, 404],
+      [{ from: first.pack, to: "   Занято   " }, 409],
+      [{ from: first.pack, to: " " }, 400],
+      [{ from: first.pack, to: "я".repeat(101) }, 400],
+    ] as const) {
+      const response = await call("POST", "/questions/packs/rename", payload, cookie);
+      expect(response.statusCode).toBe(status);
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(library);
+    }
+    const renamed = await call("POST", "/questions/packs/rename", {
+      from: first.pack, to: "  Новое имя  ",
+    }, cookie);
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ count: 2, pack: "Новое имя" });
+    const expected = [{ ...first, pack: "Новое имя" }, { ...second, pack: "Новое имя" }, other];
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(expected);
+    const unchanged = await call("POST", "/questions/packs/rename", {
+      from: "Новое имя", to: " Новое имя ",
+    }, cookie);
+    expect(unchanged.statusCode).toBe(200);
+    expect(unchanged.json()).toEqual({ count: 2, pack: "Новое имя" });
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(expected);
+  });
+
+  test("concurrent pack renames cannot both claim the same target", async () => {
+    const cookie = await initialize();
+    const first = { ...question("Набор А", "А", "Б"), pack: "Первый" };
+    const second = { ...question("Набор Б", "В", "Г"), pack: "Второй" };
+    expect((await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions: [first, second],
+    }, cookie)).statusCode).toBe(200);
+    const responses = await Promise.all([first, second].map((item) => call(
+      "POST", "/questions/packs/rename", { from: item.pack, to: "Общее имя" }, cookie,
+    )));
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    const library = (await call("GET", "/questions", undefined, cookie)).json<Question[]>();
+    const winner = responses.findIndex((response) => response.statusCode === 200);
+    expect(library).toEqual([first, second].map((item, index) => ({
+      ...item, pack: index === winner ? "Общее имя" : item.pack,
+    })));
+  });
+
+  test("a waiting question batch uses committed JSON data without losing unrelated edits or blocking readers", async () => {
+    const cookie = await initialize();
+    const { questions } = await createFixture(cookie);
+    const blocker = await pool.connect();
+    let pending: ReturnType<typeof call> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "UPDATE questions SET data=jsonb_set(data,'{notes}',to_jsonb($2::text),true) WHERE id=$1",
+        [questions[0]!.id, "Примечание из другого соединения"],
+      );
+      pending = call("POST", "/questions/batch", {
+        action: "move", ids: questions.map((item) => item.id), pack: "После изменения",
+      }, cookie);
+      // Start injection before checking the PostgreSQL lock queue.
+      const response = Promise.resolve(pending);
+      await expect.poll(async () => (await pool.query(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation='questions'::regclass AND mode='ShareRowExclusiveLock' AND NOT granted) AS waiting",
+      )).rows[0].waiting).toBe(true);
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(questions);
+      await blocker.query("COMMIT");
+      const moved = await response;
+      expect(moved.statusCode).toBe(200);
+      expect(moved.json()).toEqual({ count: 2 });
+      expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual([
+        { ...questions[0], pack: "После изменения", notes: "Примечание из другого соединения" },
+        { ...questions[1], pack: "После изменения" },
+      ]);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      if (pending) await pending;
+    }
+  });
+
+  test("imports preserve file order for new questions and keep existing positions when replacing them", async () => {
+    const cookie = await initialize();
+    const questions = Array.from({ length: 15 }, (_, index) => ({
+      ...question(`Раунд ${index + 1}`, "А", "Б"),
+      // UUID ordering intentionally opposes the order chosen by the organizer.
+      id: `00000000-0000-4000-8000-${String(15 - index).padStart(12, "0")}`,
+      pack: "Опрос в порядке файла",
+    }));
+    expect((await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions,
+    }, cookie)).statusCode).toBe(200);
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(questions);
+    const before = (await pool.query("SELECT id,created_at FROM questions ORDER BY created_at,id")).rows;
+    const replacements = questions.toReversed().map((item) => ({ ...item, notes: "Обновлён без перестановки" }));
+    const appended = [question("Новый раунд 1", "В", "Г"), question("Новый раунд 2", "Д", "Е")];
+    expect((await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions: [...replacements, ...appended],
+    }, cookie)).statusCode).toBe(200);
+    const expected = [...replacements.toReversed(), ...appended];
+    expect((await call("GET", "/questions", undefined, cookie)).json()).toEqual(expected);
+    expect((await call("GET", "/questions/export", undefined, cookie)).json().questions).toEqual(expected);
+    const after = (await pool.query("SELECT id,created_at FROM questions ORDER BY created_at,id")).rows;
+    expect(after.slice(0, questions.length)).toEqual(before);
+  });
+
   test("branding uploads validate image signatures and limits and serve data without path traversal", async () => {
     const cookie = await initialize();
     const authorizedUpload = (data: Buffer, mime: string, filename: string) =>

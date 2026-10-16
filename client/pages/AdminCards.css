@@ -1,0 +1,40 @@
+.admin-content .game-card .collapsible-card-title .game-card-top {
+  margin-bottom: 12px;
+}
+.admin-content .game-card .collapsible-card-title h2 {
+  margin-bottom: 0;
+}
+.admin-content .game-card .collapsible-card-body > .game-card-result-note {
+  margin-top: 0;
+}
+.admin-content .invite-card .collapsible-card-body > .actions {
+  margin-top: 19px;
+}
+.admin-content .participant-refresh,
+.admin-content .answer-sort-actions {
+  justify-content: flex-end;
+  margin-bottom: 18px;
+}
+.admin-content .collapsible-card-body > form > .field {
+  margin-top: 19px;
+}
+.admin-content .collapsible-card-title .account-identity {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.admin-content .collapsible-card-title .account-identity h2 {
+  margin-bottom: 8px;
+}
+.admin-content .game-lifecycle .collapsible-card-body {
+  padding-top: 0;
+}
+@media (max-width: 760px) {
+  .admin-content .invite-card .collapsible-card-body > .actions {
+    gap: 8px;
+  }
+  .admin-content .invite-card .collapsible-card-body > .actions .button {
+    flex: 1 1 125px;
+    padding: 10px;
+  }
+}

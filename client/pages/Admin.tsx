@@ -1,10 +1,8 @@
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
   type FormEvent,
-  type ReactNode,
 } from "react";
 import {
   Link,
@@ -26,7 +24,6 @@ import {
   ChevronRight,
   Clipboard,
   Crown,
-  Download,
   ExternalLink,
   FileQuestion,
   Flag,
@@ -36,7 +33,6 @@ import {
   Palette,
   Plus,
   RefreshCw,
-  Search,
   Settings,
   ShieldCheck,
   Trash2,
@@ -51,6 +47,8 @@ import { BrandEditor, BrandPreview } from "../components/Branding";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SkipLink } from "../components/AppNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { QuestionPicker } from "../components/QuestionPicker";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 import {
   boardAnswers,
   gameBoardAnswers,
@@ -66,7 +64,10 @@ import type {
   HostGame,
   Question,
 } from "../../shared/types";
+import { PageHeading, EmptyState, useResource, json, messageOf, answerSummary } from "../components/AdminCommon";
 import "./Admin.css";
+import "./AdminNavigation.css";
+import "./AdminCards.css";
 
 const phases: Record<string, string> = {
   lobby: "В ожидании",
@@ -75,102 +76,6 @@ const phases: Record<string, string> = {
   "round-result": "Итоги раунда",
   finished: "Завершена",
 };
-const messageOf = (error: unknown) =>
-  error instanceof Error
-    ? error.message
-    : "Не удалось выполнить действие. Попробуйте ещё раз.";
-const json = (method: string, data?: unknown): RequestInit => ({
-  method,
-  ...(data === undefined
-    ? {}
-    : {
-        body: JSON.stringify(data),
-        headers: { "Content-Type": "application/json" },
-      }),
-});
-const answerSummary = (answers: Answer[]) =>
-  `${boardAnswers(answers).length} на табло · ${answers.length} в статистике`;
-
-function PageHeading({
-  eyebrow,
-  title,
-  description,
-  actions,
-}: {
-  eyebrow?: string;
-  title: string;
-  description?: string;
-  actions?: ReactNode;
-}) {
-  return (
-    <header className="page-heading">
-      <div>
-        {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-        <h1>{title}</h1>
-        {description && <p className="muted">{description}</p>}
-      </div>
-      {actions && <div className="actions">{actions}</div>}
-    </header>
-  );
-}
-
-function EmptyState({
-  icon = <FileQuestion size={32} />,
-  title,
-  children,
-  action,
-}: {
-  icon?: ReactNode;
-  title: string;
-  children: ReactNode;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="empty-state">
-      <div className="empty-icon">{icon}</div>
-      <h2>{title}</h2>
-      <p className="muted">{children}</p>
-      {action}
-    </div>
-  );
-}
-
-function useResource<T>(path: string) {
-  const [value, setValue] = useState<T | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const generation = useRef(0);
-  const refresh = useCallback(async () => {
-    const current = ++generation.current;
-    try {
-      const next = await api<T>(path);
-      if (generation.current === current) {
-        setValue(next);
-        setError("");
-      }
-      return next;
-    } catch (err) {
-      if (generation.current === current) setError(messageOf(err));
-      return null;
-    } finally {
-      if (generation.current === current) setLoading(false);
-    }
-  }, [path]);
-  useEffect(() => {
-    setValue(null);
-    setLoading(true);
-    void refresh();
-    return () => {
-      generation.current++;
-    };
-  }, [refresh]);
-  const replace = useCallback((next: T) => {
-    generation.current++;
-    setValue(next);
-  }, []);
-  return { value, setValue: replace, error, setError, loading, refresh };
-}
-
 export function AdminLayout() {
   const { me } = useMe();
   const { site } = useSite();
@@ -190,6 +95,13 @@ export function AdminLayout() {
     ["/admin/settings", "Оформление", <Palette size={19} />],
     ["/admin/account", "Аккаунт", <ShieldCheck size={19} />],
   ] as const;
+  const descriptions = [
+    "Всё для подготовки вечера",
+    "Партии, пульт и результаты",
+    "Наборы и ответы опроса",
+    "Название, цвета и логотипы",
+    "Вход и безопасность",
+  ];
   const section =
     links.find(
       ([path]) =>
@@ -208,7 +120,7 @@ export function AdminLayout() {
             ? "Редактирование вопроса"
             : null;
   return (
-    <div className="admin-shell">
+    <div className="admin-shell admin-shell-modern">
       <SkipLink target="admin-main" />
       <aside className="admin-sidebar">
         <Link to="/" className="admin-brand">
@@ -224,19 +136,23 @@ export function AdminLayout() {
             <small>Управление игрой</small>
           </div>
         </Link>
-        <div className="admin-nav-label">Управление</div>
+        <div className="admin-nav-label">Игровое пространство</div>
         <nav aria-label="Разделы администрирования">
-          {links.map(([path, text, icon]) => (
+          {links.map(([path, text, icon], index) => (
             <NavLink
               key={path}
               to={path}
               end={path === "/admin"}
+              data-nav-group={index < 3 ? "play" : "settings"}
               className={({ isActive }) =>
                 `admin-nav-link${isActive ? " active" : ""}`
               }
             >
               {icon}
-              <span>{text}</span>
+              <span className="admin-nav-copy">
+                <span>{text}</span>
+                <small aria-hidden="true">{descriptions[index]}</small>
+              </span>
             </NavLink>
           ))}
         </nav>
@@ -267,6 +183,7 @@ export function AdminLayout() {
       </aside>
       <div className="admin-workspace">
         <header className="admin-topbar">
+          <div className="admin-topbar-main">
           <nav className="admin-breadcrumbs" aria-label="Путь к странице">
             <ol>
               <li>
@@ -288,13 +205,22 @@ export function AdminLayout() {
               )}
             </ol>
           </nav>
-          <div className="admin-topbar-actions">
+            <ThemeToggle />
+          </div>
+          <nav className="admin-shortcuts" aria-label="Быстрые действия">
+            <Link className="button button-primary" to="/admin/games/new">
+              <Plus size={17} aria-hidden="true" />
+              <span>Новая игра</span>
+            </Link>
+            <Link className="button button-secondary" to="/admin/questions/import">
+              <Upload size={17} aria-hidden="true" />
+              <span>Импорт вопросов</span>
+            </Link>
             <Link className="admin-help-link" to="/help">
               <BookOpen size={18} aria-hidden="true" />
               <span>Правила и помощь</span>
             </Link>
-            <ThemeToggle />
-          </div>
+          </nav>
         </header>
         <main id="admin-main" tabIndex={-1} className="admin-content">
           <Outlet />
@@ -306,28 +232,33 @@ export function AdminLayout() {
 
 function GameCard({ game }: { game: GameSummary }) {
   return (
-    <article className="card game-card">
-      <div className="game-card-top">
-        <span
-          className={`badge ${game.phase === "finished" ? "badge-neutral" : "badge-accent"}`}
-        >
-          {phases[game.phase]}
-        </span>
-        <time className="muted" dateTime={game.createdAt}>
-          {new Intl.DateTimeFormat("ru-RU", {
-            day: "numeric",
-            month: "short",
-          }).format(new Date(game.createdAt))}
-        </time>
-      </div>
+    <CollapsibleCard
+      className="card game-card"
+      defaultOpen={false}
+      header={
+        <>
+          <div className="game-card-top">
+            <span
+              className={`badge ${game.phase === "finished" ? "badge-neutral" : "badge-accent"}`}
+            >
+              {phases[game.phase]}
+            </span>
+            <time className="muted" dateTime={game.createdAt}>
+              {new Intl.DateTimeFormat("ru-RU", {
+                day: "numeric",
+                month: "short",
+              }).format(new Date(game.createdAt))}
+            </time>
+          </div>
+          <h2>{game.title}</h2>
+        </>
+      }
+    >
       {game.phase === "finished" && (
         <p className="game-card-result-note muted">
           {game.resultsAvailable ? "Итоги опубликованы для гостей" : "Итоги видны только организатору"}
         </p>
       )}
-      <h2>
-        <Link to={`/admin/games/${game.id}`}>{game.title}</Link>
-      </h2>
       <div className="game-team-summary">
         {game.teams.map((team) => (
           <div key={team.id}>
@@ -357,7 +288,7 @@ function GameCard({ game }: { game: GameSummary }) {
           <Settings size={18} /> Настройки
         </Link>
       </div>
-    </article>
+    </CollapsibleCard>
   );
 }
 
@@ -370,35 +301,32 @@ export function DashboardPage() {
   const games = site?.games || [];
   const active = games.filter((game) => game.phase !== "finished");
   return (
-    <>
+    <div className="admin-dashboard">
       <PageHeading
-        eyebrow="Всё готово к хорошей игре"
+        eyebrow="Рабочий стол"
         title="Добро пожаловать, организатор"
-        description="Подготовьте вопросы, соберите команды и подарите гостям вечер открытий."
-        actions={
-          <Link className="button button-primary" to="/admin/games/new">
-            <Plus size={18} />
-            Создать игру
-          </Link>
-        }
+        description="Вопросы, оформление и партии — всё для подготовки вечера. Начатую игру можно продолжить с того же места."
       />
-      <div className="stat-grid">
-        <div className="card stat-card">
-          <Gamepad2 />
+      <nav className="stat-grid dashboard-overview" aria-label="Обзор проекта">
+        <Link className="card stat-card" to="/admin/games">
+          <Gamepad2 aria-hidden="true" />
           <strong>{games.length}</strong>
           <span>сохранённых игр</span>
-        </div>
-        <div className="card stat-card">
-          <Flag />
+          <span className="stat-link-caption">Все партии <ArrowRight size={15} aria-hidden="true" /></span>
+        </Link>
+        <Link className="card stat-card" to={active.length ? `/host/${active[0].id}` : "/admin/games/new"}>
+          <Flag aria-hidden="true" />
           <strong>{active.length}</strong>
           <span>ожидают или идут сейчас</span>
-        </div>
-        <div className="card stat-card">
-          <FileQuestion />
+          <span className="stat-link-caption">{active.length ? "К пульту последней игры" : "Подготовить игру"} <ArrowRight size={15} aria-hidden="true" /></span>
+        </Link>
+        <Link className="card stat-card" to="/admin/questions">
+          <FileQuestion aria-hidden="true" />
           <strong>{questions ? questions.length : "—"}</strong>
           <span>вопросов в библиотеке</span>
-        </div>
-      </div>
+          <span className="stat-link-caption">Вопросы и наборы <ArrowRight size={15} aria-hidden="true" /></span>
+        </Link>
+      </nav>
       {error && <ErrorMessage message={error} />}
       <div className="section-heading">
         <div>
@@ -436,25 +364,33 @@ export function DashboardPage() {
           присоединятся по своим приглашениям.
         </EmptyState>
       )}
-      <div className="onboarding-grid">
+      <section className="dashboard-preparation" aria-labelledby="dashboard-preparation-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="dashboard-preparation-title">Подготовка мероприятия</h2>
+            <p className="muted">Сначала — содержание и оформление, затем — новая игра из готового набора.</p>
+          </div>
+        </div>
+        <div className="onboarding-grid">
         <Link className="card quick-link" to="/admin/questions">
           <FileQuestion size={24} />
           <div>
-            <h3>Соберите вопросы</h3>
-            <p className="muted">Ответы, очки и источники опроса</p>
+            <h3>Вопросы и наборы</h3>
+            <p className="muted">Сгруппируйте вопросы и выберите весь набор для игры</p>
           </div>
           <ArrowRight size={18} />
         </Link>
         <Link className="card quick-link" to="/admin/settings">
           <Palette size={24} />
           <div>
-            <h3>Добавьте ваш характер</h3>
+            <h3>Оформление события</h3>
             <p className="muted">Название, цвета и логотипы мероприятия</p>
           </div>
           <ArrowRight size={18} />
         </Link>
       </div>
-    </>
+      </section>
+    </div>
   );
 }
 
@@ -545,29 +481,17 @@ export function NewGamePage() {
     { name: "Команда 2", color: "#edff7a" },
   ]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [search, setSearch] = useState("");
-  const [multipliers, setMultipliers] = useState<number[]>([]);
+  const [multiplierById, setMultiplierById] = useState<Record<string, number>>({});
   const [stealAddsPoints, setStealAddsPoints] = useState(true);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState("");
-  const toggle = (id: string) => {
-    if (!selected.includes(id) && selected.length >= 20) {
-      setFormError("В одной игре может быть до 20 раундов.");
-      return;
-    }
+  const changeSelection = (ids: string[]) => {
     setFormError("");
-    setSelected((ids) =>
-      ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id],
-    );
+    setSelected(ids);
+    setMultiplierById((current) => Object.fromEntries(
+      ids.map((id) => [id, current[id] || 1]),
+    ));
   };
-  const move = (index: number, delta: number) =>
-    setSelected((ids) => {
-      const next = [...ids];
-      const target = index + delta;
-      if (target < 0 || target >= next.length) return ids;
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
   const save = async (event: FormEvent) => {
     event.preventDefault();
     setFormError("");
@@ -592,7 +516,7 @@ export function NewGamePage() {
           questionIds: selected,
           teams: teams.map((team) => ({ ...team, name: team.name.trim() })),
           rules: {
-            multipliers: selected.map((_, index) => multipliers[index] || 1),
+            multipliers: selected.map((id) => multiplierById[id] || 1),
             stealAddsPoints,
           },
         }),
@@ -617,12 +541,14 @@ export function NewGamePage() {
         description="Назовите команды, задайте порядок вопросов — и можно приглашать игроков."
       />
       <form onSubmit={save} className="game-create-form">
-        <section className="card form-section">
-          <div className="section-heading">
+        <CollapsibleCard
+          className="card form-section"
+          header={
             <h2>
               <span className="step-number">01</span> Игра и команды
             </h2>
-          </div>
+          }
+        >
           <label className="field">
             Название игры
             <input
@@ -680,14 +606,18 @@ export function NewGamePage() {
               </div>
             ))}
           </div>
-        </section>
-        <section className="card form-section">
-          <div className="section-heading">
-            <h2>
-              <span className="step-number">02</span> Вопросы и раунды
-            </h2>
-            <span className="badge">Выбрано: {selected.length}</span>
-          </div>
+        </CollapsibleCard>
+        <CollapsibleCard
+          className="card form-section"
+          header={
+            <div className="section-heading">
+              <h2>
+                <span className="step-number">02</span> Вопросы и раунды
+              </h2>
+              <span className="badge">Выбрано: {selected.length}</span>
+            </div>
+          }
+        >
           <p className="muted">
             Порядок справа определяет раунды. Изменения в библиотеке после
             создания партии не повлияют на эти вопросы.
@@ -709,120 +639,23 @@ export function NewGamePage() {
               к подготовке игры.
             </EmptyState>
           ) : (
-            <div className="question-picker-grid">
-              <div>
-                <label className="search-field">
-                  <Search size={18} />
-                  <input
-                    aria-label="Поиск вопросов"
-                    placeholder="Найти вопрос или набор"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </label>
-                <div className="question-picker">
-                  {questions
-                    .filter((question) =>
-                      `${question.prompt} ${question.pack}`
-                        .toLowerCase()
-                        .includes(search.toLowerCase()),
-                    )
-                    .map((question) => (
-                      <label
-                        className={`question-option ${selected.includes(question.id) ? "selected" : ""}`}
-                        key={question.id}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(question.id)}
-                          onChange={() => toggle(question.id)}
-                        />
-                        <div>
-                          <strong>{question.prompt}</strong>
-                          <small className="muted">
-                            {answerSummary(question.answers)}
-                            {question.pack ? ` · ${question.pack}` : ""}
-                            {question.isDemo ? " · Демо" : ""}
-                          </small>
-                        </div>
-                      </label>
-                    ))}
-                </div>
-              </div>
-              <div className="selected-questions">
-                <h3>Порядок раундов</h3>
-                {selected.length ? (
-                  selected.map((id, index) => (
-                    <div key={id} className="selected-question">
-                      <span className="round-number">{index + 1}</span>
-                      <div>
-                        <strong>
-                          {
-                            questions.find((question) => question.id === id)
-                              ?.prompt
-                          }
-                        </strong>
-                        <label className="multiplier-field">
-                          Очки
-                          <select
-                            value={multipliers[index] || 1}
-                            onChange={(event) =>
-                              setMultipliers((current) => {
-                                const next = [...current];
-                                next[index] = Number(event.target.value);
-                                return next;
-                              })
-                            }
-                          >
-                            <option value={1}>×1</option>
-                            <option value={2}>×2</option>
-                            <option value={3}>×3</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="reorder-actions">
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={() => move(index, -1)}
-                          disabled={index === 0}
-                          aria-label={`Поднять раунд ${index + 1}`}
-                        >
-                          <ArrowUp size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={() => move(index, 1)}
-                          disabled={index === selected.length - 1}
-                          aria-label={`Опустить раунд ${index + 1}`}
-                        >
-                          <ArrowDown size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={() => toggle(id)}
-                          aria-label={`Убрать раунд ${index + 1}`}
-                        >
-                          <X size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="muted selected-placeholder">
-                    Отметьте вопросы слева. Здесь появится сценарий вечера.
-                  </div>
-                )}
-              </div>
-            </div>
+            <QuestionPicker
+              questions={questions}
+              selected={selected}
+              multiplierById={multiplierById}
+              onSelectionChange={changeSelection}
+              onMultiplierChange={(id, multiplier) => setMultiplierById((current) => ({ ...current, [id]: multiplier }))}
+            />
           )}
-        </section>
-        <section className="card form-section">
-          <h2>
-            <span className="step-number">03</span> Правило перехвата
-          </h2>
+        </CollapsibleCard>
+        <CollapsibleCard
+          className="card form-section"
+          header={
+            <h2>
+              <span className="step-number">03</span> Правило перехвата
+            </h2>
+          }
+        >
           <label className="check-field">
             <input
               type="checkbox"
@@ -837,7 +670,7 @@ export function NewGamePage() {
               </small>
             </span>
           </label>
-        </section>
+        </CollapsibleCard>
         {formError && <ErrorMessage message={formError} />}
         <div className="form-footer">
           <p className="muted">
@@ -899,16 +732,20 @@ function InviteCard({
   };
   const players = game.players.filter((player) => player.teamId === team.id);
   return (
-    <article className="card invite-card">
-      <div className="section-heading">
-        <h3>
-          <span className="team-dot" style={{ background: team.color }} />
-          {team.name}
-        </h3>
-        <span className={`badge ${team.joinOpen ? "badge-accent" : ""}`}>
-          {team.joinOpen ? "Вход открыт" : "Вход закрыт"}
-        </span>
-      </div>
+    <CollapsibleCard
+      className="card invite-card"
+      header={
+        <div className="section-heading">
+          <h3>
+            <span className="team-dot" style={{ background: team.color }} />
+            {team.name}
+          </h3>
+          <span className={`badge ${team.joinOpen ? "badge-accent" : ""}`}>
+            {team.joinOpen ? "Вход открыт" : "Вход закрыт"}
+          </span>
+        </div>
+      }
+    >
       <div className="invite-content">
         {qr && (
           <img
@@ -958,7 +795,7 @@ function InviteCard({
           {copyError}
         </p>
       )}
-    </article>
+    </CollapsibleCard>
   );
 }
 
@@ -1187,18 +1024,22 @@ export function GameSettingsPage() {
         </p>
       )}
       {game.phase === "finished" && (
-        <section className="card form-section results-publication">
-          <div className="section-heading">
-            <div>
-              <h2>Итоги для гостей</h2>
-              <p className="muted">
-                Ответы на вопросы, их популярность и финальный счёт — на одной странице.
-              </p>
+        <CollapsibleCard
+          className="card form-section results-publication"
+          header={
+            <div className="section-heading">
+              <div>
+                <h2>Итоги для гостей</h2>
+                <p className="muted">
+                  Ответы на вопросы, их популярность и финальный счёт — на одной странице.
+                </p>
+              </div>
+              <span className={`badge ${game.resultsPublished ? "badge-accent" : ""}`}>
+                {game.resultsPublished ? "Опубликованы" : "Пока скрыты"}
+              </span>
             </div>
-            <span className={`badge ${game.resultsPublished ? "badge-accent" : ""}`}>
-              {game.resultsPublished ? "Опубликованы" : "Пока скрыты"}
-            </span>
-          </div>
+          }
+        >
           <p className="muted">
             {game.resultsPublished
               ? "Страницу можно открыть без входа. Ссылка подходит для участников и гостей."
@@ -1237,7 +1078,7 @@ export function GameSettingsPage() {
               </button>
             </div>
           )}
-        </section>
+        </CollapsibleCard>
       )}
       <div className="notice">
         <ShieldCheck size={20} />
@@ -1263,8 +1104,9 @@ export function GameSettingsPage() {
           />
         ))}
       </div>
-      <section className="card form-section">
-        <div className="section-heading">
+      <CollapsibleCard
+        className="card form-section"
+        header={
           <div>
             <h2>Участники и капитаны</h2>
             <p className="muted">
@@ -1272,6 +1114,9 @@ export function GameSettingsPage() {
               ответ.
             </p>
           </div>
+        }
+      >
+        <div className="actions participant-refresh">
           <button
             type="button"
             className="button button-ghost"
@@ -1331,18 +1176,22 @@ export function GameSettingsPage() {
             </div>
           ))}
         </div>
-      </section>
-      <section className="card form-section">
-        <div className="section-heading">
-          <div>
-            <h2>Сценарий партии</h2>
-            <p className="muted">
-              Вопросы сохранены в этой партии. При сбросе оформление обновится
-              из настроек сайта. Для другого набора создайте новую игру.
-            </p>
+      </CollapsibleCard>
+      <CollapsibleCard
+        className="card form-section"
+        header={
+          <div className="section-heading">
+            <div>
+              <h2>Сценарий партии</h2>
+              <p className="muted">
+                Вопросы сохранены в этой партии. При сбросе оформление обновится
+                из настроек сайта. Для другого набора создайте новую игру.
+              </p>
+            </div>
+            <span className="badge">{game.questions.length} раундов</span>
           </div>
-          <span className="badge">{game.questions.length} раундов</span>
-        </div>
+        }
+      >
         <ol className="round-list">
           {game.questions.map((question, index) => (
             <li key={`${question.id}-${index}`}>
@@ -1371,14 +1220,16 @@ export function GameSettingsPage() {
             : "команда получает накопленный банк без очков найденного ответа"}
           .
         </p>
-      </section>
-      <section className="card game-lifecycle">
-        <div className="section-heading">
+      </CollapsibleCard>
+      <CollapsibleCard
+        className="card game-lifecycle"
+        header={
           <div>
             <h2>Управление партией</h2>
             <p className="muted">Вопросы в библиотеке сохранятся при любом действии.</p>
           </div>
-        </div>
+        }
+      >
         <div className="game-lifecycle-row">
           <div>
             <h3>Сыграть ещё раз</h3>
@@ -1409,7 +1260,7 @@ export function GameSettingsPage() {
             <Trash2 size={18} /> Удалить игру
           </button>
         </div>
-      </section>
+      </CollapsibleCard>
       {confirmation && (
         <ConfirmDialog
           title={confirmation.kind === "reset" ? "Начать игру заново?" : "Удалить игру?"}
@@ -1432,319 +1283,6 @@ export function GameSettingsPage() {
           onConfirm={() => void performLifecycleAction()}
         />
       )}
-    </>
-  );
-}
-
-export function QuestionsPage() {
-  const {
-    value: questions,
-    loading,
-    error,
-    refresh,
-  } = useResource<Question[]>("/questions");
-  const [search, setSearch] = useState("");
-  const [pack, setPack] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [demoConfirm, setDemoConfirm] = useState(false);
-  const packs = [
-    ...new Set(
-      (questions || []).map((question) => question.pack).filter(Boolean),
-    ),
-  ].sort((a, b) => a.localeCompare(b, "ru"));
-  const filtered = (questions || []).filter(
-    (question) =>
-      `${question.prompt} ${question.source} ${question.pack}`
-        .toLowerCase()
-        .includes(search.toLowerCase()) &&
-      (!pack || question.pack === pack) &&
-      (filter === "all" || question.isDemo === (filter === "demo")),
-  );
-  const remove = async (id: string) => {
-    setBusy(true);
-    setActionError("");
-    try {
-      await api(`/questions/${id}`, json("DELETE"));
-      setDeleting(null);
-      await refresh();
-      setNotice(
-        "Вопрос удалён из библиотеки. Снимки уже созданных игр сохранены.",
-      );
-    } catch (err) {
-      setActionError(messageOf(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const exportQuestions = async () => {
-    setBusy(true);
-    setActionError("");
-    try {
-      const data = await api("/questions/export");
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
-      );
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "100k1-questions.json";
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setNotice("Библиотека экспортирована в JSON.");
-    } catch (err) {
-      setActionError(messageOf(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const addDemos = async () => {
-    setBusy(true);
-    setActionError("");
-    try {
-      const result = await api<{ count: number }>(
-        "/questions/demo",
-        json("POST", {}),
-      );
-      await refresh();
-      setDemoConfirm(false);
-      setNotice(
-        `Добавлено ${result.count} демовопроса. Их ответы и очки вымышлены и помечены для репетиции.`,
-      );
-    } catch (err) {
-      setActionError(messageOf(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (loading) return <Loading />;
-  return (
-    <>
-      <PageHeading
-        eyebrow="Основа хорошей игры"
-        title="Библиотека вопросов"
-        description="Храните ответы опроса, очки и источники. Выбирайте вопросы при создании партии."
-        actions={
-          <Link className="button button-primary" to="/admin/questions/new">
-            <Plus size={18} />
-            Добавить вопрос
-          </Link>
-        }
-      />
-      <div className="library-toolbar">
-        <div className="actions">
-          <Link
-            to="/admin/questions/import"
-            className="button button-secondary"
-          >
-            <Upload size={17} />
-            Импорт JSON
-          </Link>
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={busy || !questions?.length}
-            onClick={() => void exportQuestions()}
-          >
-            <Download size={17} />
-            Экспорт
-          </button>
-          <button
-            type="button"
-            className="button button-ghost"
-            disabled={busy}
-            onClick={() => setDemoConfirm((value) => !value)}
-          >
-            Добавить демовопросы
-          </button>
-        </div>
-        <span className="muted">{questions?.length || 0} вопросов</span>
-      </div>
-      {demoConfirm && (
-        <div className="notice demo-confirm">
-          <FileQuestion size={24} />
-          <div>
-            <strong>Добавить 3 вопроса для репетиции?</strong>
-            <p>
-              Это вымышленные ответы и очки, без проведённого опроса. Они будут
-              явно помечены «Демо» в библиотеке, пульте и на табло.
-            </p>
-            <div className="actions">
-              <button
-                type="button"
-                disabled={busy}
-                className="button button-secondary"
-                onClick={() => void addDemos()}
-              >
-                {busy ? "Добавляем…" : "Добавить для репетиции"}
-              </button>
-              <button
-                type="button"
-                className="button button-ghost"
-                onClick={() => setDemoConfirm(false)}
-              >
-                Отмена
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {error && <ErrorMessage message={error} />}
-      {actionError && <ErrorMessage message={actionError} />}
-      {notice && (
-        <p className="success-message" role="status">
-          <Check size={17} />
-          {notice}
-        </p>
-      )}
-      <div className="library-filters">
-        <label className="search-field">
-          <Search size={18} />
-          <input
-            aria-label="Поиск в библиотеке"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Вопрос, источник, набор…"
-          />
-        </label>
-        <select
-          aria-label="Набор вопросов"
-          value={pack}
-          onChange={(event) => setPack(event.target.value)}
-        >
-          <option value="">Все наборы</option>
-          {packs.map((value) => (
-            <option key={value}>{value}</option>
-          ))}
-        </select>
-        <select
-          aria-label="Тип вопросов"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        >
-          <option value="all">Все вопросы</option>
-          <option value="real">Для мероприятия</option>
-          <option value="demo">Демонстрационные</option>
-        </select>
-      </div>
-      {filtered.length ? (
-        <div className="question-library">
-          {filtered.map((question) => (
-            <article key={question.id} className="card question-library-row">
-              <div className="question-library-main">
-                <div className="actions">
-                  {question.pack && (
-                    <span className="badge">{question.pack}</span>
-                  )}
-                  {question.isDemo && (
-                    <span className="badge badge-demo">
-                      Демо · вымышленные данные
-                    </span>
-                  )}
-                </div>
-                <h2>
-                  <Link to={`/admin/questions/${question.id}`}>
-                    {question.prompt}
-                  </Link>
-                </h2>
-                <p className="muted">
-                  {answerSummary(question.answers)} ·{" "}
-                  {question.answers.reduce(
-                    (sum, answer) => sum + answer.points,
-                    0,
-                  )}{" "}
-                  очков всего
-                  {question.respondentCount !== null
-                    ? ` · ${question.respondentCount} опрошенных`
-                    : ""}
-                </p>
-                {question.source && (
-                  <p className="question-source">Источник: {question.source}</p>
-                )}
-              </div>
-              <div className="question-library-actions">
-                {deleting === question.id ? (
-                  <div className="delete-confirm">
-                    <strong>Удалить вопрос?</strong>
-                    <div className="actions">
-                      <button
-                        type="button"
-                        className="button button-danger"
-                        disabled={busy}
-                        onClick={() => void remove(question.id)}
-                      >
-                        Удалить
-                      </button>
-                      <button
-                        type="button"
-                        className="button button-ghost"
-                        onClick={() => setDeleting(null)}
-                      >
-                        Отмена
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Link
-                      className="button button-secondary"
-                      to={`/admin/questions/${question.id}`}
-                    >
-                      Редактировать
-                    </Link>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={`Удалить вопрос: ${question.prompt}`}
-                      disabled={busy}
-                      onClick={() => setDeleting(question.id)}
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                  </>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <EmptyState
-          title={
-            questions?.length ? "Ничего не найдено" : "Пока ни одного вопроса"
-          }
-          action={
-            questions?.length ? (
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => {
-                  setSearch("");
-                  setPack("");
-                  setFilter("all");
-                }}
-              >
-                Очистить фильтры
-              </button>
-            ) : (
-              <Link className="button button-primary" to="/admin/questions/new">
-                <Plus size={18} />
-                Создать вопрос
-              </Link>
-            )
-          }
-        >
-          {questions?.length
-            ? "Попробуйте другое слово или выберите все наборы."
-            : "Начните с результатов своего опроса или добавьте явно обозначенный демонабор для репетиции."}
-        </EmptyState>
-      )}
-      <p className="muted library-note">
-        В мастере импорта можно загрузить файл или вставить JSON, проверить
-        ошибки и просмотреть ответы перед сохранением. Экспорт сохраняет всю
-        библиотеку в формате <code>ctokodnomy-questions-v1</code>.
-      </p>
     </>
   );
 }
@@ -1908,7 +1446,10 @@ export function QuestionEditorPage() {
         description="Добавьте формулировку, результаты опроса и заметки, которые увидит только ведущий."
       />
       <form className="question-editor" onSubmit={save}>
-        <section className="card form-section">
+        <CollapsibleCard
+          className="card form-section"
+          header={<h2>Формулировка и набор</h2>}
+        >
           <label className="field">
             Вопрос
             <textarea
@@ -1933,31 +1474,37 @@ export function QuestionEditorPage() {
               Набор помогает находить и группировать вопросы в библиотеке.
             </small>
           </label>
-        </section>
-        <section className="card form-section">
-          <div className="section-heading">
-            <div>
-              <h2>Все ответы опроса</h2>
-              <p className="muted">
-                В игре на табло попадут до {GAME_ANSWER_LIMIT} самых популярных
-                ответов. В статистике останутся все варианты, включая редкие.
-                При равных очках порядок задают стрелки.
-              </p>
+        </CollapsibleCard>
+        <CollapsibleCard
+          className="card form-section"
+          header={
+            <div className="section-heading">
+              <div>
+                <h2>Все ответы опроса</h2>
+                <p className="muted">
+                  В игре на табло попадут до {GAME_ANSWER_LIMIT} самых популярных
+                  ответов. В статистике останутся все варианты, включая редкие.
+                  При равных очках порядок задают стрелки.
+                </p>
+              </div>
+              <div className="answer-editor-summary">
+                <span className="badge">{answerSummary(question.answers)}</span>
+                <span className="muted">
+                  Сумма очков:{" "}
+                  {question.answers.reduce((sum, answer) => sum + answer.points, 0)}
+                </span>
+              </div>
             </div>
-            <div className="answer-editor-summary">
-              <span className="badge">{answerSummary(question.answers)}</span>
-              <span className="muted">
-                Сумма очков:{" "}
-                {question.answers.reduce((sum, answer) => sum + answer.points, 0)}
-              </span>
-              <button
-                type="button"
-                className="button button-secondary"
-                onClick={() => update("answers", rankedAnswers(question.answers))}
-              >
-                <ArrowDown size={16} /> По популярности
-              </button>
-            </div>
+          }
+        >
+          <div className="actions answer-sort-actions">
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => update("answers", rankedAnswers(question.answers))}
+            >
+              <ArrowDown size={16} /> По популярности
+            </button>
           </div>
           <p className="muted answer-public-note">
             Поле «Ответ» увидят игроки и гости. Здесь можно смягчить шутку или
@@ -2095,9 +1642,11 @@ export function QuestionEditorPage() {
             открывает его автоматически. Можно сохранить до{" "}
             {MAX_QUESTION_ANSWERS} вариантов на вопрос.
           </p>
-        </section>
-        <section className="card form-section">
-          <h2>Источник и заметки</h2>
+        </CollapsibleCard>
+        <CollapsibleCard
+          className="card form-section"
+          header={<h2>Источник и заметки</h2>}
+        >
           <label className="check-field">
             <input
               type="checkbox"
@@ -2160,7 +1709,7 @@ export function QuestionEditorPage() {
               placeholder="Контекст, уточнения и спорные формулировки. Игроки и гости их не увидят."
             />
           </label>
-        </section>
+        </CollapsibleCard>
         {error && <ErrorMessage message={error} />}
         <div className="form-footer">
           <p className="muted">
@@ -2344,19 +1893,23 @@ export function AccountPage() {
         description="Управляйте своим паролем и текущей сессией."
       />
       <div className="account-layout">
-        <section className="card form-section">
-          <div className="account-identity">
-            <span className="avatar avatar-large">
-              {me?.admin?.username.slice(0, 1).toUpperCase()}
-            </span>
-            <div>
-              <h2>{me?.admin?.username}</h2>
-              <span className="badge">
-                <ShieldCheck size={14} />
-                Администратор
+        <CollapsibleCard
+          className="card form-section"
+          header={
+            <div className="account-identity">
+              <span className="avatar avatar-large">
+                {me?.admin?.username.slice(0, 1).toUpperCase()}
               </span>
+              <div>
+                <h2>{me?.admin?.username}</h2>
+                <span className="badge">
+                  <ShieldCheck size={14} />
+                  Администратор
+                </span>
+              </div>
             </div>
-          </div>
+          }
+        >
           <form onSubmit={save}>
             <h3>Изменить пароль</h3>
             <label className="field">
@@ -2410,10 +1963,12 @@ export function AccountPage() {
               {busy ? "Подождите…" : "Обновить пароль"}
             </button>
           </form>
-        </section>
+        </CollapsibleCard>
         <div>
-          <section className="card form-section">
-            <h2>Завершить сессию</h2>
+          <CollapsibleCard
+            className="card form-section"
+            header={<h2>Завершить сессию</h2>}
+          >
             <p className="muted">
               Игры, вопросы и оформление сохранятся. Для возвращения в админку
               понадобится войти снова.
@@ -2427,7 +1982,7 @@ export function AccountPage() {
               <LogOut size={17} />
               Выйти из аккаунта
             </button>
-          </section>
+          </CollapsibleCard>
           <div className="notice">
             <ShieldCheck size={20} />
             <div>

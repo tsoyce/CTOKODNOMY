@@ -1,0 +1,55 @@
+.collapsible-card {
+  min-width: 0;
+}
+.collapsible-card > .collapsible-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  border-radius: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.collapsible-card > .collapsible-card-heading::-webkit-details-marker {
+  display: none;
+}
+.collapsible-card-heading:focus-visible {
+  outline: 3px solid var(--primary-ink);
+  outline-offset: 5px;
+}
+.collapsible-card-title {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.collapsible-card-title :is(h2, h3, p),
+.admin-content .collapsible-card-title .section-heading {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.collapsible-card-chevron {
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform 160ms ease;
+}
+.collapsible-card[open] > .collapsible-card-heading > .collapsible-card-chevron {
+  transform: rotate(180deg);
+}
+.collapsible-card-body {
+  min-width: 0;
+  padding-top: 20px;
+}
+.admin-content .collapsible-card-body > .field + .field,
+.admin-content .collapsible-card-body > .form-grid {
+  margin-top: 20px;
+}
+.admin-content .collapsible-card-body > .field:first-child {
+  margin-top: 0;
+}
+.collapsible-card:not([open]) {
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-card-chevron { transition: none; }
+}

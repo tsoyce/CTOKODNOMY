@@ -7,8 +7,9 @@ import {
   test,
   type BrowserContext,
   type Locator,
+  type Page,
 } from "@playwright/test";
-import { issueSetupToken } from "../server/db";
+import { issueSetupToken, passwordHash } from "../server/db";
 import { parseQuestionPack } from "../shared/questionImport";
 import {
   defaultBrand,
@@ -64,6 +65,341 @@ test.beforeEach(async () => {
 });
 test.afterAll(async () => {
   await pool.end();
+});
+
+function packFixture(prompt: string, pack = ""): Question {
+  return {
+    id: randomUUID(), prompt,
+    answers: [
+      { id: randomUUID(), text: `Ответ на ${prompt}`, points: 3, aliases: ["Учебный синоним"], originals: ["Учебная исходная формулировка"] },
+      { id: randomUUID(), text: "Другой вариант", points: 1, aliases: [] },
+    ],
+    source: "Вымышленный опрос для проверки наборов", surveyDate: "2026-10-16",
+    respondentCount: 4, notes: "Приватная заметка о наборе", isDemo: true, pack,
+  };
+}
+
+// These scenarios exercise organizer features, while the existing onboarding
+// scenarios keep testing the real setup flow. A fixture in this run's isolated
+// schema avoids exhausting setup's production limit of five requests/minute.
+async function seedOrganizer(page: Page) {
+  await pool.query("INSERT INTO admins(id,username,password_hash) VALUES($1,$2,$3)", [randomUUID(), "organizer", await passwordHash(PASSWORD)]);
+  await pool.query("UPDATE app_settings SET initialized=true,brand=$1::jsonb WHERE id=1", [JSON.stringify(defaultBrand)]);
+  expect((await page.request.post("/api/login", { data: { username: "organizer", password: PASSWORD } })).ok()).toBe(true);
+}
+
+test("organizer names an imported pack, moves questions in bulk and creates a stable game before safely deleting library questions", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const batches: { action: string; ids: string[]; pack?: string }[] = [];
+  const gamePosts: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/questions/batch")
+      batches.push(request.postDataJSON());
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/games")
+      gamePosts.push(request.url());
+  });
+  await seedOrganizer(page);
+  const questions = [
+    packFixture("Что помогает начать беседу?", "Старый набор А"),
+    packFixture("Что берут на прогулку?", "Старый набор Б"),
+    packFixture("Где встречают друзей?"),
+  ];
+  const sourceQuestions = structuredClone(questions);
+  const library = async (): Promise<Question[]> => {
+    const response = await page.request.get("/api/questions");
+    expect(response.ok()).toBe(true);
+    return response.json();
+  };
+  await page.goto("/admin/questions/import");
+  await page.getByLabel("Готовый JSON", { exact: true }).fill(JSON.stringify({
+    format: "ctokodnomy-questions-v1", questions,
+  }));
+  const packName = page.getByLabel("Название набора", { exact: true });
+  const check = page.getByRole("button", { name: "Проверить вопросы", exact: true });
+  const save = page.getByRole("button", { name: "Сохранить вопросы", exact: true });
+  const preview = page.getByRole("region", { name: "Предпросмотр вопросов", exact: true });
+  await packName.fill("Первое название");
+  await check.click();
+  await expect(preview).toContainText("Первое название");
+  await expect(save).toBeEnabled();
+  await packName.fill("Общий опрос");
+  await expect(save).toBeDisabled();
+  await expect(preview).toHaveCount(0);
+  await check.click();
+  await expect(preview).toContainText("Общий опрос");
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({ path: "test-results/named-pack-import-desktop.png", fullPage: true });
+  await save.click();
+  await expect(page.getByRole("status")).toContainText("Сохранено вопросов: 3.");
+  expect((await library()).map((question) => question.pack)).toEqual(["Общий опрос", "Общий опрос", "Общий опрос"]);
+  // Applying a pack changes no aliases, originals or other question content.
+  expect(await library()).toEqual(sourceQuestions.map((question) => ({ ...question, pack: "Общий опрос" })));
+
+  await page.goto("/admin/questions");
+  await page.getByRole("button", { name: "Переименовать набор: Общий опрос", exact: true }).click();
+  await page.getByLabel("Новое название набора", { exact: true }).fill("Вечер знакомств");
+  await page.getByRole("button", { name: "Сохранить название", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Показать набор: Вечер знакомств", exact: true })).toBeVisible();
+  expect((await library()).every((question) => question.pack === "Вечер знакомств")).toBe(true);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({ path: "test-results/question-packs-desktop.png", fullPage: true });
+
+  const choose = (question: Question) => page.getByRole("checkbox", { name: `Выбрать вопрос: ${question.prompt}`, exact: true });
+  const bulk = page.getByRole("region", { name: "Действия с выбранными вопросами", exact: true });
+  await choose(questions[0]!).check();
+  await choose(questions[1]!).check();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  const bulkDestination = bulk.getByLabel("Набор для выбранных вопросов", { exact: true });
+  await bulkDestination.selectOption("new");
+  await bulk.getByLabel("Название нового набора", { exact: true }).fill("Для прогулки");
+  const move = bulk.getByRole("button", { name: "В набор", exact: true });
+  await move.click({ trial: true });
+  expect((await move.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({ path: "test-results/question-packs-mobile.png", fullPage: true });
+  await move.click();
+  await expect(page.getByRole("button", { name: "Показать набор: Для прогулки", exact: true })).toBeVisible();
+  expect(batches.at(-1)).toEqual({ action: "move", ids: questions.slice(0, 2).map((question) => question.id), pack: "Для прогулки" });
+
+  await page.getByRole("button", { name: "Показать набор: Для прогулки", exact: true }).click();
+  await expect(page.locator(".question-library-row")).toHaveCount(2);
+  await page.getByRole("button", { name: "Выбрать все показанные", exact: true }).click();
+  await bulk.getByRole("button", { name: "Убрать из набора", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Показать набор: Без набора", exact: true })).toBeVisible();
+  expect((await library()).filter((question) => !question.pack).map((question) => question.id)).toEqual(questions.slice(0, 2).map((question) => question.id));
+  await page.getByRole("button", { name: "Показать набор: Без набора", exact: true }).click();
+  await page.getByRole("button", { name: "Выбрать все показанные", exact: true }).click();
+  await bulk.getByLabel("Набор для выбранных вопросов", { exact: true }).selectOption({ label: "Вечер знакомств" });
+  await bulk.getByRole("button", { name: "В набор", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Показать набор: Вечер знакомств", exact: true })).toBeVisible();
+  expect((await library()).every((question) => question.pack === "Вечер знакомств")).toBe(true);
+
+  await page.goto("/admin/games/new");
+  await page.getByLabel("Название игры", { exact: true }).fill("Игра из одного набора");
+  const pickerPack = page.getByLabel("Набор вопросов", { exact: true });
+  const namedOption = pickerPack.locator("option").filter({ hasText: "Вечер знакомств" });
+  await pickerPack.selectOption((await namedOption.getAttribute("value"))!);
+  // Choosing the complete pack must include even questions hidden by search.
+  await page.getByLabel("Поиск вопросов", { exact: true }).fill(questions[0]!.prompt);
+  await expect(page.locator(".question-option")).toHaveCount(1);
+  await page.getByRole("button", { name: "Выбрать набор целиком", exact: true }).click();
+  await expect(page.locator(".selected-question")).toHaveCount(3);
+  await page.getByLabel("Поиск вопросов", { exact: true }).press("Enter");
+  await expect(page).toHaveURL(/\/admin\/games\/new$/);
+  await expect(page.getByLabel("Название игры", { exact: true })).toBeVisible();
+  expect(gamePosts).toEqual([]);
+  await page.locator(".selected-question").first().getByLabel("Очки", { exact: true }).selectOption("2");
+  await page.getByRole("button", { name: "Добавить набор к выбранным", exact: true }).click();
+  await expect(page.locator(".selected-question")).toHaveCount(3);
+  await expect(page.locator(".selected-question").first().getByLabel("Очки", { exact: true })).toHaveValue("2");
+  await page.getByRole("button", { name: "Опустить раунд 1", exact: true }).click();
+  await expect(page.locator(".selected-question").nth(1)).toContainText(questions[0]!.prompt);
+  await expect(page.locator(".selected-question").nth(1).getByLabel("Очки", { exact: true })).toHaveValue("2");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({ path: "test-results/game-pack-picker-mobile.png", fullPage: true });
+  const creating = page.waitForResponse((response) => response.url().endsWith("/api/games") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Создать игру", exact: true }).click();
+  const created = await creating;
+  expect(created.ok()).toBe(true);
+  const game = await created.json() as HostGame;
+  expect(gamePosts).toHaveLength(1);
+  expect(game.questions.map((question) => question.id)).toEqual([questions[1]!.id, questions[0]!.id, questions[2]!.id]);
+  expect(game.rules.multipliers).toEqual([1, 2, 1]);
+
+  await page.goto("/admin/questions");
+  await choose(questions[0]!).check();
+  const search = page.getByLabel("Поиск в библиотеке", { exact: true });
+  await search.fill(questions[1]!.prompt);
+  await expect(page.locator(".question-library-row")).toHaveCount(1);
+  await choose(questions[1]!).check();
+  await bulk.getByRole("button", { name: "Удалить выбранные", exact: true }).click();
+  const deleting = page.getByRole("alertdialog", { name: "Удалить выбранные вопросы?", exact: true });
+  await expect(deleting).toContainText(questions[1]!.prompt);
+  await expect(deleting).not.toContainText(questions[0]!.prompt);
+  const beforeCancel = batches.length;
+  await deleting.getByRole("button", { name: "Отмена", exact: true }).click();
+  await expect(deleting).toHaveCount(0);
+  expect(batches).toHaveLength(beforeCancel);
+  expect(await library()).toHaveLength(3);
+  await bulk.getByRole("button", { name: "Удалить выбранные", exact: true }).click();
+  await deleting.getByRole("button", { name: "Удалить вопросы", exact: true }).click();
+  await expect(deleting).toHaveCount(0);
+  expect(batches.at(-1)).toEqual({ action: "delete", ids: [questions[1]!.id] });
+  expect((await library()).map((question) => question.id)).toEqual([questions[0]!.id, questions[2]!.id]);
+  await search.clear();
+  await page.getByRole("button", { name: "Снять весь выбор", exact: true }).click();
+  await page.getByRole("button", { name: "Выбрать все показанные", exact: true }).click();
+  await bulk.getByRole("button", { name: "Удалить выбранные", exact: true }).click();
+  await expect(deleting).toContainText(questions[0]!.prompt);
+  await expect(deleting).toContainText(questions[2]!.prompt);
+  await deleting.getByRole("button", { name: "Удалить вопросы", exact: true }).click();
+  await expect(deleting).toHaveCount(0);
+  expect(batches.at(-1)).toEqual({ action: "delete", ids: [questions[0]!.id, questions[2]!.id] });
+  expect(await library()).toEqual([]);
+  const snapshotResponse = await page.request.get(`/api/games/${game.id}/host`);
+  expect(snapshotResponse.ok()).toBe(true);
+  const snapshot = await snapshotResponse.json() as HostGame;
+  expect(snapshot.questions).toEqual(game.questions);
+  expect(snapshot.rules.multipliers).toEqual([1, 2, 1]);
+  expect(snapshot.questions.every((question) => question.pack === "Вечер знакомств")).toBe(true);
+  expect(pageErrors).toEqual([]);
+});
+
+test("a game pack larger than twenty rounds never leaves a partial selection", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await seedOrganizer(page);
+  const first = packFixture("Отдельный выбранный вопрос", "Короткий набор");
+  const oversized = Array.from({ length: 21 }, (_, index) => packFixture(`Большой набор: вопрос ${index + 1}`, "Большой набор"));
+  expect((await page.request.post("/api/questions/import", { data: {
+    format: "ctokodnomy-questions-v1", questions: [first, ...oversized],
+  } })).ok()).toBe(true);
+  await page.goto("/admin/games/new");
+  await page.locator(".question-option").filter({ hasText: first.prompt }).locator('input[type="checkbox"]').check();
+  await page.locator(".selected-question").getByLabel("Очки", { exact: true }).selectOption("3");
+  const pickerPack = page.getByLabel("Набор вопросов", { exact: true });
+  const option = pickerPack.locator("option").filter({ hasText: "Большой набор" });
+  await pickerPack.selectOption((await option.getAttribute("value"))!);
+  for (const action of ["Выбрать набор целиком", "Добавить набор к выбранным"]) {
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("20");
+    await expect(page.locator(".selected-question")).toHaveCount(1);
+    await expect(page.locator(".selected-question")).toContainText(first.prompt);
+    await expect(page.locator(".selected-question").getByLabel("Очки", { exact: true })).toHaveValue("3");
+    await expect(page.locator('.question-option input[type="checkbox"]:checked')).toHaveCount(0);
+  }
+  await page.getByRole("button", { name: "Очистить выбор", exact: true }).click();
+  await expect(page.locator(".selected-question")).toHaveCount(0);
+  const shortOption = pickerPack.locator("option").filter({ hasText: "Короткий набор" });
+  await pickerPack.selectOption((await shortOption.getAttribute("value"))!);
+  await page.getByRole("button", { name: "Выбрать набор целиком", exact: true }).click();
+  await expect(page.locator(".selected-question").getByLabel("Очки", { exact: true })).toHaveValue("1");
+  await page.getByRole("button", { name: "Очистить выбор", exact: true }).click();
+  await pickerPack.selectOption((await option.getAttribute("value"))!);
+  await page.getByLabel("Поиск вопросов", { exact: true }).fill("Большой набор: вопрос 21");
+  await page.getByRole("button", { name: "Добавить найденные", exact: true }).click();
+  await expect(page.locator(".selected-question")).toHaveCount(1);
+  await expect(page.locator(".selected-question")).toContainText(oversized[20]!.prompt);
+  await page.getByRole("button", { name: "Убрать найденные", exact: true }).click();
+  await expect(page.locator(".selected-question")).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test("organizer folds cards with the keyboard, keeps form values and reaches every admin section on a narrow phone", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const gamePosts: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/games")
+      gamePosts.push(request.url());
+  });
+  await seedOrganizer(page);
+  const questions = [packFixture("Первый вопрос карточки", "Набор карточек"), packFixture("Второй вопрос карточки", "Набор карточек"), packFixture("Вопрос другого набора", "Другой набор")];
+  expect((await page.request.post("/api/questions/import", { data: {
+    format: "ctokodnomy-questions-v1", questions,
+  } })).ok()).toBe(true);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/admin/questions");
+  const pack = page.getByRole("button", { name: "Показать набор: Набор карточек", exact: true });
+  await pack.click();
+  await expect(pack).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".question-library-row")).toHaveCount(2);
+  await pack.click();
+  await expect(pack).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".question-library-row")).toHaveCount(3);
+  const questionRow = page.locator(".question-library-row").filter({ hasText: questions[0]!.prompt });
+  const disclosure = questionRow.locator("details");
+  const questionHeader = disclosure.locator("summary");
+  const rowChoice = questionRow.getByRole("checkbox", { name: `Выбрать вопрос: ${questions[0]!.prompt}`, exact: true });
+  await expect(disclosure).toHaveJSProperty("open", false);
+  await expect(questionRow.getByRole("link", { name: "Редактировать", exact: true })).not.toBeVisible();
+  await rowChoice.check();
+  await expect(disclosure).toHaveJSProperty("open", false);
+  await questionHeader.press("Enter");
+  await expect(disclosure).toHaveJSProperty("open", true);
+  await expect(questionRow.getByRole("link", { name: "Редактировать", exact: true })).toBeVisible();
+  await questionHeader.press("Space");
+  await expect(disclosure).toHaveJSProperty("open", false);
+  await expect(rowChoice).toBeChecked();
+
+  const shortcuts = page.getByRole("navigation", { name: "Быстрые действия", exact: true });
+  await shortcuts.getByRole("link", { name: "Новая игра", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/games\/new$/);
+  const gameTitle = page.getByLabel("Название игры", { exact: true });
+  const teamsCard = page.locator("details").filter({ has: gameTitle });
+  const teamsHeader = teamsCard.locator(":scope > summary");
+  await expect(teamsCard).toHaveJSProperty("open", true);
+  await gameTitle.fill("Сворачиваемая репетиция");
+  await teamsHeader.click();
+  await expect(gameTitle).not.toBeVisible();
+  await teamsHeader.press("Space");
+  await expect(gameTitle).toHaveValue("Сворачиваемая репетиция");
+  await page.getByLabel("Набор вопросов", { exact: true }).selectOption("pack:Набор карточек");
+  await page.getByRole("button", { name: "Выбрать набор целиком", exact: true }).click();
+  // Browser validation must reveal and focus a required field in a closed card.
+  await gameTitle.clear();
+  await teamsHeader.click();
+  await page.getByRole("button", { name: "Создать игру", exact: true }).click();
+  await expect(teamsCard).toHaveJSProperty("open", true);
+  await expect(gameTitle).toBeFocused();
+  expect(gamePosts).toEqual([]);
+  await gameTitle.fill("Сворачиваемая репетиция");
+  const creating = page.waitForResponse((response) => response.url().endsWith("/api/games") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Создать игру", exact: true }).click();
+  const response = await creating;
+  expect(response.ok()).toBe(true);
+  const game = await response.json() as HostGame;
+  await page.goto("/admin/games");
+  const gameCard = page.locator(".game-card").filter({ hasText: game.title });
+  const gameHeader = gameCard.locator(":scope > summary");
+  await expect(gameCard).toHaveJSProperty("open", false);
+  await expect(gameCard.getByRole("link", { name: "Открыть пульт", exact: true })).not.toBeVisible();
+  await gameHeader.press("Enter");
+  await expect(gameCard.getByRole("link", { name: "Открыть пульт", exact: true })).toBeVisible();
+  await gameHeader.press("Space");
+  await expect(gameCard).toHaveJSProperty("open", false);
+  expect((await (await page.request.get(`/api/games/${game.id}/host`)).json()).questions).toEqual(game.questions);
+
+  const navigation = page.getByRole("navigation", { name: "Разделы администрирования", exact: true });
+  for (const name of ["Обзор", "Игры", "Вопросы", "Оформление", "Аккаунт"]) {
+    const link = navigation.getByRole("link", { name, exact: true });
+    await expect(link).toBeInViewport();
+    expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await link.click();
+    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    expect(await navigation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  }
+  const currentPassword = page.getByLabel("Текущий пароль", { exact: true });
+  const accountCard = page.locator("details").filter({ has: currentPassword });
+  await fillSecret(currentPassword, PASSWORD);
+  await accountCard.locator(":scope > summary").press("Enter");
+  await expect(currentPassword).not.toBeVisible();
+  await accountCard.locator(":scope > summary").press("Space");
+  await expect(currentPassword).toHaveValue(PASSWORD);
+  await navigation.getByRole("link", { name: "Оформление", exact: true }).click();
+  const hero = page.getByLabel("Заголовок главной", { exact: true });
+  const brandingCard = page.locator("details.collapsible-card").filter({ has: hero });
+  await hero.fill("Текст остаётся после сворачивания");
+  await brandingCard.locator(":scope > summary").click();
+  await expect(hero).not.toBeVisible();
+  await brandingCard.locator(":scope > summary").press("Enter");
+  await expect(hero).toHaveValue("Текст остаётся после сворачивания");
+  await page.getByRole("button", { name: "Сохранить оформление", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Оформление сохранено");
+  expect((await (await page.request.get("/api/settings")).json()).heroTitle).toBe("Текст остаётся после сворачивания");
+  await shortcuts.getByRole("link", { name: "Импорт вопросов", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/questions\/import$/);
+  await expect(page.getByRole("heading", { name: "Импорт вопросов", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  expect(gamePosts).toHaveLength(1);
+  expect(pageErrors).toEqual([]);
 });
 
 test("organizer keeps a local light theme, navigates on a phone and safely controls the audience board", async ({
