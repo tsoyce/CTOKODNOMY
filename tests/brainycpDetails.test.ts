@@ -24,7 +24,7 @@ function fixture() {
   command("systemctl", `printf '%s\\n' 'ExecStart={ path=/opt/production-node/bin/node ; argv[]=/opt/production-node/bin/node --password=DO_NOT_PRINT_EXEC_SECRET ; }' 'MainPID=${process.pid}' 'EnvironmentFiles=${home}/.config/ctokodnomy/native-3003.env (ignore_errors=no)'`);
   command("getent", `printf '%s\\n' 'player:x:1000:1000::${home}:/bin/bash'`);
   command("nginx", `printf '%s\\n' '# configuration file ${etc}/nginx/conf.d/game.example-game.conf:' 'DO_NOT_PRINT_OTHER_SITES_CONFIG'`);
-  command("curl", `printf '%s\\n' "$@" > "$FIXTURE_CURL"; printf '200\\ttext/html; charset=UTF-8\\t0'`);
+  command("curl", `printf '%s\\n' "$@" > "$FIXTURE_CURL"; printf 'HTTP/1.1 200 OK\\r\\nX-Powered-By: PHP/8.4.17\\r\\nSet-Cookie: DO_NOT_PRINT_COOKIE\\r\\nLocation: /login?code=DO_NOT_PRINT_TOKEN\\r\\n\\r\\n\\nCTOK-PROBE\\t200\\ttext/html; charset=UTF-8\\t0'`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, APP_ROOT: app, APP_USER: "player", APP_PORT: "3003", APP_DOMAIN: "game.example", PROBE_DOMAIN: "php.example", FIXTURE_CURL: join(root, "curl-args") };
   return { root, bin, app, home, etc, php, command, env };
 }
@@ -51,6 +51,7 @@ describe("read-only BrainyCP details", () => {
     expect(result.stdout).toContain("DocumentRoot identified=true; index.php regular_exists=true; php_prefix=true");
     expect(result.stdout).toContain("Selected PHP handler socket: /run/php-fpm/php84-player.sock");
     expect(result.stdout).toContain("status=200; content_type=text/html; charset=UTF-8; tls_verify=0; redirects_followed=false");
+    expect(result.stdout).toContain("php_header=true; redirect_path=/login");
     expect(result.stdout + result.stderr).not.toContain("DO_NOT_PRINT");
     const curl = readFileSync(f.env.FIXTURE_CURL, "utf8").trim().split("\n");
     expect(curl).toContain("https://php.example/index.php");

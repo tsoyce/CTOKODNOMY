@@ -94,6 +94,7 @@ try {
   const value = lines[0]?.match(/^\s*back_server(?:\s*=\s*|\s+)(.*)$/)?.[1] ?? '';
   const supported = /^(?:[A-Za-z0-9_./:+-]+|"[A-Za-z0-9_./:+-]+"|'[A-Za-z0-9_./:+-]+')\s*(?:[#;].*)?$/.test(value);
   console.log(`back_server active_count=${lines.length}; single_nonempty_supported=${lines.length === 1 && supported}; physical=${resolved(panel) === panel} (authoritative guard runs during deployment)`);
+  console.log(`back_server selected value (comments omitted): ${JSON.stringify(value.split(/[;#]/)[0].trim().slice(0, 120))}`);
 } catch { console.log('back_server metadata unavailable'); }
 const dedicated = `/etc/nginx/conf.d/${domain}-game.conf`;
 console.log(`Dedicated proxy: ${dedicated}; ${metadata(dedicated)}; physical=${resolved(dedicated) === dedicated}`);
@@ -117,10 +118,22 @@ if (probe) {
   } catch {} finally { if (fd !== undefined) closeSync(fd); }
   console.log(`PHP DocumentRoot identified=${Boolean(root)}; index.php regular_exists=${indexExists}; php_prefix=${phpPrefix}`);
   console.log(`Selected PHP handler socket: ${handler ?? '(not identified)'}`);
-  const url = `https://${probe}/index.php`;
-  const response = run('curl', ['--disable', '--noproxy', '*', '--proto', '=https', '--request', 'GET', '--connect-timeout', '5', '--max-time', '12', '--silent', '--output', '/dev/null', '--write-out', '%{http_code}\t%{content_type}\t%{ssl_verify_result}', '--url', url]);
-  const [status, type, tls] = (response.stdout ?? '').split('\t');
-  console.log(`PHP GET ${url}: curl_exit=${response.status ?? '(unavailable)'}; status=${/^\d{3}$/.test(status ?? '') ? status : '(unavailable)'}; content_type=${/^[A-Za-z0-9/+.;= _-]{0,160}$/.test(type ?? '') ? type || '(empty)' : '(unavailable)'}; tls_verify=${/^\d+$/.test(tls ?? '') ? tls : '(unavailable)'}; redirects_followed=false`);
+  console.log(`Static index.html present: ${Boolean(root && existsSync(join(root, 'index.html')))}`);
+  for (const route of ['/', '/index.php']) {
+    const url = `https://${probe}${route}`;
+    const response = run('curl', ['--disable', '--noproxy', '*', '--proto', '=https', '--request', 'GET', '--connect-timeout', '5', '--max-time', '12', '--silent', '--output', '/dev/null', '--dump-header', '-', '--write-out', '\nCTOK-PROBE\t%{http_code}\t%{content_type}\t%{ssl_verify_result}', '--url', url]);
+    const output = response.stdout ?? '';
+    const marker = output.lastIndexOf('\nCTOK-PROBE\t');
+    const headers = marker >= 0 ? output.slice(0, marker) : '';
+    const [status, type, tls] = (marker >= 0 ? output.slice(marker + 12) : output).trim().split('\t');
+    const phpHeader = /^x-powered-by:\s*PHP\/[0-9.]+\s*$/im.test(headers);
+    const redirect = headers.match(/^location:\s*([^\r\n]+)/im)?.[1];
+    let redirectPath = '(none)';
+    if (redirect) {
+      try { const target = new URL(redirect, url); redirectPath = target.hostname === probe && /^\/[A-Za-z0-9/_.~-]*$/.test(target.pathname) ? target.pathname : '(other or non-simple path)'; } catch { redirectPath = '(unavailable)'; }
+    }
+    console.log(`PHP GET ${url}: curl_exit=${response.status ?? '(unavailable)'}; status=${/^\d{3}$/.test(status ?? '') ? status : '(unavailable)'}; content_type=${/^[A-Za-z0-9/+.;= _-]{0,160}$/.test(type ?? '') ? type || '(empty)' : '(unavailable)'}; tls_verify=${/^\d+$/.test(tls ?? '') ? tls : '(unavailable)'}; redirects_followed=false; php_header=${phpHeader}; redirect_path=${redirectPath}`);
+  }
 }
 NODE
 printf '\nSelected proxy/certificate directives for this domain:\n'
