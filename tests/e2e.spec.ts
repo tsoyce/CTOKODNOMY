@@ -157,7 +157,7 @@ test("organizer names an imported pack, moves questions in bulk and creates a st
   await bulk.getByLabel("Название нового набора", { exact: true }).fill("Для прогулки");
   const move = bulk.getByRole("button", { name: "В набор", exact: true });
   await move.click({ trial: true });
-  expect((await move.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expectMinimumTouchHeight((await move.boundingBox())!.height);
   await mkdir(path.resolve("test-results"), { recursive: true });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.screenshot({ path: "test-results/question-packs-mobile.png", fullPage: true });
@@ -369,7 +369,7 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   for (const name of ["Обзор", "Игры", "Вопросы", "Оформление", "Аккаунт"]) {
     const link = navigation.getByRole("link", { name, exact: true });
     await expect(link).toBeInViewport();
-    expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expectMinimumTouchHeight((await link.boundingBox())!.height);
     await link.click();
     await expect(link).toHaveAttribute("aria-current", "page");
     await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
@@ -550,7 +550,7 @@ test("organizer keeps a local light theme, navigates on a phone and safely contr
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     const mobileReveal = page.locator(".host-answer").nth(1).getByRole("button", { name: "Открыть", exact: true });
     await mobileReveal.click({ trial: true });
-    expect((await mobileReveal.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expectMinimumTouchHeight((await mobileReveal.boundingBox())!.height);
     expect(await mobileReveal.evaluate((element) => {
       const box = element.getBoundingClientRect();
       return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest("button") === element;
@@ -970,7 +970,7 @@ test("organizer checks a complete JSON pack before saving, explicitly updates ma
     await save.scrollIntoViewIfNeeded();
     const box = await save.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expectMinimumTouchHeight(box!.height);
     if (width === 390)
       await page.screenshot({
         path: "test-results/import-preview-mobile.png",
@@ -1871,6 +1871,11 @@ function sixAnswerFixture(): Question {
   };
 }
 
+function expectMinimumTouchHeight(height: number) {
+  // Coordinate subtraction can report 43.999969px for a 44px CSS box.
+  expect(Math.round(height * 1000) / 1000).toBeGreaterThanOrEqual(44);
+}
+
 async function expectFullBoundsAbove(locator: Locator, bottom: number, height: number) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
@@ -1958,6 +1963,7 @@ test("the host sees six complete answers and floating actions together, with saf
     await page.setViewportSize({ width, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     const lastReveal = rows.last().getByRole("button", { name: "Открыть", exact: true });
+    await expect(lastReveal).toBeEnabled();
     await lastReveal.focus();
     await expect(lastReveal).toBeFocused();
     await lastReveal.click({ trial: true });
@@ -1965,9 +1971,9 @@ test("the host sees six complete answers and floating actions together, with saf
     await expectFullBoundsAbove(lastReveal, island.y, 844);
     await expectFullBoundsAbove(rows.last(), island.y, 844);
     for (const button of await dock.getByRole("button").all()) {
-      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expectMinimumTouchHeight((await button.boundingBox())!.height);
     }
-    expect((await lastReveal.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expectMinimumTouchHeight((await lastReveal.boundingBox())!.height);
     await page.screenshot({ path: `test-results/host-floating-dock-mobile-${width}.png` });
   }
   await hostDecision(page, game.id, { type: "strike" });
@@ -2064,7 +2070,7 @@ test("published analytics distinguish banks from corrections and keep cloud perc
       await results.setViewportSize({ width, height: 844 });
       expect(await results.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
       await tag.click();
-      expect((await tag.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expectMinimumTouchHeight((await tag.boundingBox())!.height);
       await expect(detail).toContainText(longPhrase);
       await detail.getByRole("button", { name: "Закрыть подробности", exact: true }).click();
       await cloud.evaluate((element) => { element.scrollTop = 0; });
