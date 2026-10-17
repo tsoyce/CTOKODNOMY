@@ -2098,6 +2098,12 @@ test("independent phones group private team ideas, search authors and send only 
     const captain = await phone(0, "Мария капитан");
     const member = await phone(0, "Алексей игрок");
     const rival = await phone(1, "Ольга соперник");
+    // Joining alone never grants captain privileges; the host appoints one.
+    const captainState = await (await captain.request.get(`/api/games/${game.id}/team`)).json();
+    expect((await page.request.post(`/api/games/${game.id}/captain`, {
+      data: { participantId: captainState.self.id },
+    })).ok()).toBe(true);
+    await expect(captain.getByLabel("Итоговый ответ", { exact: true })).toBeVisible();
     const officialRequests: string[] = [];
     captain.on("request", (request) => {
       if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/submit")) officialRequests.push(request.url());
