@@ -10,6 +10,7 @@ fail() { printf '::error title=BrainyCP deployment::%s\n' "$*"; exit 2; }
 [[ ${APP_USER:-} =~ ^[a-z_][a-z0-9_-]*$ && ${APP_PORT:-} =~ ^[1-9][0-9]{0,4}$ ]] || fail 'Invalid application user/port.'
 (( APP_PORT <= 65535 )) || fail 'Invalid port.'
 [[ ${APP_DOMAIN:-} =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && ${GITHUB_SHA:-} =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid domain/commit.'
+[[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[1-9][0-9]*$ ]] || fail 'Valid GitHub run and attempt identifiers are required.'
 [[ ${APP_NODE_BIN:-} =~ ^/[A-Za-z0-9_./-]+$ ]] || fail 'Select an existing physical Node.js 24 binary.'
 validate_php_checks "https://$APP_DOMAIN/"
 validate_php_checks "${PHP_HEALTHCHECK_URLS:-}"
@@ -43,7 +44,9 @@ ssh "${opts[@]}" "$target" "bash -s -- '/etc/brainy/conf/server_control/main' '$
 echo '::notice title=BrainyCP deployment stage::Panel guard and PHP baseline passed before upload.'
 app_digest=$(sha256sum dist/ctokodnomy-native.tar.gz)
 app_digest=${app_digest%% *}
-incoming="/var/lib/ctokodnomy-deploy/${APP_USER}-${APP_PORT}/$GITHUB_SHA"
+# Retain failed uploads for investigation. A new manual run/attempt gets its
+# own fresh directory without weakening the release or shared-lock guards.
+incoming="/var/lib/ctokodnomy-deploy/${APP_USER}-${APP_PORT}/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 ssh "${opts[@]}" "$target" "bash -s -- '$APP_ROOT' '$APP_USER' '$incoming' '$APP_PORT' '$APP_DOMAIN' '$APP_NODE_BIN'" <<'PREPARE'
 set -euo pipefail
 base=$1 app_user=$2 incoming=$3 port=$4 domain=$5 node_bin=$6
@@ -68,9 +71,15 @@ done
 mkdir -m 700 "$incoming"
 PREPARE
 echo '::notice title=BrainyCP deployment stage::Private incoming directory prepared.'
-ssh "${opts[@]}" "$target" "cat > '$incoming/app.tar.gz'" < dist/ctokodnomy-native.tar.gz
+upload_file() {
+  local source=$1 destination=$2 status
+  if ssh "${opts[@]}" "$target" "cat > '$incoming/$destination'" < "$source"; then return 0; else status=$?; fi
+  printf '::error title=BrainyCP deployment transfer::Upload of %s failed (SSH exit %s). The private incoming directory was retained; activation was not started.\n' "$destination" "$status"
+  return "$status"
+}
+upload_file dist/ctokodnomy-native.tar.gz app.tar.gz
 for helper in brainycp-guards.sh brainycp-stage.sh native-unpack.mjs native-db.mjs brainycp-activate.sh; do
-  ssh "${opts[@]}" "$target" "cat > '$incoming/$helper'" < "scripts/$helper"
+  upload_file "scripts/$helper" "$helper"
 done
 echo '::notice title=BrainyCP deployment stage::Verified SSH transfer complete.'
 if report=$(ssh "${opts[@]}" "$target" \

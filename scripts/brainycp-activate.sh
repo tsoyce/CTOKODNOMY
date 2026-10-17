@@ -14,7 +14,8 @@ base=$1 app_user=$2 port=$3 domain=$4 sha=$5 app_digest=$6 incoming=$7 node_bin=
 [[ $domain =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && $sha =~ ^[a-f0-9]{40}$ && $app_digest =~ ^[a-f0-9]{64}$ ]] || fail 'Invalid domain, commit or checksum.'
 validate_php_checks "https://$domain/"
 validate_php_checks "$php_checks"
-[[ $incoming == "/var/lib/ctokodnomy-deploy/${app_user}-${port}/$sha" && -d $incoming && ! -L $incoming && $(readlink -e "$incoming") == "$incoming" && $(stat -c %u "$incoming") == 0 ]] || fail 'Invalid private incoming directory.'
+incoming_pattern="^/var/lib/ctokodnomy-deploy/${app_user}-${port}/${sha}-[1-9][0-9]*-[1-9][0-9]*$"
+[[ $incoming =~ $incoming_pattern && -d $incoming && ! -L $incoming && $(readlink -e "$incoming") == "$incoming" && $(stat -c %u "$incoming") == 0 && $(stat -c %a "$incoming") == 700 ]] || fail 'Invalid private incoming directory.'
 for directory in /var/lib/ctokodnomy-deploy "$(dirname "$incoming")"; do
   [[ -d $directory && ! -L $directory && $(readlink -e "$directory") == "$directory" && $(stat -c %u "$directory") == 0 ]] && (( (8#$(stat -c %a "$directory") & 8#022) == 0 )) || fail 'Deployment parents must be physical, root-owned and not writable by group/others.'
   if [[ $directory == "$(dirname "$incoming")" ]]; then [[ $(stat -c %a "$directory") == 700 ]] || fail 'Private deployment parent must have mode 0700.'; fi

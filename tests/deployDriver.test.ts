@@ -29,6 +29,12 @@ function fixture(scenario: string, overrides: Record<string, string> = {}) {
   const curlLog = join(root, "curl-requests");
   mkdirSync(bin);
   mkdirSync(runner);
+  mkdirSync(join(root, "dist"));
+  writeFileSync(join(root, "dist/ctokodnomy-native.tar.gz"), "fixture upload\n");
+  mkdirSync(join(root, "scripts"));
+  for (const helper of ["brainycp-guards.sh", "brainycp-stage.sh", "native-unpack.mjs", "native-db.mjs", "brainycp-activate.sh"]) {
+    writeFileSync(join(root, "scripts", helper), "fixture helper upload\n");
+  }
   const panelText = scenario === "missing-back-server" ? "front_server=nginx\n" : "back_server=apache\n";
   writeFileSync(panel, panelText);
   writeFileSync(sshLog, "");
@@ -49,18 +55,34 @@ case "$FIXTURE_SCENARIO" in
   curl-137) exit 137 ;;
   *) printf 200 ;;
 esac`);
-  // Only the first, read-only command may execute. Feed it the real driver's
-  // stdin guard script with its panel path relocated into this fixture.
-  // Even a successful guard is deliberately stopped before PREPARE can run.
+  // Feed the first read-only command the real stdin guard, relocated into this
+  // fixture. Later SSH boundaries are only recorded, never run on a server.
   command("ssh", `
 remote_command="\u0024{!#}"
 printf '%s\\n' "$remote_command" >> "$FIXTURE_SSH_LOG"
-[[ $remote_command == "bash -s -- '/etc/brainy/conf/server_control/main' '"* ]] || exit 96
-remote_command=\u0024{remote_command//\\/etc\\/brainy\\/conf\\/server_control\\/main/$FIXTURE_PANEL}
-status=0
-bash -c "$remote_command" || status=$?
-if (( status == 0 )); then exit 77; fi
-exit "$status"`);
+case "$remote_command" in
+  "bash -s -- '/etc/brainy/conf/server_control/main' '"*)
+    remote_command=\u0024{remote_command//\\/etc\\/brainy\\/conf\\/server_control\\/main/$FIXTURE_PANEL}
+    status=0
+    bash -c "$remote_command" || status=$?
+    if (( status == 0 )) && [[ $FIXTURE_SCENARIO != *-transfer-* ]]; then exit 77; fi
+    exit "$status" ;;
+  "bash -s -- '/home/player/game' 'player' '"*)
+    [[ $FIXTURE_SCENARIO == *-transfer-* ]]
+    [[ $remote_command == "bash -s -- '/home/player/game' 'player' '$FIXTURE_INCOMING' '3003' 'game.example' '/opt/node/bin/node'" ]]
+    cat >/dev/null ;;
+  "cat > '$FIXTURE_INCOMING/"*)
+    [[ $FIXTURE_SCENARIO == *-transfer-* ]]
+    cat >/dev/null
+    case "$FIXTURE_SCENARIO" in
+      archive-transfer-255) exit 255 ;;
+      archive-transfer-137) exit 137 ;;
+      helper-transfer-255)
+        [[ $remote_command == "cat > '$FIXTURE_INCOMING/app.tar.gz'" ]] || exit 255 ;;
+      *) exit 97 ;;
+    esac ;;
+  *) exit 96 ;;
+esac`);
   const result = spawnSync("bash", [driver], {
     cwd: root,
     encoding: "utf8",
@@ -76,6 +98,8 @@ exit "$status"`);
       APP_PORT: "3003",
       APP_DOMAIN: "game.example",
       GITHUB_SHA: "a".repeat(40),
+      GITHUB_RUN_ID: "39035775715",
+      GITHUB_RUN_ATTEMPT: "1",
       APP_NODE_BIN: "/opt/node/bin/node",
       PHP_HEALTHCHECK_URLS: "https://php.example/health.php",
       DEPLOY_SSH_KEY: "fixture-private-key-with-no-credentials",
@@ -84,6 +108,7 @@ exit "$status"`);
       FIXTURE_PANEL: panel,
       FIXTURE_SSH_LOG: sshLog,
       FIXTURE_CURL_LOG: curlLog,
+      FIXTURE_INCOMING: `/var/lib/ctokodnomy-deploy/player-3003/${"a".repeat(40)}-${overrides.GITHUB_RUN_ID ?? "39035775715"}-${overrides.GITHUB_RUN_ATTEMPT ?? "1"}`,
       ...overrides,
     },
   });
@@ -110,6 +135,12 @@ describe("BrainyCP deployment driver pre-upload boundary", () => {
   test.each([
     ["invalid PHP URL", { PHP_HEALTHCHECK_URLS: "https://php.example/health.php';touch /tmp/unwanted;#" }],
     ["missing Node executable input", { APP_NODE_BIN: "" }],
+    ["missing GitHub run", { GITHUB_RUN_ID: "" }],
+    ["non-numeric GitHub run", { GITHUB_RUN_ID: "39035/775715" }],
+    ["zero GitHub run", { GITHUB_RUN_ID: "0" }],
+    ["missing GitHub attempt", { GITHUB_RUN_ATTEMPT: "" }],
+    ["non-numeric GitHub attempt", { GITHUB_RUN_ATTEMPT: "1;exit 0" }],
+    ["zero GitHub attempt", { GITHUB_RUN_ATTEMPT: "0" }],
   ])("rejects %s locally before SSH or authentication files", (_, overrides) => {
     const f = fixture("success", overrides as Record<string, string>);
     expect(f.result.status, f.result.stderr).toBe(2);
@@ -126,5 +157,31 @@ describe("BrainyCP deployment driver pre-upload boundary", () => {
     expect(f.curls).toEqual(["https://php.example/health.php"]);
     expect(f.panel).toBe(f.panelText);
     expect(f.runnerFiles).toEqual([]);
+  });
+
+  test.each([
+    ["archive-transfer-255", 255, "app.tar.gz", 3],
+    ["archive-transfer-137", 137, "app.tar.gz", 3],
+    ["helper-transfer-255", 255, "brainycp-guards.sh", 4],
+  ] as const)("reports %s and stops before activation without retrying", (scenario, status, destination, calls) => {
+    const f = fixture(scenario);
+    expect(f.result.status, f.result.stderr).toBe(status);
+    expect(f.ssh).toHaveLength(calls);
+    expect(f.ssh.at(-1)).toBe(`cat > '/var/lib/ctokodnomy-deploy/player-3003/${"a".repeat(40)}-39035775715-1/${destination}'`);
+    expect(f.result.stdout).toContain(`::error title=BrainyCP deployment transfer::Upload of ${destination} failed (SSH exit ${status}).`);
+    expect(f.result.stdout).toContain("private incoming directory was retained; activation was not started");
+    expect(f.result.stdout).not.toContain("Verified SSH transfer complete");
+    expect(f.runnerFiles).toEqual([]);
+    if (status === 137) expect(f.result.stderr).toContain("SIGKILL, exit 137");
+  });
+
+  test("uses a fresh incoming path for each run or attempt of the same commit", () => {
+    const first = fixture("archive-transfer-255");
+    const repeated = fixture("archive-transfer-255", { GITHUB_RUN_ATTEMPT: "2" });
+    const nextRun = fixture("archive-transfer-255", { GITHUB_RUN_ID: "39035775716" });
+    for (const f of [first, repeated, nextRun]) expect(f.result.status, f.result.stderr).toBe(255);
+    expect(new Set([first.ssh[2], repeated.ssh[2], nextRun.ssh[2]]).size).toBe(3);
+    expect(repeated.ssh[2]).toContain(`${"a".repeat(40)}-39035775715-2/app.tar.gz`);
+    expect(nextRun.ssh[2]).toContain(`${"a".repeat(40)}-39035775716-1/app.tar.gz`);
   });
 });

@@ -38,7 +38,7 @@ function fixture(scenario = "success") {
   const home = join(root, "home", "player");
   const oldRelease = join(base, "releases", previousSha);
   const newRelease = join(base, "releases", sha);
-  const incoming = join(root, "var/lib/ctokodnomy-deploy/player-3003", sha);
+  const incoming = join(root, "var/lib/ctokodnomy-deploy/player-3003", `${sha}-39035775715-1`);
   const panel = join(root, "etc/brainy/conf/server_control/main");
   const site = join(root, "etc/nginx/conf.d/game.example-game.conf");
   const service = join(root, "etc/systemd/system/nodejs@3003.service.d/game.conf");
@@ -55,6 +55,7 @@ function fixture(scenario = "success") {
   for (const directory of [scripts, bin, oldRelease, incoming]) {
     mkdirSync(directory, { recursive: true });
   }
+  if (scenario === "release-exists") mkdirSync(newRelease);
   put(panel, scenario === "missing-back-server" ? "front_server=nginx\n" : "front_server=nginx\nback_server=apache\n");
   put(site, "# Existing, operator-provisioned game proxy\n");
   put(service, "[Service]\n# Existing game unit owned by the operator\n");
@@ -190,8 +191,8 @@ fi`);
     FIXTURE_DEPLOY_ROOT: join(root, "var/lib/ctokodnomy-deploy"),
   };
   return {
-    base, backups, panel, config, current, oldRelease, newRelease, before, fingerprint,
-    run: () => spawnSync("bash", [join(scripts, "brainycp-activate.sh"), base, "player", "3003", "game.example", sha, "c".repeat(64), incoming, node, "https://php.example/health.php"], { env, encoding: "utf8", timeout: 10_000 }),
+    base, backups, incoming, panel, config, current, oldRelease, newRelease, before, fingerprint,
+    run: (incomingPath = incoming) => spawnSync("bash", [join(scripts, "brainycp-activate.sh"), base, "player", "3003", "game.example", sha, "c".repeat(64), incomingPath, node, "https://php.example/health.php"], { env, encoding: "utf8", timeout: 10_000 }),
     events: () => readFileSync(events, "utf8").trim().split("\n"),
   };
 }
@@ -203,6 +204,40 @@ function expectOnlyGameRestarts(events: string[], count: number) {
 }
 
 describe("BrainyCP release activation transaction", () => {
+  test.each([
+    sha,
+    `${sha}-39035775715`,
+    `${sha}-39035775715-0`,
+    `${sha}-0-1`,
+    `${sha}-39035775715-1-extra`,
+    `${previousSha}-39035775715-1`,
+    `${sha}-39035775715-1/nested`,
+    `../other-3003/${sha}-39035775715-1`,
+  ])("rejects an invalid or foreign incoming path before mutations: %s", (leaf) => {
+    const f = fixture();
+    const candidate = `${dirname(f.incoming)}/${leaf}`;
+    mkdirSync(candidate, { recursive: true });
+    const result = f.run(candidate);
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Invalid private incoming directory");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    expect(existsSync(f.newRelease)).toBe(false);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(f.events().filter(Boolean)).toEqual([]);
+    expect(f.fingerprint()).toEqual(f.before);
+  });
+
+  test("refuses an already staged release even when the incoming attempt is fresh", () => {
+    const f = fixture("release-exists");
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Release already exists");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(f.events().filter(Boolean)).toEqual([]);
+    expect(f.fingerprint()).toEqual(f.before);
+  });
+
   test.each(["home-dot-segment", "home-repeated-dot-segments", "home-trailing-slashes"])("accepts harmless lexical home spelling: %s", (scenario) => {
     const f = fixture(scenario);
     const result = f.run();
