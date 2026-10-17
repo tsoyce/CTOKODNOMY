@@ -1,11 +1,85 @@
+.admin-content .game-card {
+  padding: 22px;
+}
+.admin-content .game-card > .collapsible-card-heading {
+  align-items: flex-start;
+  gap: 12px;
+}
+.admin-content .game-card > .collapsible-card-heading > .collapsible-card-chevron {
+  margin-top: 4px;
+}
 .admin-content .game-card .collapsible-card-title .game-card-top {
   margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.admin-content .game-card-top time {
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 .admin-content .game-card .collapsible-card-title h2 {
   margin-bottom: 0;
+  font-size: 1.16rem;
+  line-height: 1.35;
 }
-.admin-content .game-card .collapsible-card-body > .game-card-result-note {
-  margin-top: 0;
+.admin-content .game-card-matchup {
+  display: grid;
+  gap: 9px;
+  margin-top: 15px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.admin-content .game-card-team {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.admin-content .game-card-team .team-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0;
+}
+.admin-content .game-card-team-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.admin-content .game-card-team-score {
+  min-width: 2ch;
+  text-align: right;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.admin-content .game-card .collapsible-card-title .game-card-publication {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.admin-content .game-card-publication svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.admin-content .game-card-publication.is-published svg {
+  color: var(--accent-ink);
+}
+.admin-content .game-card .collapsible-card-body {
+  padding-top: 16px;
+}
+.admin-content .game-card .game-card-actions {
+  padding-top: 16px;
+}
+.admin-content .game-card .game-card-actions .button {
+  min-height: 44px;
+  white-space: normal;
 }
 .admin-content .invite-card .collapsible-card-body > .actions {
   margin-top: 19px;

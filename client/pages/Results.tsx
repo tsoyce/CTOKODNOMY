@@ -15,13 +15,20 @@ import {
 } from "lucide-react";
 import { defaultBrand, type PublicGameResults } from "../../shared/types";
 import { gameAnalytics } from "../../shared/gameAnalytics";
-import { ApiError, api, brandStyle } from "../lib";
+import { ApiError, api, brandStyle, useAppearance } from "../lib";
 import { Loading } from "../components/Common";
 import { RoundStatistics } from "../components/Statistics";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { isLightBrand } from "../theme";
 import "./Results.css";
 
 const number = new Intl.NumberFormat("ru-RU");
+const resultsSections = [
+  { id: "results-heading", label: "Итоги" },
+  { id: "results-team-comparison-heading", label: "Команды" },
+  { id: "results-dynamics-heading", label: "Раунды" },
+  { id: "results-questions-heading", label: "Ответы" },
+];
 
 function useResults(id: string | undefined) {
   const [report, setReport] = useState<PublicGameResults | null>(null);
@@ -128,7 +135,13 @@ function ResultsAnalytics({ report }: { report: PublicGameResults }) {
       >
         <header className="results-analytics-heading">
           <p className="eyebrow">Вклад в результат</p>
-          <h2 id="results-team-comparison-heading">Команды в цифрах</h2>
+          <h2
+            id="results-team-comparison-heading"
+            className="results-section-anchor"
+            tabIndex={-1}
+          >
+            Команды в цифрах
+          </h2>
           <p>
             Сколько раундов выиграла каждая команда и сколько очков принесли
             банки. Финальный счёт учитывает также изменения ведущего.
@@ -205,7 +218,13 @@ function ResultsAnalytics({ report }: { report: PublicGameResults }) {
         <header className="results-dynamics-heading">
           <div className="results-analytics-heading">
             <p className="eyebrow">От раунда к раунду</p>
-            <h2 id="results-dynamics-heading">Как менялись очки</h2>
+            <h2
+              id="results-dynamics-heading"
+              className="results-section-anchor"
+              tabIndex={-1}
+            >
+              Как менялись очки
+            </h2>
             <p>
               Накопленные очки из банка после каждого сыгранного раунда.
               Изменения счёта ведущим в эту динамику не входят.
@@ -318,7 +337,9 @@ function ResultsAnalytics({ report }: { report: PublicGameResults }) {
 
 export default function ResultsPage() {
   const { gameId } = useParams();
+  const { resolveAppearance } = useAppearance();
   const { report, loading, error, unavailable, refresh } = useResults(gameId);
+  const [currentSection, setCurrentSection] = useState("results-heading");
   const [question, setQuestion] = useState("all");
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
@@ -328,10 +349,29 @@ export default function ResultsPage() {
 
   useEffect(() => {
     setQuestion("all");
+    setCurrentSection("results-heading");
     setCopied(false);
     setCopyError("");
     return () => clearTimeout(copyTimer.current);
   }, [gameId]);
+
+  useEffect(() => {
+    if (!report || !window.IntersectionObserver) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) setCurrentSection(visible[0].target.id);
+      },
+      { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
+    );
+    for (const section of resultsSections) {
+      const heading = document.getElementById(section.id);
+      if (heading) observer.observe(heading);
+    }
+    return () => observer.disconnect();
+  }, [report?.id]);
 
   if (loading) return <Loading />;
   if (!report) {
@@ -391,6 +431,7 @@ export default function ResultsPage() {
           (round) => String(round.questionIndex) === question,
         );
   const partial = report.rounds.some((round) => !round.completed);
+  const displayBrand = resolveAppearance(report.brand);
 
   const copyLink = async () => {
     try {
@@ -411,8 +452,8 @@ export default function ResultsPage() {
   return (
     <div
       className="results-page"
-      data-theme={isLightBrand(report.brand) ? "light" : "dark"}
-      style={brandStyle(report.brand)}
+      data-theme={isLightBrand(displayBrand) ? "light" : "dark"}
+      style={brandStyle(displayBrand)}
     >
       <header className="results-navigation container">
         <Link to="/" className="results-brand" aria-label="На главную">
@@ -431,10 +472,29 @@ export default function ResultsPage() {
             {report.brand.organizer && <small>{report.brand.organizer}</small>}
           </span>
         </Link>
-        <Link className="button secondary small" to="/">
-          <ArrowLeft size={16} /> На главную
-        </Link>
+        <div className="results-header-actions">
+          <ThemeToggle />
+          <Link className="button secondary small" to="/">
+            <ArrowLeft size={16} aria-hidden="true" />
+            <span className="results-home-label">На главную</span>
+          </Link>
+        </div>
       </header>
+
+      <div className="results-section-navigation">
+        <nav className="container" aria-label="Разделы итогов">
+          {resultsSections.map((section) => (
+            <a
+              href={`#${section.id}`}
+              key={section.id}
+              aria-current={currentSection === section.id ? "location" : undefined}
+              onClick={() => setCurrentSection(section.id)}
+            >
+              {section.label}
+            </a>
+          ))}
+        </nav>
+      </div>
 
       <main className="container results-main">
         {!report.published && (
@@ -466,7 +526,13 @@ export default function ResultsPage() {
               <BarChart3 size={17} aria-hidden="true" /> Игра окончена. Ответы
               остаются.
             </p>
-            <h1 id="results-heading">Итоги игры</h1>
+            <h1
+              id="results-heading"
+              className="results-section-anchor"
+              tabIndex={-1}
+            >
+              Итоги игры
+            </h1>
             <p className="results-game-title">{report.title}</p>
             <p className="results-intro-description">
               Счёт команд, облака ответов и вся картина опроса — от популярных
@@ -589,7 +655,13 @@ export default function ResultsPage() {
           <header className="results-questions-heading">
             <div>
               <p className="eyebrow">За каждым ответом — мнение</p>
-              <h2 id="results-questions-heading">Как отвечали на вопросы</h2>
+              <h2
+                id="results-questions-heading"
+                className="results-section-anchor"
+                tabIndex={-1}
+              >
+                Как отвечали на вопросы
+              </h2>
               <p>
                 На игровом табло были самые популярные варианты. Здесь — все
                 ответы на сыгранные вопросы, включая редкие. Сравнивайте их в

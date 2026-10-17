@@ -251,23 +251,35 @@ function GameCard({ game }: { game: GameSummary }) {
             </time>
           </div>
           <h2>{game.title}</h2>
+          <div className="game-card-matchup" role="group" aria-label="Команды игры">
+            {game.teams.map((team) => (
+              <div className="game-card-team" key={team.id}>
+                <span
+                  className="team-dot"
+                  style={{ background: team.color }}
+                  aria-hidden="true"
+                />
+                <span className="game-card-team-name">{team.name}</span>
+                {game.phase !== "lobby" && (
+                  <strong className="game-card-team-score">
+                    <span className="sr-only">Счёт: </span>
+                    {team.score}
+                  </strong>
+                )}
+              </div>
+            ))}
+          </div>
+          {game.phase === "finished" && (
+            <p className={`game-card-publication${game.resultsAvailable ? " is-published" : ""}`}>
+              <BarChart3 size={15} aria-hidden="true" />
+              <span>
+                {game.resultsAvailable ? "Итоги опубликованы для гостей" : "Итоги видны только организатору"}
+              </span>
+            </p>
+          )}
         </>
       }
     >
-      {game.phase === "finished" && (
-        <p className="game-card-result-note muted">
-          {game.resultsAvailable ? "Итоги опубликованы для гостей" : "Итоги видны только организатору"}
-        </p>
-      )}
-      <div className="game-team-summary">
-        {game.teams.map((team) => (
-          <div key={team.id}>
-            <span className="team-dot" style={{ background: team.color }} />
-            <span>{team.name}</span>
-            <strong>{team.score}</strong>
-          </div>
-        ))}
-      </div>
       <div className="game-card-actions">
         <Link
           className="button button-primary"

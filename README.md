@@ -116,6 +116,7 @@ DOCKER_CONFIG=/workspace/.cache/docker docker build --network=host --add-host "$
 ## Документация
 
 - [Результаты проверок](docs/VALIDATION.md).
+- [Дизайн: нормы и направление 2026–2027](docs/DESIGN_GUIDE.md).
 
 - [План и этапы](PLAN.md).
 - [Карта страниц, установка и брендинг](docs/PAGES.md).
