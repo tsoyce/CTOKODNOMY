@@ -1693,6 +1693,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
       path: "test-results/team-mobile.png",
       contentType: "image/png",
     });
+    await page.locator("details.host-round-controls > summary").click();
     await page
       .getByRole("button", { name: "Завершить игру", exact: true })
       .click();
