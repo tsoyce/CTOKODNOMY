@@ -62,7 +62,9 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   timeout: 90_000,
   expect: { timeout: 12_000 },
-  reporter: [["list"], ["html", { open: "never" }]],
+  reporter: process.env.CI
+    ? [["list"], ["github"], ["html", { open: "never" }]]
+    : [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: testOrigin,
     actionTimeout: 15_000,
