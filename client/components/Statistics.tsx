@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState, type CSSProperties } from "react";
-import { BarChart3, Check, Cloud, ListOrdered, Trophy } from "lucide-react";
+import { BarChart3, Check, Cloud, ListOrdered, Search, Trophy, X } from "lucide-react";
 import type { PublicRoundStats, PublicTeam } from "../../shared/types";
+import { answerStatistics, filterStatisticsAnswers, type AnswerFilter } from "../../shared/answerStatistics";
 import "./Statistics.css";
 
 const number = new Intl.NumberFormat("ru-RU");
@@ -36,29 +37,38 @@ export function RoundStatistics({
   const visualizationId = useId();
   const [order, setOrder] = useState<"popular" | "board">("popular");
   const [view, setView] = useState<"list" | "cloud">(preferredView ?? "list");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<AnswerFilter>("all");
+  const [selectedPosition, setSelectedPosition] = useState<number | null>(null);
   // A repeated command from the host must also override a local selection.
   useEffect(() => {
     if (preferredView) setView(preferredView);
-  }, [preferredView, preferenceRevision]);
+    setQuery("");
+    setFilter("all");
+    setSelectedPosition(null);
+  }, [round.questionId, round.questionIndex, preferredView, preferenceRevision]);
+  const survey = useMemo(() => answerStatistics(round.answers), [round.answers]);
   const answers = useMemo(
     () =>
-      [...round.answers].sort((a, b) =>
+      filterStatisticsAnswers(survey.answers, query, filter).sort((a, b) =>
         order === "popular"
           ? b.points - a.points || a.position - b.position
           : a.position - b.position,
       ),
-    [round.answers, order],
+    [survey.answers, query, filter, order],
   );
+  const cloudAnswers = useMemo(() => [...answers].sort((a, b) => b.points - a.points || a.position - b.position), [answers]);
+  const selectedAnswer = answers.find((answer) => answer.position === selectedPosition);
   // Older saved reports contain only board answers and do not have onBoard.
   const boardAnswers = round.answers.filter((answer) => answer.onBoard !== false);
   const boardAnswerCount = round.boardAnswerCount ?? boardAnswers.length;
   const guessed = boardAnswers.filter((answer) => answer.opened).length;
-  const maxWeight = Math.max(0, ...round.answers.map((answer) => answer.points));
   const winner = teams.find((team) => team.id === round.winnerTeamId);
   const date = surveyDate(round.surveyDate);
   const restored = !round.completedAt;
   const outsideBoardLabel =
     boardAnswerCount === 6 ? "Вне ТОП-6" : "Не было на табло";
+  const resetFilters = () => { setQuery(""); setFilter("all"); setSelectedPosition(null); };
 
   return (
     <section
@@ -139,33 +149,47 @@ export function RoundStatistics({
         </div>
       </div>
 
+      <div className="statistics-filters" role="group" aria-label="Поиск и фильтры ответов">
+        <label className="statistics-search">
+          <Search size={17} aria-hidden="true" />
+          <input type="search" aria-label="Поиск по ответам" placeholder="Найти ответ…" value={query}
+            onChange={(event) => { setQuery(event.target.value); setSelectedPosition(null); }} />
+        </label>
+        <select aria-label="Фильтр ответов" value={filter} onChange={(event) => { setFilter(event.target.value as AnswerFilter); setSelectedPosition(null); }}>
+          <option value="all">Все ответы</option>
+          <option value="board">{boardAnswerCount === 6 ? "ТОП-6 на табло" : "На табло"}</option>
+          <option value="outside">{boardAnswerCount === 6 ? "Вне ТОП-6" : "Вне табло"}</option>
+          <option value="opened">Угаданные</option>
+        </select>
+        {(query || filter !== "all") && <button type="button" onClick={resetFilters}>Сбросить фильтры</button>}
+        <span className="statistics-filter-count" aria-live="polite">Показано {number.format(answers.length)} из {number.format(round.answers.length)}</span>
+      </div>
+
       <div className="statistics-visualization" id={visualizationId}>
+        {answers.length === 0 && <p className="statistics-empty" role="status">По этим условиям ответов нет. Измените поиск или сбросьте фильтры.</p>}
         {view === "cloud" ? (
           <>
             <p className="statistics-cloud-note">
-              Популярные ответы крупнее. Число рядом — вес ответа в опросе;
-              здесь есть и редкие варианты, которые не попали на игровое табло.
+              Популярные ответы крупнее. Нажмите на ответ, чтобы увидеть его долю и результат в игре.
             </p>
             <ul
               className="statistics-answer-cloud"
               aria-label="Облако всех ответов опроса"
               tabIndex={0}
             >
-              {[...round.answers]
-                .sort((a, b) => b.points - a.points || a.position - b.position)
-                .map((answer) => (
+              {cloudAnswers.map((answer) => (
                   <li
                     key={answer.position}
                     className={`statistics-cloud-word${answer.onBoard === false ? " statistics-cloud-word-extra" : ""}`}
                     style={
                       {
-                        "--cloud-weight":
-                          maxWeight > 0
-                            ? Math.sqrt(Math.max(0, answer.points) / maxWeight)
-                            : 0,
+                        "--cloud-weight": answer.cloudWeight,
                       } as CSSProperties
                     }
                   >
+                    <button type="button" aria-label={`Подробнее об ответе: ${answer.text}`}
+                      aria-pressed={selectedAnswer?.position === answer.position}
+                      onClick={() => setSelectedPosition((current) => current === answer.position ? null : answer.position)}>
                     <span className="statistics-cloud-phrase">
                       {answer.text}
                     </span>
@@ -180,9 +204,15 @@ export function RoundStatistics({
                         {outsideBoardLabel}
                       </span>
                     )}
+                    </button>
                   </li>
                 ))}
             </ul>
+            {selectedAnswer && <section className="statistics-answer-detail" aria-label="Подробности ответа">
+              <div><strong>{selectedAnswer.text}</strong><span>Вес: {number.format(selectedAnswer.points)} · Доля: {percent.format(selectedAnswer.share)}% всех весов</span>
+                <span>{selectedAnswer.onBoard ? `${boardAnswerCount === 6 ? "ТОП-6 на табло" : "На табло"} · ${selectedAnswer.opened ? "Угадали" : "Не открыли в игре"}` : outsideBoardLabel}</span></div>
+              <button type="button" aria-label="Закрыть подробности" onClick={() => setSelectedPosition(null)}><X size={20} aria-hidden="true" /></button>
+            </section>}
           </>
         ) : (
           <>
@@ -273,7 +303,7 @@ export function RoundStatistics({
       <footer className="statistics-source">
         <p className="statistics-denominator">
           Проценты — доля суммы весов всех ответов опроса, а не доля опрошенных.
-          {round.totalPoints === 0 && " Сумма весов равна нулю."}
+          {survey.totalWeight === 0 && " Сумма весов равна нулю."}
         </p>
         {restored && (
           <p>
