@@ -343,6 +343,7 @@ export default function ResultsPage() {
   const [question, setQuestion] = useState("all");
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
+  const sectionNavigationRef = useRef<HTMLDivElement>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -356,21 +357,46 @@ export default function ResultsPage() {
   }, [gameId]);
 
   useEffect(() => {
-    if (!report || !window.IntersectionObserver) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) setCurrentSection(visible[0].target.id);
-      },
-      { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
-    );
-    for (const section of resultsSections) {
-      const heading = document.getElementById(section.id);
-      if (heading) observer.observe(heading);
-    }
-    return () => observer.disconnect();
+    if (!report) return;
+    const headings = resultsSections
+      .map((section) => document.getElementById(section.id))
+      .filter((heading): heading is HTMLElement => heading !== null);
+    let frame = 0;
+    let scrollMargin = 0;
+
+    const update = () => {
+      frame = 0;
+      let activeId = resultsSections[0].id;
+      if (window.scrollY > 0) {
+        const navigationBottom =
+          sectionNavigationRef.current?.getBoundingClientRect().bottom ?? 0;
+        // Match native anchor positioning, including a larger text size.
+        const activationLine = Math.max(navigationBottom + 16, scrollMargin + 1);
+        for (const heading of headings) {
+          if (heading.getBoundingClientRect().top > activationLine) break;
+          activeId = heading.id;
+        }
+      }
+      setCurrentSection(activeId);
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(update);
+    };
+    const resize = () => {
+      scrollMargin = headings[0]
+        ? Number.parseFloat(window.getComputedStyle(headings[0]).scrollMarginTop) || 0
+        : 0;
+      schedule();
+    };
+
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", resize);
+    resize();
+    return () => {
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", resize);
+      window.cancelAnimationFrame(frame);
+    };
   }, [report?.id]);
 
   if (loading) return <Loading />;
@@ -481,7 +507,7 @@ export default function ResultsPage() {
         </div>
       </header>
 
-      <div className="results-section-navigation">
+      <div className="results-section-navigation" ref={sectionNavigationRef}>
         <nav className="container" aria-label="Разделы итогов">
           {resultsSections.map((section) => (
             <a

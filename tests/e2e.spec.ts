@@ -305,6 +305,7 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   } })).ok()).toBe(true);
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto("/admin/questions");
+  await expectNativeSelectLabelsFit(page.getByLabel("Тема интерфейса", { exact: true }));
   const pack = page.getByRole("button", { name: "Показать набор: Набор карточек", exact: true });
   await pack.click();
   await expect(pack).toHaveAttribute("aria-pressed", "true");
@@ -358,9 +359,18 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   const gameCard = page.locator(".game-card").filter({ hasText: game.title });
   const gameHeader = gameCard.locator(":scope > summary");
   await expect(gameCard).toHaveJSProperty("open", false);
+  for (const team of game.teams) {
+    await expect(gameHeader.getByText(team.name, { exact: true })).toBeVisible();
+  }
   await expect(gameCard.getByRole("link", { name: "Открыть пульт", exact: true })).not.toBeVisible();
   await gameHeader.press("Enter");
   await expect(gameCard.getByRole("link", { name: "Открыть пульт", exact: true })).toBeVisible();
+  // A link inside the expanded card must still navigate, rather than toggling it.
+  await gameCard.getByRole("link", { name: `Настройки ${game.title}`, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/admin/games/${game.id}$`));
+  await page.goBack();
+  await expect(gameCard).toHaveJSProperty("open", false);
+  await gameHeader.press("Enter");
   await gameHeader.press("Space");
   await expect(gameCard).toHaveJSProperty("open", false);
   expect((await (await page.request.get(`/api/games/${game.id}/host`)).json()).questions).toEqual(game.questions);
@@ -370,11 +380,55 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
     const link = navigation.getByRole("link", { name, exact: true });
     await expect(link).toBeInViewport();
     expectMinimumTouchHeight((await link.boundingBox())!.height);
+    const labelGeometry = await link.locator(".admin-nav-copy > span").evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const lines = Array.from(range.getClientRects());
+      const bounds = element.closest("a")!.getBoundingClientRect();
+      return {
+        lines: lines.length,
+        insideLink: lines.every((line) => line.left >= bounds.left - 1 && line.right <= bounds.right + 1 && line.top >= bounds.top - 1 && line.bottom <= bounds.bottom + 1),
+      };
+    });
+    expect(labelGeometry, `Mobile navigation label: ${name}`).toEqual({ lines: 1, insideLink: true });
     await link.click();
     await expect(link).toHaveAttribute("aria-current", "page");
     await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     expect(await navigation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  }
+  const previousRootFont = await page.evaluate(() => {
+    const style = document.documentElement.style;
+    const previous = { value: style.getPropertyValue("font-size"), priority: style.getPropertyPriority("font-size") };
+    style.setProperty("font-size", "200%");
+    return previous;
+  });
+  try {
+    for (const label of await navigation.locator(".admin-nav-copy > span").all()) {
+      const geometry = await label.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const lines = Array.from(range.getClientRects());
+        const bounds = element.closest("a")!.getBoundingClientRect();
+        return {
+          text: element.textContent,
+          fontSize: parseFloat(getComputedStyle(element).fontSize),
+          lines: lines.length,
+          insideLink: lines.every((line) => line.left >= bounds.left - 1 && line.right <= bounds.right + 1 && line.top >= bounds.top - 1 && line.bottom <= bounds.bottom + 1),
+        };
+      });
+      expect(geometry.fontSize, JSON.stringify(geometry)).toBeGreaterThanOrEqual(22);
+      expect(geometry.lines, JSON.stringify(geometry)).toBeGreaterThanOrEqual(1);
+      expect(geometry.insideLink, JSON.stringify(geometry)).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    expect(await navigation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await page.screenshot({ path: "test-results/admin-navigation-200-percent-mobile.png" });
+  } finally {
+    await page.evaluate(({ value, priority }) => {
+      if (value) document.documentElement.style.setProperty("font-size", value, priority);
+      else document.documentElement.style.removeProperty("font-size");
+    }, previousRootFont);
   }
   const currentPassword = page.getByLabel("Текущий пароль", { exact: true });
   const accountCard = page.locator("details").filter({ has: currentPassword });
@@ -1876,6 +1930,51 @@ function expectMinimumTouchHeight(height: number) {
   expect(Math.round(height * 1000) / 1000).toBeGreaterThanOrEqual(44);
 }
 
+async function expectReadablePhoneControl(control: Locator) {
+  // iOS zooms focused form fields below 16px, even when the layout fits.
+  expect(await control.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
+  expectMinimumTouchHeight((await control.boundingBox())!.height);
+}
+
+async function expectNativeSelectLabelsFit(select: Locator) {
+  const labels = await select.evaluate((element) => {
+    const control = element as HTMLSelectElement;
+    const style = getComputedStyle(control);
+    const context = document.createElement("canvas").getContext("2d")!;
+    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const horizontalPadding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    return Array.from(control.options, (option) => ({
+      label: option.label,
+      required: context.measureText(option.label).width + horizontalPadding,
+      available: control.clientWidth,
+    }));
+  });
+  for (const label of labels) expect(label.required, JSON.stringify(label)).toBeLessThanOrEqual(label.available + 1);
+}
+
+async function expectResultsSectionNavigation(page: Page) {
+  const navigation = page.getByRole("navigation", { name: "Разделы итогов", exact: true });
+  for (const [name, id] of [
+    ["Итоги", "results-heading"],
+    ["Команды", "results-team-comparison-heading"],
+    ["Раунды", "results-dynamics-heading"],
+    ["Ответы", "results-questions-heading"],
+  ]) {
+    const link = navigation.getByRole("link", { name, exact: true });
+    await expect(link).toHaveAttribute("href", `#${id}`);
+    expectMinimumTouchHeight((await link.boundingBox())!.height);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`#${id}$`));
+    const heading = page.locator(`#${id}`);
+    await expect(heading).toBeFocused();
+    await expect.poll(() => heading.evaluate((element) => {
+      const target = element.getBoundingClientRect();
+      const sticky = document.querySelector(".results-section-navigation")!.getBoundingClientRect();
+      return target.top >= Math.max(0, sticky.bottom) - 1 && target.bottom <= innerHeight + 1;
+    })).toBe(true);
+  }
+}
+
 async function expectFullBoundsAbove(locator: Locator, bottom: number, height: number) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
@@ -2009,15 +2108,55 @@ test("published analytics distinguish banks from corrections and keep cloud perc
   await hostDecision(page, game.id, { type: "adjust", teamId: game.teams[0]!.id, delta: 7, reason: "Учебная корректировка" });
   const finished = await hostDecision(page, game.id, { type: "finish" });
   expect(finished.teams.map((team) => team.score)).toEqual([47, 10]);
+  await page.goto("/admin/games");
+  const closedGame = page.locator(".game-card").filter({ hasText: game.title });
+  const closedSummary = closedGame.locator(":scope > summary");
+  await expect(closedGame).toHaveJSProperty("open", false);
+  for (const team of finished.teams) {
+    const row = closedSummary.locator(".game-card-team").filter({ hasText: team.name });
+    await expect(row.getByText(team.name, { exact: true })).toBeVisible();
+    await expect(row.locator(".game-card-team-score")).toHaveText(`Счёт: ${team.score}`);
+  }
+  await expect(closedSummary).toContainText("Итоги видны только организатору");
   expect((await page.request.post(`/api/games/${game.id}/results/publication`, {
     data: { published: true, revision: finished.revision },
   })).ok()).toBe(true);
+  await page.reload();
+  await expect(closedGame).toHaveJSProperty("open", false);
+  await expect(closedSummary).toContainText("Итоги опубликованы для гостей");
+  await expect(closedGame.getByRole("link", { name: "Итоги и ответы", exact: true })).not.toBeVisible();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: "test-results/admin-game-summary-mobile.png", fullPage: true });
   const guest = await browser.newContext({ baseURL, viewport: { width: 1280, height: 900 } });
+  // Start with an existing browser preference; results must respect it on arrival.
+  await guest.addInitScript(() => {
+    if (!localStorage.getItem("ctokodnomy:appearance")) localStorage.setItem("ctokodnomy:appearance", "dark");
+  });
   try {
     const results = await guest.newPage();
     results.on("pageerror", (error) => pageErrors.push(error.message));
+    const settingsWrites: string[] = [];
+    results.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/settings") settingsWrites.push(request.url());
+    });
     await results.goto(`/results/${game.id}`);
     const report = await (await guest.request.get(`/api/games/${game.id}/results`)).json() as PublicGameResults;
+    const appearance = results.getByLabel("Тема интерфейса", { exact: true });
+    const reportPage = results.locator(".results-page");
+    await expect(appearance).toHaveValue("dark");
+    await expect(reportPage).toHaveAttribute("data-theme", "dark");
+    await results.screenshot({ path: "test-results/results-analytics-dark-desktop.png", fullPage: true });
+    for (const [mode, theme] of [["light", "light"], ["brand", "dark"], ["dark", "dark"], ["light", "light"]]) {
+      await appearance.selectOption(mode);
+      await expect(reportPage).toHaveAttribute("data-theme", theme);
+      await results.reload();
+      await expect(appearance).toHaveValue(mode);
+      await expect(reportPage).toHaveAttribute("data-theme", theme);
+    }
+    expect(settingsWrites).toEqual([]);
+    expect((await (await guest.request.get(`/api/games/${game.id}/results`)).json() as PublicGameResults).brand).toEqual(report.brand);
+    await expectResultsSectionNavigation(results);
     expect(report.rounds).toHaveLength(2);
     expect(report.totalRounds).toBe(3);
     for (const hidden of [privateText, first.notes, future.prompt, future.answers[0]!.text]) {
@@ -2065,10 +2204,14 @@ test("published analytics distinguish banks from corrections and keep cloud perc
     await expect(cloud.getByRole("listitem")).toHaveCount(8);
     await results.screenshot({ path: "test-results/results-analytics-cloud-desktop.png", fullPage: true });
     await results.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect(results.getByRole("navigation", { name: "Разделы итогов", exact: true }).getByRole("link", { name: "Итоги", exact: true })).toHaveAttribute("aria-current", "location");
     await results.screenshot({ path: "test-results/results-analytics-desktop-viewport.png" });
     for (const width of [320, 390]) {
       await results.setViewportSize({ width, height: 844 });
       expect(await results.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+      await expectResultsSectionNavigation(results);
+      await expectReadablePhoneControl(firstStats.getByLabel("Поиск по ответам", { exact: true }));
+      await expectReadablePhoneControl(filter);
       await tag.click();
       expectMinimumTouchHeight((await tag.boundingBox())!.height);
       await expect(detail).toContainText(longPhrase);
@@ -2141,6 +2284,8 @@ test("independent phones group private team ideas, search authors and send only 
     await captain.getByRole("combobox", { name: /^Порядок идей/ }).selectOption({ label: "Сначала частые" });
     await expect(ideas.first()).toContainText("Обсудить вместе");
     const search = captain.getByLabel("Поиск идей команды", { exact: true });
+    await expectReadablePhoneControl(search);
+    await expectReadablePhoneControl(captain.getByRole("combobox", { name: /^Порядок идей/ }));
     await search.fill("Мария");
     await expect(ideas).toHaveCount(1);
     await expect(ideas).toContainText("Обсудить вместе");

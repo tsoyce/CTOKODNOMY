@@ -152,8 +152,8 @@
     gap: 10px;
   }
   .admin-shell-modern .admin-topbar-main .appearance-control select {
-    width: 120px;
-    max-width: 120px;
+    width: 188px;
+    max-width: 188px;
   }
   .admin-shell-modern .admin-breadcrumbs {
     font-size: .72rem;
@@ -176,7 +176,7 @@
     width: 16px;
   }
   .admin-shell-modern .admin-sidebar nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: minmax(0, .85fr) minmax(0, .75fr) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
     gap: 2px;
     padding: 6px 5px calc(6px + env(safe-area-inset-bottom, 0px));
     background: var(--surface);
@@ -188,7 +188,7 @@
     margin: 0;
     padding: 10px 1px 7px;
     gap: 6px;
-    font-size: clamp(.60rem, 2.4vw, .72rem);
+    font-size: clamp(.6875rem, 2.8vw, .75rem);
     text-align: center;
     white-space: normal;
   }
