@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ChevronDown,
   Cloud,
   Copy,
   Crown,
@@ -126,6 +127,11 @@ export function HostPage() {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState<HostCommand | null>(null);
   const [shortcutsEnabled, setShortcutsEnabled] = useState(false);
+  const [turnMenuOpen, setTurnMenuOpen] = useState(false);
+  const turnMenuRef = useRef<HTMLDivElement>(null);
+  const turnMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const undoButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmationReturnFocus = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const lastAttempt = useRef<HostAttempt | null>(null);
   const operationInFlight = useRef(false);
@@ -152,8 +158,30 @@ export function HostPage() {
     }
   }, [game?.id]);
   useEffect(() => {
+    if (!turnMenuOpen) return;
+    const closeOutside = (event: PointerEvent | FocusEvent) => {
+      if (event.target instanceof Node && !turnMenuRef.current?.contains(event.target)) {
+        setTurnMenuOpen(false);
+      }
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setTurnMenuOpen(false);
+      turnMenuButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("focusin", closeOutside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("focusin", closeOutside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [turnMenuOpen]);
+  useEffect(() => {
     if (!confirmation) return;
-    const previousFocus = document.activeElement;
+    const previousFocus = confirmationReturnFocus.current ?? document.activeElement;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const keydown = (event: KeyboardEvent) => {
@@ -188,9 +216,22 @@ export function HostPage() {
     return () => {
       document.removeEventListener("keydown", keydown);
       document.body.style.overflow = previousOverflow;
-      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+      const fallback = confirmation.type === "turn" || confirmation.type === "award"
+        ? turnMenuButtonRef.current : undoButtonRef.current;
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected && !previousFocus.matches(":disabled") && previousFocus.getClientRects().length) {
+        previousFocus.focus();
+      } else if (fallback && !fallback.disabled) fallback.focus();
+      confirmationReturnFocus.current = null;
     };
   }, [confirmation]);
+  function askConfirmation(next: HostCommand, trigger?: HTMLElement | null) {
+    confirmationReturnFocus.current = trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setTurnMenuOpen(false);
+    setConfirmation(next);
+  }
+  useEffect(() => {
+    if (game?.paused || (game?.phase !== "playing" && game?.phase !== "steal")) setTurnMenuOpen(false);
+  }, [game?.paused, game?.phase]);
   shortcutAction.current = () => {};
   if (loading) return <Loading />;
   if (!game)
@@ -238,7 +279,7 @@ export function HostPage() {
                 ? "Капитан отправил ответ. Откройте совпавший вариант или отметьте ошибку."
                 : "Выслушайте команду. Откройте совпавший вариант или отметьте ошибку.";
   shortcutAction.current = (event) => {
-    if (disabled || operationInFlight.current || confirmation) return;
+    if (disabled || operationInFlight.current || confirmation || turnMenuOpen) return;
     if ((event.code === "KeyP" || event.key.toLowerCase() === "p") && game.phase !== "finished") {
       event.preventDefault();
       void command({ type: game.paused ? "resume" : "pause" });
@@ -247,7 +288,7 @@ export function HostPage() {
     if (game.paused) return;
     if ((event.code === "KeyU" || event.key.toLowerCase() === "u") && game.history.length) {
       event.preventDefault();
-      setConfirmation({ type: "undo" });
+      askConfirmation({ type: "undo" }, undoButtonRef.current);
       return;
     }
     if (!roundLive || !/^[1-6]$/.test(event.key)) return;
@@ -263,6 +304,7 @@ export function HostPage() {
     setCommandError("");
     setNotice("");
     setConfirmation(null);
+    setTurnMenuOpen(false);
     const signature = JSON.stringify(next);
     const attempt: HostAttempt =
       lastAttempt.current?.signature === signature
@@ -437,13 +479,6 @@ export function HostPage() {
           <a href="#host-journal"><ScrollText size={18} /><span>Журнал</span></a>
         </nav>
         <ErrorMessage message={error} />
-        <ErrorMessage message={commandError} />
-        {notice && (
-          <div className="success" role="status">
-            <Check size={17} />
-            {notice}
-          </div>
-        )}
         <section className={`host-cockpit ${game.paused ? "is-paused" : ""}`} aria-label="Состояние раунда">
           <div className="host-status-bar">
             <div className="host-phase">
@@ -456,13 +491,6 @@ export function HostPage() {
           </div>
           <p className="host-next-step" role="status">{nextStep}</p>
         </section>
-        <div className="host-keyboard-toolbar">
-          <label className="host-shortcut-toggle">
-            <input type="checkbox" checked={shortcutsEnabled} onChange={(event) => setShortcutsEnabled(event.target.checked)} />
-            <Keyboard size={17} aria-hidden="true" /> Горячие клавиши
-          </label>
-          {shortcutsEnabled && <p className="form-hint"><kbd>1</kbd>–<kbd>6</kbd> открыть ответ · <kbd>P</kbd> пауза · <kbd>U</kbd> отмена с подтверждением</p>}
-        </div>
         {(game.phase === "lobby" || game.phase === "round-result") && (
           <section className="card host-start-panel">
             <div>
@@ -503,24 +531,6 @@ export function HostPage() {
                   </select>
                 </label>
               )}
-              <button
-                className="button primary"
-                disabled={disabled || game.paused || !firstTeamId}
-                onClick={() =>
-                  void command(
-                    game.phase === "lobby"
-                      ? { type: "start", teamId: firstTeamId }
-                      : { type: "next", teamId: firstTeamId },
-                  )
-                }
-              >
-                <Play size={18} />
-                {game.phase === "lobby"
-                  ? "Начать игру"
-                  : game.questionIndex + 1 >= game.questions.length
-                    ? "Завершить по итогам раундов"
-                    : "Следующий раунд"}
-              </button>
             </div>
           </section>
         )}
@@ -585,48 +595,6 @@ export function HostPage() {
         )}
         <div className="host-grid">
           <div className="stack host-main" id="host-play">
-            <section
-              className={`card host-answer-decision ${game.pendingAnswer ? "has-pending" : ""}`}
-            >
-              <div className="section-title small">
-                <h2>Ответ капитана</h2>
-                <span className="badge">
-                  {game.pendingAnswer ? "Нужна оценка" : "Ожидание"}
-                </span>
-              </div>
-              {game.pendingAnswer ? (
-                <div className="host-pending">
-                  <p>
-                    {
-                      game.teams.find(
-                        (team) => team.id === game.pendingAnswer!.teamId,
-                      )?.name
-                    }{" "}
-                    · {game.pendingAnswer.authorName}
-                  </p>
-                  <h3>{game.pendingAnswer.text}</h3>
-                  <p className="muted">
-                    Откройте совпавший ответ в списке ниже или отметьте ошибку.
-                    Решение очистит текущие предложения.
-                  </p>
-                </div>
-              ) : (
-                <p className="muted">
-                  Капитан может отправить ответ с телефона. При устной игре
-                  принимайте решение кнопками пульта.
-                </p>
-              )}
-              <button
-                className="button danger"
-                disabled={disabled || !roundLive}
-                onClick={() => void command({ type: "strike" })}
-              >
-                <X size={18} />
-                {game.phase === "steal"
-                  ? "Перехват не удался"
-                  : "Отметить ошибку"}
-              </button>
-            </section>
             <section className="card host-question">
               <div className="section-title small">
                 <p className="eyebrow">Вопрос и ответы · Только ведущему</p>
@@ -635,8 +603,11 @@ export function HostPage() {
                 )}
               </div>
               <h2>{question?.prompt ?? "Нет вопроса"}</h2>
-              {question?.notes && (
-                <p className="host-notes">Заметка: {question.notes}</p>
+              {game.pendingAnswer && (
+                <div className="host-pending host-answer-decision has-pending">
+                  <span>Ответ капитана · {game.teams.find((team) => team.id === game.pendingAnswer!.teamId)?.name} · {game.pendingAnswer.authorName}</span>
+                  <strong>{game.pendingAnswer.text}</strong>
+                </div>
               )}
               {question && (
                 <div className="host-answer-list">
@@ -653,7 +624,10 @@ export function HostPage() {
                         <div>
                           <strong>{answer.text}</strong>
                           {answer.aliases.length > 0 && (
-                            <small>Также: {answer.aliases.join(" · ")}</small>
+                            <details className="host-answer-aliases">
+                              <summary>Другие формулировки · {answer.aliases.length}</summary>
+                              <small>{answer.aliases.join(" · ")}</small>
+                            </details>
                           )}
                         </div>
                         <span className="answer-points">{answer.points}</span>
@@ -696,6 +670,12 @@ export function HostPage() {
                   </ul>
                 </details>
               )}
+              {(question?.notes || question?.source) && (
+                <details className="host-question-details">
+                  <summary>Заметки и источник</summary>
+              {question?.notes && (
+                <p className="host-notes">Заметка: {question.notes}</p>
+              )}
               {question?.source && (
                 <p className="form-hint">
                   Источник: {question.source}
@@ -705,7 +685,10 @@ export function HostPage() {
                   {question.surveyDate ? ` · ${question.surveyDate}` : ""}
                 </p>
               )}
+                </details>
+              )}
             </section>
+            {!game.pendingAnswer && <p className="host-captain-hint">Ответы можно принимать устно или с телефона капитана. Кнопка ошибки всегда внизу экрана.</p>}
             <details className="card host-ideas">
               <summary>
                 Предложения команд{" "}
@@ -737,93 +720,24 @@ export function HostPage() {
             </details>
           </div>
           <aside className="stack host-controls" id="host-controls">
-            <section className="card host-round-controls">
-              <h2>Управление раундом</h2>
-              <p className="host-current-step">
-                {game.phase === "lobby"
-                  ? "Выберите команду — и можно начинать."
-                  : game.phase === "round-result"
-                    ? game.questionIndex + 1 >= game.questions.length
-                      ? "Все раунды сыграны. Перейдите к итогам."
-                      : "Все ответы открыты на табло. Начните следующий раунд, когда готовы."
-                    : game.phase === "finished"
-                      ? "Спасибо за игру!"
-                      : game.paused
-                        ? "Продолжите игру, чтобы принимать ответы."
-                        : "Откройте совпавший ответ или отметьте ошибку."}
-              </p>
-              {game.phase === "lobby" || game.phase === "round-result" ? (
-                <p className="form-hint">
-                  Кнопка продолжения — над вопросом. Сначала можно обсудить
-                  ответы с гостями.
-                </p>
-              ) : game.phase === "finished" ? (
-                <div className="notice">
-                  <Trophy size={23} />
-                  <p>Игра завершена. Итоги показаны на общем табло.</p>
-                </div>
-              ) : (
-                <div className="stack">
-                  {game.teams.map((team) => (
-                    <div className="host-team-actions" key={team.id}>
-                      <strong>{team.name}</strong>
-                      <div className="button-row">
-                        <button
-                          className="button secondary small"
-                          disabled={
-                            disabled ||
-                            !roundLive ||
-                            game.phase === "steal" ||
-                            game.activeTeamId === team.id
-                          }
-                          onClick={() =>
-                            setConfirmation({ type: "turn", teamId: team.id })
-                          }
-                        >
-                          Передать ход
-                        </button>
-                        <button
-                          className="button ghost small"
-                          disabled={disabled || !roundLive}
-                          onClick={() =>
-                            setConfirmation({ type: "award", teamId: team.id })
-                          }
-                        >
-                          Присудить банк
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="auth-divider" />
-              <div className="host-global-actions">
-                <button
-                  className="button secondary"
-                  disabled={disabled || game.phase === "finished"}
-                  onClick={() =>
-                    void command({ type: game.paused ? "resume" : "pause" })
-                  }
-                >
-                  {game.paused ? <Play size={17} /> : <Pause size={17} />}
-                  {game.paused ? "Продолжить игру" : "Пауза"}
-                </button>
-                <button
-                  className="button ghost"
-                  disabled={disabled || !game.history.length}
-                  onClick={() => setConfirmation({ type: "undo" })}
-                >
-                  <Undo2 size={17} /> Отменить последнее
-                </button>
-                <button
-                  className="button ghost danger-text"
-                  disabled={disabled || game.phase === "finished"}
-                  onClick={() => setConfirmation({ type: "finish" })}
-                >
-                  <Flag size={17} /> Завершить игру
-                </button>
+            <details className="card host-round-controls">
+              <summary>Дополнительные действия</summary>
+              <p className="host-current-step">Основные действия доступны на плавающей панели внизу экрана.</p>
+              <div className="host-keyboard-toolbar">
+                <label className="host-shortcut-toggle">
+                  <input type="checkbox" checked={shortcutsEnabled} onChange={(event) => setShortcutsEnabled(event.target.checked)} />
+                  <Keyboard size={17} aria-hidden="true" /> Горячие клавиши
+                </label>
+                {shortcutsEnabled && <p className="form-hint"><kbd>1</kbd>–<kbd>6</kbd> открыть ответ · <kbd>P</kbd> пауза · <kbd>U</kbd> отмена с подтверждением</p>}
               </div>
-            </section>
+              <button
+                className="button ghost danger-text"
+                disabled={disabled || game.phase === "finished"}
+                onClick={(event) => askConfirmation({ type: "finish" }, event.currentTarget)}
+              >
+                <Flag size={17} /> Завершить игру
+              </button>
+            </details>
             <details className="card adjustment-panel">
               <summary>Исправить счёт</summary>
               <form className="stack" onSubmit={adjust}>
@@ -872,8 +786,8 @@ export function HostPage() {
                 </button>
               </form>
             </details>
-            <section className="card host-journal" id="host-journal">
-              <h2>Журнал решений</h2>
+            <details className="card host-journal" id="host-journal">
+              <summary>Журнал решений <span className="badge">{game.events.length}</span></summary>
               {game.events.length ? (
                 <ol>
                   {[...game.events]
@@ -894,7 +808,7 @@ export function HostPage() {
               ) : (
                 <p className="muted">Решения ведущего будут записаны здесь.</p>
               )}
-            </section>
+            </details>
           </aside>
         </div>
         <section className="host-rosters" id="host-teams">
@@ -966,6 +880,52 @@ export function HostPage() {
               </section>
             ))}
           </div>
+        </section>
+        <section className="host-action-dock" aria-label="Быстрые действия ведущего">
+          <div className="host-dock-actions">
+            {game.phase === "lobby" || game.phase === "round-result" ? (
+              <button
+                className="button primary"
+                disabled={disabled || game.paused || !firstTeamId}
+                onClick={() => void command(game.phase === "lobby" ? { type: "start", teamId: firstTeamId } : { type: "next", teamId: firstTeamId })}
+              >
+                <Play size={18} />
+                <span>{game.phase === "lobby" ? "Начать игру" : game.questionIndex + 1 >= game.questions.length ? "Завершить по итогам раундов" : "Следующий раунд"}</span>
+              </button>
+            ) : (
+              <button className="button danger" disabled={disabled || !roundLive} onClick={() => void command({ type: "strike" })}>
+                <X size={18} /><span>{game.phase === "steal" ? "Перехват не удался" : "Отметить ошибку"}</span>
+              </button>
+            )}
+            <button className="button secondary" disabled={disabled || game.phase === "finished"} onClick={() => void command({ type: game.paused ? "resume" : "pause" })}>
+              {game.paused ? <Play size={18} /> : <Pause size={18} />}<span>{game.paused ? "Продолжить игру" : "Пауза"}</span>
+            </button>
+            <button ref={undoButtonRef} className="button ghost" disabled={disabled || !game.history.length} onClick={(event) => askConfirmation({ type: "undo" }, event.currentTarget)}>
+              <Undo2 size={18} /><span>Отменить последнее</span>
+            </button>
+            <div className="host-dock-menu" ref={turnMenuRef}>
+              <button ref={turnMenuButtonRef} className={`button secondary ${turnMenuOpen ? "is-active" : ""}`} disabled={disabled || !roundLive} aria-expanded={turnMenuOpen} aria-controls="host-turn-bank-panel" onClick={() => setTurnMenuOpen((open) => !open)}>
+                <Users size={18} /><span>Ход и банк</span><ChevronDown size={16} />
+              </button>
+              {turnMenuOpen && (
+                <div className="host-turn-bank-panel" id="host-turn-bank-panel" role="region" aria-label="Ход и банк">
+                  <div className="host-dock-panel-heading"><strong>Кому передать ход или банк?</strong><button className="button ghost small" aria-label="Закрыть действия с командами" onClick={() => { setTurnMenuOpen(false); turnMenuButtonRef.current?.focus(); }}><X size={18} /></button></div>
+                  {game.teams.map((team) => (
+                    <div className="host-team-actions" key={team.id}>
+                      <strong>{team.name}{game.activeTeamId === team.id ? " · сейчас отвечает" : ""}</strong>
+                      <div className="button-row">
+                        <button className="button secondary small" disabled={disabled || !roundLive || game.phase === "steal" || game.activeTeamId === team.id} onClick={() => askConfirmation({ type: "turn", teamId: team.id }, turnMenuButtonRef.current)}>Передать ход</button>
+                        <button className="button primary small" disabled={disabled || !roundLive} onClick={() => askConfirmation({ type: "award", teamId: team.id }, turnMenuButtonRef.current)}>Присудить банк</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <p className={`host-dock-status ${commandError ? "has-error" : notice ? "has-success" : ""}`} role={commandError ? "alert" : "status"}>
+            {busy ? "Сохраняем решение…" : commandError || notice || (!connected || error ? "Нет связи. Дождитесь подключения." : "Действия обновляют табло и телефоны команд.")}
+          </p>
         </section>
         {confirmation && (
           <div className="modal-backdrop">

@@ -36,7 +36,9 @@ import { useGameSound } from "../components/BoardSound";
 import { RoundStatistics } from "../components/Statistics";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { isLightBrand, projectorPalette } from "../theme";
+import { filterTeamIdeas, groupTeamIdeas, sortTeamIdeas, type TeamIdeaOrder } from "../../shared/teamIdeas";
 import "./Game.css";
+import "./TeamRoom.css";
 
 import { Connection, GameUnavailable, TeamScores, Strikes, RoundMeta } from "../components/GameCommon";
 export function BoardPage() {
@@ -423,6 +425,10 @@ export function TeamPage() {
   const [sendError, setSendError] = useState("");
   const [notice, setNotice] = useState("");
   const lastAttempt = useRef<PendingSend | null>(null);
+  const sendInFlight = useRef(false);
+  const captainForm = useRef<HTMLFormElement>(null);
+  const [ideaSearch, setIdeaSearch] = useState("");
+  const [ideaOrder, setIdeaOrder] = useState<TeamIdeaOrder>("newest");
   useEffect(() => {
     setNotice("");
     setSendError("");
@@ -439,7 +445,15 @@ export function TeamPage() {
     );
   const team = game.teams.find((team) => team.id === game.self.teamId);
   const activeTeam = game.teams.find((team) => team.id === game.activeTeamId);
-  const captain = game.players.find((player) => player.role === "captain");
+  const players = game.players.filter((player) => player.teamId === game.self.teamId).sort((a, b) =>
+    Number(b.role === "captain") - Number(a.role === "captain") ||
+    Number(b.id === game.self.id) - Number(a.id === game.self.id) ||
+    a.name.localeCompare(b.name, "ru"),
+  );
+  const captain = players.find((player) => player.role === "captain");
+  const suggestions = game.suggestions.filter((suggestion) => suggestion.teamId === game.self.teamId);
+  const ideaGroups = groupTeamIdeas(suggestions);
+  const visibleIdeas = sortTeamIdeas(filterTeamIdeas(ideaGroups, ideaSearch), ideaOrder);
   const isCaptain = game.self.role === "captain";
   const ownTurn = game.activeTeamId === game.self.teamId;
   const canSend =
@@ -449,7 +463,8 @@ export function TeamPage() {
     connected &&
     !error;
   async function send(kind: "suggest" | "submit", text: string) {
-    if (!game || !text.trim()) return;
+    if (!game || !text.trim() || !canSend || game.pendingAnswer || sendInFlight.current) return;
+    sendInFlight.current = true;
     setBusy(kind);
     setSendError("");
     setNotice("");
@@ -494,6 +509,7 @@ export function TeamPage() {
             : "Отправка не подтверждена. Проверьте список ответов перед повторной попыткой.",
       );
     } finally {
+      sendInFlight.current = false;
       setBusy(null);
     }
   }
@@ -650,7 +666,7 @@ export function TeamPage() {
             <section className="card team-ideas">
               <div className="section-title small">
                 <h2>Идеи команды</h2>
-                <span className="badge">{game.suggestions.length}</span>
+                <span className="badge" aria-label={`Предложений: ${suggestions.length}`}>{suggestions.length}</span>
               </div>
               <form
                 className="stack"
@@ -680,18 +696,55 @@ export function TeamPage() {
                   {busy === "suggest" ? "Добавляем…" : "Предложить ответ"}
                 </button>
               </form>
-              {game.suggestions.length ? (
+              {suggestions.length > 0 && (
+                <div className="team-idea-tools">
+                  <label className="field">
+                    Поиск идей команды
+                    <input
+                      type="search"
+                      value={ideaSearch}
+                      onChange={(event) => setIdeaSearch(event.target.value)}
+                      placeholder="Идея или имя участника"
+                    />
+                  </label>
+                  <label className="field">
+                    Порядок идей
+                    <select value={ideaOrder} onChange={(event) => setIdeaOrder(event.target.value as TeamIdeaOrder)}>
+                      <option value="newest">Сначала новые</option>
+                      <option value="frequent">Сначала частые</option>
+                    </select>
+                  </label>
+                  {ideaSearch && (
+                    <button className="button ghost small" type="button" onClick={() => setIdeaSearch("")}>
+                      Очистить поиск идей
+                    </button>
+                  )}
+                  <p className="form-hint team-idea-hint">Одинаковые идеи собраны вместе. Частота — число сообщений, а не голоса.</p>
+                </div>
+              )}
+              {visibleIdeas.length ? (
                 <ul className="suggestion-list">
-                  {[...game.suggestions].reverse().map((suggestion) => (
-                    <li key={suggestion.id}>
-                      <div>
-                        <strong>{suggestion.text}</strong>
-                        <span>
-                          {suggestion.authorName}
-                          {suggestion.participantId === game.self.id
-                            ? " · вы"
-                            : ""}
+                  {visibleIdeas.map((group) => (
+                    <li className="team-idea-group" key={group.key}>
+                      <div className="team-idea-main">
+                        <strong>{group.latest.text}</strong>
+                        <span className="team-idea-authors">
+                          {group.authorNames.join(", ")}
+                          {group.suggestions.some((suggestion) => suggestion.participantId === game.self.id) ? " · есть ваша идея" : ""}
                         </span>
+                        {group.suggestions.length > 1 && (
+                          <details className="team-idea-originals">
+                            <summary>Все предложения этой идеи · {group.suggestions.length}</summary>
+                            <ul>
+                              {group.suggestions.map((suggestion) => (
+                                <li key={suggestion.id}>
+                                  <p>{suggestion.text}</p>
+                                  <span>{suggestion.authorName}{suggestion.participantId === game.self.id ? " · вы" : ""}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
                       </div>
                       {isCaptain && (
                         <button
@@ -699,8 +752,12 @@ export function TeamPage() {
                           type="button"
                           disabled={!canSend || !!game.pendingAnswer || !!busy}
                           onClick={() => {
-                            setAnswer(suggestion.text);
+                            setAnswer(group.latest.text);
                             setNotice("");
+                            captainForm.current?.scrollIntoView({
+                              behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                              block: "nearest",
+                            });
                           }}
                         >
                           Выбрать <ChevronRight size={16} />
@@ -711,11 +768,11 @@ export function TeamPage() {
                 </ul>
               ) : (
                 <div className="empty-state small">
-                  <p>Пока нет предложений. Первая идея может быть вашей.</p>
+                  <p>{suggestions.length ? "Ничего не найдено. Попробуйте другое слово или имя." : "Пока нет предложений. Первая идея может быть вашей."}</p>
                 </div>
               )}
             </section>
-            <div className="stack">
+            {(isCaptain || game.pendingAnswer) && <div className="stack team-captain-column">
               {isCaptain && !game.pendingAnswer && (
                 <section className="card captain-panel">
                   <div className="captain-panel-title">
@@ -728,6 +785,7 @@ export function TeamPage() {
                   </p>
                   <form
                     className="stack"
+                    ref={captainForm}
                     onSubmit={(event) => {
                       event.preventDefault();
                       void send("submit", answer);
@@ -770,16 +828,16 @@ export function TeamPage() {
                   </p>
                 </section>
               )}
-            </div>
+            </div>}
           </div>
         )}
         <details className="card team-roster">
           <summary>
             <Users size={19} /> Ваша команда{" "}
-            <span className="badge">{game.players.length}</span>
+            <span className="badge">{players.length}</span>
           </summary>
           <ul>
-            {game.players.map((player) => (
+            {players.map((player) => (
               <li key={player.id}>
                 <span>
                   {player.name}

@@ -14,6 +14,7 @@ import {
   Trophy,
 } from "lucide-react";
 import { defaultBrand, type PublicGameResults } from "../../shared/types";
+import { gameAnalytics } from "../../shared/gameAnalytics";
 import { ApiError, api, brandStyle } from "../lib";
 import { Loading } from "../components/Common";
 import { RoundStatistics } from "../components/Statistics";
@@ -100,6 +101,219 @@ function useResults(id: string | undefined) {
   }, [id]);
 
   return { report, loading, error, unavailable, refresh };
+}
+
+function ResultsAnalytics({ report }: { report: PublicGameResults }) {
+  const [selectedTeam, setSelectedTeam] = useState("all");
+  useEffect(() => setSelectedTeam("all"), [report.id]);
+  const analytics = gameAnalytics(report);
+  const teamFilter = analytics.teams.some((team) => team.id === selectedTeam)
+    ? selectedTeam
+    : "all";
+  const visibleTeams = analytics.teams.filter(
+    (team) => teamFilter === "all" || team.id === teamFilter,
+  );
+  const maximum = Math.max(
+    1,
+    ...analytics.rounds.flatMap((round) =>
+      analytics.teams.map((team) => round.cumulativeBanks[team.id] ?? 0),
+    ),
+  );
+
+  return (
+    <>
+      <section
+        className="results-team-comparison"
+        aria-labelledby="results-team-comparison-heading"
+      >
+        <header className="results-analytics-heading">
+          <p className="eyebrow">Вклад в результат</p>
+          <h2 id="results-team-comparison-heading">Команды в цифрах</h2>
+          <p>
+            Сколько раундов выиграла каждая команда и сколько очков принесли
+            банки. Финальный счёт учитывает также изменения ведущего.
+          </p>
+        </header>
+        {!analytics.completeHistory && (
+          <p className="results-history-note">
+            История неполная: показаны только подтверждённые банки и победы.
+            Полный итог по раундам и разницу с финальным счётом восстановить
+            нельзя.
+          </p>
+        )}
+        <div className="results-team-analytics-grid">
+          {analytics.teams.map((team) => (
+            <article
+              className="results-team-analytics"
+              data-team-id={team.id}
+              key={team.id}
+            >
+              <h3>
+                <span
+                  className="results-team-color"
+                  style={{ backgroundColor: team.color }}
+                  aria-hidden="true"
+                />
+                {team.name}
+              </h3>
+              <dl>
+                <div className="results-team-final-score">
+                  <dt>Финальный счёт</dt>
+                  <dd>{number.format(team.score)}</dd>
+                </div>
+                <div>
+                  <dt>
+                    {analytics.completeHistory
+                      ? "Побед в раундах"
+                      : "Известных побед"}
+                  </dt>
+                  <dd>{number.format(team.roundWins)}</dd>
+                </div>
+                <div>
+                  <dt>
+                    {analytics.completeHistory
+                      ? "Очков из банка"
+                      : "Известно очков из банка"}
+                  </dt>
+                  <dd>{number.format(team.bankPoints)}</dd>
+                </div>
+                {team.scoreAdjustment !== null && (
+                  <div>
+                    <dt>Разница со счётом</dt>
+                    <dd>
+                      {team.scoreAdjustment > 0 ? "+" : ""}
+                      {number.format(team.scoreAdjustment)}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+            </article>
+          ))}
+        </div>
+        {analytics.completeHistory && (
+          <p className="results-analytics-explanation">
+            Разница со счётом — финальный счёт минус банки выигранных раундов.
+            Время и причины этих изменений здесь не показаны.
+          </p>
+        )}
+      </section>
+
+      <section
+        className="results-dynamics"
+        aria-labelledby="results-dynamics-heading"
+      >
+        <header className="results-dynamics-heading">
+          <div className="results-analytics-heading">
+            <p className="eyebrow">От раунда к раунду</p>
+            <h2 id="results-dynamics-heading">Как менялись очки</h2>
+            <p>
+              Накопленные очки из банка после каждого сыгранного раунда.
+              Изменения счёта ведущим в эту динамику не входят.
+            </p>
+          </div>
+          {analytics.teams.length > 1 && (
+            <label className="results-question-filter">
+              <span>Показать команду</span>
+              <select
+                aria-label="Команда в динамике"
+                value={teamFilter}
+                onChange={(event) => setSelectedTeam(event.target.value)}
+              >
+                <option value="all">Все команды</option>
+                {analytics.teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </header>
+        {analytics.rounds.length > 0 ? (
+          <div
+            className="results-dynamics-scroll"
+            role="region"
+            aria-label="Таблица динамики очков, можно прокрутить по горизонтали"
+            tabIndex={0}
+          >
+            <table className="results-dynamics-table">
+              <caption>Накопленные очки из банка по раундам</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Раунд</th>
+                  {visibleTeams.map((team) => (
+                    <th scope="col" key={team.id}>
+                      <span
+                        className="results-team-color"
+                        style={{ backgroundColor: team.color }}
+                        aria-hidden="true"
+                      />
+                      {team.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.rounds.map((round, index) => (
+                  <tr key={`${round.questionId}-${index}`}>
+                    <th scope="row">
+                      <strong>Раунд {round.questionIndex + 1}</strong>
+                      <small>
+                        {!round.completed
+                          ? "Не завершён"
+                          : round.awardKnown
+                            ? "Завершён"
+                            : "Нет полной записи"}
+                      </small>
+                    </th>
+                    {visibleTeams.map((team) => {
+                      const value = round.cumulativeBanks[team.id];
+                      return (
+                        <td key={team.id}>
+                          {value === null ? (
+                            <span className="results-dynamics-unknown">
+                              Нет данных
+                            </span>
+                          ) : (
+                            <div className="results-dynamics-value">
+                              <strong>{number.format(value)}</strong>
+                              <span
+                                className="results-dynamics-track"
+                                aria-hidden="true"
+                              >
+                                <span
+                                  style={{
+                                    width: `${(value / maximum) * 100}%`,
+                                    backgroundColor: team.color,
+                                  }}
+                                />
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="results-no-dynamics">
+            Игра завершилась до первого раунда. Динамика появится после
+            сыгранных вопросов.
+          </p>
+        )}
+        {!analytics.completeHistory && analytics.rounds.length > 0 && (
+          <p className="results-analytics-explanation">
+            «Нет данных» означает, что часть истории не сохранилась.
+            Подтверждённые очки из следующих раундов включены в цифры команд
+            выше, но накопленный итог восстановить нельзя.
+          </p>
+        )}
+      </section>
+    </>
+  );
 }
 
 export default function ResultsPage() {
@@ -365,6 +579,8 @@ export default function ResultsPage() {
             </span>
           </div>
         </section>
+
+        <ResultsAnalytics report={report} />
 
         <section
           className="results-questions"

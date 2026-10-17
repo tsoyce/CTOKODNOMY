@@ -491,6 +491,7 @@ test("organizer keeps a local light theme, navigates on a phone and safely contr
     if (await projector.getAttribute("aria-pressed") !== "true") await projector.click();
     await expect(board.locator(".board-page")).toHaveAttribute("data-theme", "light");
     await page.goto(`/host/${game.id}`);
+    await page.locator("details.host-round-controls > summary").click();
     const shortcuts = page.getByRole("checkbox", { name: "Горячие клавиши", exact: true });
     await expect(shortcuts).not.toBeChecked();
     await page.getByRole("button", { name: "Начать игру", exact: true }).click();
@@ -1602,6 +1603,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
     await expect(
       member.getByRole("button", { name: "Предложить ответ" }),
     ).toBeEnabled();
+    await page.getByRole("button", { name: "Ход и банк", exact: true }).click();
     await page
       .locator(".host-team-actions")
       .filter({ hasText: "Исследователи" })
@@ -1824,4 +1826,314 @@ test("organizer installs and brands the event; independent phones collaborate wh
   } finally {
     await Promise.all(contexts.map((context) => context.close()));
   }
+});
+
+// Every mutation below uses the real API and a fresh revision. The UI checks
+// therefore cover live updates rather than a static screenshot of fixtures.
+async function hostDecision(page: Page, id: string, command: HostCommand): Promise<HostGame> {
+  const current = await page.request.get(`/api/games/${id}/host`);
+  expect(current.ok()).toBe(true);
+  const state = await current.json() as HostGame;
+  const response = await page.request.post(`/api/games/${id}/commands`, {
+    data: { command, revision: state.revision, requestId: randomUUID() },
+  });
+  expect(response.ok()).toBe(true);
+  return response.json() as Promise<HostGame>;
+}
+
+async function createFixtureGame(page: Page, questions: Question[], title: string): Promise<HostGame> {
+  expect((await page.request.post("/api/questions/import", {
+    data: { format: "ctokodnomy-questions-v1", questions },
+  })).ok()).toBe(true);
+  const response = await page.request.post("/api/games", { data: {
+    title, questionIds: questions.map((question) => question.id),
+    teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
+  } });
+  expect(response.ok()).toBe(true);
+  return response.json() as Promise<HostGame>;
+}
+
+function sixAnswerFixture(): Question {
+  return {
+    ...packFixture("Что помогает команде найти ответ?", "Проверка пульта"),
+    answers: ["Обсуждение", "Опыт", "Дружба", "Внимание", "Юмор", "Удача"].map((text, index) => ({
+      id: randomUUID(), text, points: 6 - index, aliases: [],
+    })),
+    respondentCount: 21,
+  };
+}
+
+async function expectFullBoundsAbove(locator: Locator, bottom: number, height: number) {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.y).toBeGreaterThanOrEqual(-1);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(Math.min(bottom, height) + 1);
+}
+
+test("the host sees six complete answers and floating actions together, with safe pause, undo and phone focus", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await seedOrganizer(page);
+  const question = sixAnswerFixture();
+  const game = await createFixtureGame(page, [question], "Пульт без лишнего скролла");
+  await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`/host/${game.id}`);
+  const dock = page.getByRole("region", { name: "Быстрые действия ведущего", exact: true });
+  const strike = dock.getByRole("button", { name: "Отметить ошибку", exact: true });
+  const rows = page.locator(".host-answer");
+  await expect(rows).toHaveCount(6);
+  await expect(strike).toBeEnabled();
+  async function desktopGeometry(width: number, height: number) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect(dock).toBeInViewport();
+    const island = (await dock.boundingBox())!;
+    expect(island.y + island.height).toBeLessThanOrEqual(height + 1);
+    for (const row of await rows.all()) await expectFullBoundsAbove(row, island.y, height);
+    await expectFullBoundsAbove(strike, height, height);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  }
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1366, height: 768 }]) {
+    await desktopGeometry(viewport.width, viewport.height);
+  }
+  await rows.first().getByRole("button", { name: "Открыть", exact: true }).click();
+  await expect(rows.first().getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
+  await strike.click();
+  await expect(dock).toContainText("Решение сохранено");
+  expect(((await (await page.request.get(`/api/games/${game.id}/host`)).json()) as HostGame).strikes).toBe(1);
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1366, height: 768 }]) {
+    await desktopGeometry(viewport.width, viewport.height);
+  }
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.screenshot({ path: "test-results/host-floating-dock-1280x720.png" });
+  await dock.getByRole("button", { name: "Пауза", exact: true }).click();
+  await expect(dock.getByRole("button", { name: "Продолжить игру", exact: true })).toBeEnabled();
+  await expect(strike).toBeDisabled();
+  for (const reveal of await rows.getByRole("button", { name: "Открыть", exact: true }).all()) await expect(reveal).toBeDisabled();
+  await dock.getByRole("button", { name: "Продолжить игру", exact: true }).click();
+  await dock.getByRole("button", { name: "Отменить последнее", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Подтвердите решение", exact: true });
+  await expect(confirmation).toBeVisible();
+  const beforeCancel = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+  await confirmation.getByRole("button", { name: "Отмена", exact: true }).click();
+  expect(((await (await page.request.get(`/api/games/${game.id}/host`)).json()) as HostGame).revision).toBe(beforeCancel.revision);
+  await dock.getByRole("button", { name: "Отменить последнее", exact: true }).click();
+  await confirmation.getByRole("button", { name: "Подтвердить", exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+  // Undoing resume restores pause; the floating action must immediately agree.
+  await expect(dock.getByRole("button", { name: "Продолжить игру", exact: true })).toBeEnabled();
+  await dock.getByRole("button", { name: "Продолжить игру", exact: true }).click();
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    const lastReveal = rows.last().getByRole("button", { name: "Открыть", exact: true });
+    await lastReveal.focus();
+    await expect(lastReveal).toBeFocused();
+    await lastReveal.click({ trial: true });
+    const island = (await dock.boundingBox())!;
+    await expectFullBoundsAbove(lastReveal, island.y, 844);
+    for (const button of await dock.getByRole("button").all()) {
+      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    expect((await lastReveal.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await page.screenshot({ path: `test-results/host-floating-dock-mobile-${width}.png` });
+  }
+  await hostDecision(page, game.id, { type: "strike" });
+  await hostDecision(page, game.id, { type: "strike" });
+  await expect(dock.getByRole("button", { name: "Перехват не удался", exact: true })).toBeEnabled();
+  await expect(dock.getByRole("button", { name: "Отметить ошибку", exact: true })).toHaveCount(0);
+  await dock.getByRole("button", { name: "Ход и банк", exact: true }).click();
+  const teamActions = page.getByRole("region", { name: "Ход и банк", exact: true });
+  for (const transfer of await teamActions.getByRole("button", { name: "Передать ход", exact: true }).all()) await expect(transfer).toBeDisabled();
+  await teamActions.getByRole("button", { name: "Закрыть действия с командами", exact: true }).click();
+  expect(pageErrors).toEqual([]);
+});
+
+test("published analytics distinguish banks from corrections and keep cloud percentages stable under filters", async ({ browser, page, baseURL }) => {
+  const pageErrors: string[] = [];
+  await seedOrganizer(page);
+  const privateText = "Приватный исходник аналитики";
+  const longPhrase = "Очень длинная формулировка ответа о дружеском обсуждении и совместном поиске неожиданного решения";
+  const first: Question = {
+    ...packFixture("Что помогает решать задачи вместе?", "Аналитика"),
+    answers: [20, 10, 5, 3, 1, 1, 1, 0].map((points, index) => ({
+      id: randomUUID(), text: index === 0 ? longPhrase : index === 6 ? "Редкая идея" : index === 7 ? "Нулевой вариант" : `Ответ аналитики ${index + 1}`,
+      points, aliases: [], ...(index === 0 ? { originals: [privateText] } : {}),
+    })), respondentCount: 41,
+  };
+  const second = { ...packFixture("Что делает встречу приятной?"), answers: [{ id: randomUUID(), text: "Общение", points: 10, aliases: [] }] };
+  const future = { ...packFixture("Закрытый будущий вопрос"), answers: [{ id: randomUUID(), text: "Секрет будущего раунда", points: 1, aliases: [] }] };
+  const game = await createFixtureGame(page, [first, second, future], "Банк и итоговый счёт");
+  await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
+  for (const answer of first.answers.slice(0, 6)) await hostDecision(page, game.id, { type: "reveal", answerId: answer.id });
+  await hostDecision(page, game.id, { type: "next", teamId: game.teams[1]!.id });
+  await hostDecision(page, game.id, { type: "reveal", answerId: second.answers[0]!.id });
+  await hostDecision(page, game.id, { type: "adjust", teamId: game.teams[0]!.id, delta: 7, reason: "Учебная корректировка" });
+  const finished = await hostDecision(page, game.id, { type: "finish" });
+  expect(finished.teams.map((team) => team.score)).toEqual([47, 10]);
+  expect((await page.request.post(`/api/games/${game.id}/results/publication`, {
+    data: { published: true, revision: finished.revision },
+  })).ok()).toBe(true);
+  const guest = await browser.newContext({ baseURL, viewport: { width: 1280, height: 900 } });
+  try {
+    const results = await guest.newPage();
+    results.on("pageerror", (error) => pageErrors.push(error.message));
+    await results.goto(`/results/${game.id}`);
+    const report = await (await guest.request.get(`/api/games/${game.id}/results`)).json() as PublicGameResults;
+    expect(report.rounds).toHaveLength(2);
+    expect(report.totalRounds).toBe(3);
+    for (const hidden of [privateText, first.notes, future.prompt, future.answers[0]!.text]) {
+      expect(JSON.stringify(report)).not.toContain(hidden);
+      await expect(results.locator("body")).not.toContainText(hidden);
+    }
+    const teams = results.getByRole("region", { name: "Команды в цифрах", exact: true });
+    await expect(teams).toBeVisible();
+    const firstTeam = teams.locator(`.results-team-analytics[data-team-id="${game.teams[0]!.id}"]`);
+    await expect(firstTeam).toContainText("47");
+    await expect(firstTeam).toContainText("40");
+    await expect(firstTeam).toContainText("+7");
+    const dynamics = results.getByRole("region", { name: "Как менялись очки", exact: true });
+    await expect(dynamics).toBeVisible();
+    const table = dynamics.getByRole("table", { name: "Накопленные очки из банка по раундам", exact: true });
+    await expect(table.getByRole("row").filter({ hasText: "Раунд 1" })).toContainText("40");
+    await expect(table.getByRole("row").filter({ hasText: "Раунд 2" })).toContainText("10");
+    const firstStats = results.locator(".round-statistics").first();
+    await firstStats.getByRole("button", { name: "Облако ответов", exact: true }).click();
+    const cloud = firstStats.getByRole("list", { name: "Облако всех ответов опроса", exact: true });
+    await expect(cloud.getByRole("listitem")).toHaveCount(8);
+    const tag = firstStats.getByRole("button", { name: `Подробнее об ответе: ${longPhrase}`, exact: true });
+    await tag.click();
+    const detail = firstStats.getByRole("region", { name: "Подробности ответа", exact: true });
+    await expect(detail).toContainText("48,8%");
+    await expect(detail).toContainText("Вес: 20");
+    await detail.getByRole("button", { name: "Закрыть подробности", exact: true }).click();
+    await expect(detail).toHaveCount(0);
+    await firstStats.getByLabel("Поиск по ответам", { exact: true }).fill("дружеском");
+    await expect(cloud.getByRole("listitem")).toHaveCount(1);
+    await tag.click();
+    await expect(detail).toContainText("48,8%");
+    await firstStats.getByLabel("Поиск по ответам", { exact: true }).clear();
+    const filter = firstStats.getByLabel("Фильтр ответов", { exact: true });
+    await filter.selectOption("outside");
+    await expect(cloud.getByRole("listitem")).toHaveCount(2);
+    await firstStats.getByRole("button", { name: "Подробнее об ответе: Нулевой вариант", exact: true }).click();
+    await expect(detail).toContainText("Вес: 0");
+    await expect(detail).toContainText("Доля: 0%");
+    await filter.selectOption("board");
+    await expect(cloud.getByRole("listitem")).toHaveCount(6);
+    await filter.selectOption("opened");
+    await expect(cloud.getByRole("listitem")).toHaveCount(6);
+    await filter.selectOption("all");
+    await expect(cloud.getByRole("listitem")).toHaveCount(8);
+    await results.screenshot({ path: "test-results/results-analytics-cloud-desktop.png", fullPage: true });
+    for (const width of [320, 390]) {
+      await results.setViewportSize({ width, height: 844 });
+      expect(await results.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+      await tag.click();
+      expect((await tag.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      await expect(detail).toContainText(longPhrase);
+      await detail.getByRole("button", { name: "Закрыть подробности", exact: true }).click();
+      await results.screenshot({ path: `test-results/results-analytics-cloud-mobile-${width}.png`, fullPage: true });
+    }
+    expect(pageErrors).toEqual([]);
+  } finally { await guest.close(); }
+});
+
+test("independent phones group private team ideas, search authors and send only a captain's explicit answer", async ({ browser, page, baseURL }) => {
+  const contexts: BrowserContext[] = [];
+  const pageErrors: string[] = [];
+  await seedOrganizer(page);
+  const game = await createFixtureGame(page, [sixAnswerFixture()], "Командная мастерская");
+  async function phone(teamIndex: number, name: string) {
+    const context = await browser.newContext({ baseURL, viewport: { width: 320, height: 844 }, isMobile: true, hasTouch: true });
+    contexts.push(context);
+    expect((await context.request.post("/api/join", { data: { code: game.teams[teamIndex]!.joinCode, name } })).ok()).toBe(true);
+    const screen = await context.newPage();
+    screen.on("pageerror", (error) => pageErrors.push(error.message));
+    await screen.goto(`/team/${game.id}`);
+    await expect(screen.getByText("На связи", { exact: true })).toBeVisible();
+    return screen;
+  }
+  try {
+    const captain = await phone(0, "Мария капитан");
+    const member = await phone(0, "Алексей игрок");
+    const rival = await phone(1, "Ольга соперник");
+    const officialRequests: string[] = [];
+    captain.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/submit")) officialRequests.push(request.url());
+    });
+    await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
+    async function suggest(screen: Page, text: string) {
+      const input = screen.getByLabel("Ваше предложение", { exact: true });
+      await input.fill(text);
+      const sent = screen.waitForResponse((response) => response.url().endsWith("/suggest") && response.request().method() === "POST");
+      await screen.getByRole("button", { name: "Предложить ответ", exact: true }).click();
+      expect((await sent).ok()).toBe(true);
+      await expect(input).toHaveValue("");
+    }
+    await suggest(captain, "Обсудить вместе");
+    await suggest(member, "Обсудить вместе");
+    await suggest(member, "Обсудить вместе");
+    await suggest(member, "Неожиданная новая идея");
+    const ideas = captain.locator(".team-ideas .suggestion-list > li");
+    await expect(ideas).toHaveCount(2);
+    await expect(ideas.first()).toContainText("Неожиданная новая идея");
+    const duplicate = ideas.filter({ hasText: "Обсудить вместе" });
+    await expect(duplicate).toContainText("Мария капитан");
+    await expect(duplicate).toContainText("Алексей игрок");
+    await expect(duplicate.locator("summary")).toContainText("3");
+    await duplicate.locator("summary").click();
+    await expect(duplicate.locator("details")).toHaveJSProperty("open", true);
+    await captain.getByLabel("Порядок идей", { exact: true }).selectOption({ label: "Сначала частые" });
+    await expect(ideas.first()).toContainText("Обсудить вместе");
+    const search = captain.getByLabel("Поиск идей команды", { exact: true });
+    await search.fill("Мария");
+    await expect(ideas).toHaveCount(1);
+    await expect(ideas).toContainText("Обсудить вместе");
+    await search.fill("новая идея");
+    await expect(ideas).toHaveCount(1);
+    await expect(ideas).toContainText("Неожиданная новая идея");
+    await captain.getByRole("button", { name: "Очистить поиск идей", exact: true }).click();
+    await expect(ideas).toHaveCount(2);
+    await duplicate.getByRole("button", { name: "Выбрать", exact: true }).click();
+    const answer = captain.getByLabel("Итоговый ответ", { exact: true });
+    await expect(answer).toHaveValue("Обсудить вместе");
+    expect(officialRequests).toEqual([]);
+    const current = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    expect(current.pendingAnswer).toBeNull();
+    const rivalState = await (await rival.request.get(`/api/games/${game.id}/team`)).json();
+    expect(rivalState.suggestions).toEqual([]);
+    for (const hidden of ["Обсудить вместе", "Неожиданная новая идея", "Мария капитан", "Алексей игрок"]) {
+      expect(JSON.stringify(rivalState)).not.toContain(hidden);
+      await expect(rival.locator("body")).not.toContainText(hidden);
+    }
+    await expect(member.getByRole("button", { name: "Выбрать", exact: true })).toHaveCount(0);
+    await expect(member.getByLabel("Итоговый ответ", { exact: true })).toHaveCount(0);
+    const submit = captain.getByRole("button", { name: "Отправить ответ ведущему", exact: true });
+    await hostDecision(page, game.id, { type: "pause" });
+    await expect(submit).toBeDisabled();
+    await expect(captain.getByRole("button", { name: "Предложить ответ", exact: true })).toBeDisabled();
+    await expect(answer).toHaveValue("Обсудить вместе");
+    await hostDecision(page, game.id, { type: "resume" });
+    await expect(submit).toBeEnabled();
+    await captain.screenshot({ path: "test-results/team-ideas-mobile.png", fullPage: true });
+    await hostDecision(page, game.id, { type: "turn", teamId: game.teams[1]!.id });
+    await expect(submit).toBeDisabled();
+    await expect(ideas).toHaveCount(0);
+    await hostDecision(page, game.id, { type: "turn", teamId: game.teams[0]!.id });
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(captain.locator(".pending-team-answer")).toContainText("Обсудить вместе");
+    await expect(member.locator(".pending-team-answer")).toContainText("Обсудить вместе");
+    expect(officialRequests).toHaveLength(1);
+    const pending = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    expect(pending.pendingAnswer?.text).toBe("Обсудить вместе");
+    await expect(rival.locator("body")).not.toContainText("Обсудить вместе");
+    for (const screen of [captain, member, rival]) {
+      expect(await screen.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    }
+    expect(pageErrors).toEqual([]);
+  } finally { await Promise.all(contexts.map((context) => context.close())); }
 });

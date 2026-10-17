@@ -210,7 +210,7 @@ export function RoundStatistics({
             </ul>
             {selectedAnswer && <section className="statistics-answer-detail" aria-label="Подробности ответа">
               <div><strong>{selectedAnswer.text}</strong><span>Вес: {number.format(selectedAnswer.points)} · Доля: {percent.format(selectedAnswer.share)}% всех весов</span>
-                <span>{selectedAnswer.onBoard ? `${boardAnswerCount === 6 ? "ТОП-6 на табло" : "На табло"} · ${selectedAnswer.opened ? "Угадали" : "Не открыли в игре"}` : outsideBoardLabel}</span></div>
+                <span>{selectedAnswer.onBoard ? `${boardAnswerCount === 6 ? "ТОП-6 на табло" : "На табло"} · ${selectedAnswer.opened ? "Угадали" : restored ? "Открытие не сохранилось в истории" : "Не открыли в игре"}` : outsideBoardLabel}</span></div>
               <button type="button" aria-label="Закрыть подробности" onClick={() => setSelectedPosition(null)}><X size={20} aria-hidden="true" /></button>
             </section>}
           </>
