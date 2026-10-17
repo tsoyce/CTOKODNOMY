@@ -368,7 +368,8 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   // A link inside the expanded card must still navigate, rather than toggling it.
   await gameCard.getByRole("link", { name: `Настройки ${game.title}`, exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/admin/games/${game.id}$`));
-  await page.goBack();
+  await page.getByRole("navigation", { name: "Путь к странице", exact: true }).getByRole("link", { name: "Игры", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/games$/);
   await expect(gameCard).toHaveJSProperty("open", false);
   await gameHeader.press("Enter");
   await gameHeader.press("Space");
