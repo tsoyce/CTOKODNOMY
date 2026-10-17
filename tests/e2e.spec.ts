@@ -730,7 +730,13 @@ test("a full survey keeps only its top six on the board and publishes every revi
     expect(await board.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
     await expect(stats.getByRole("button", { name: "Облако ответов", exact: true })).toBeInViewport();
     await expect(board.locator(".team-score").first()).toBeInViewport();
+    const cloudViewport = stats.locator(".statistics-visualization");
+    await cloudViewport.evaluate((element) => { element.scrollTop = 0; });
+    expect(await cloudViewport.evaluate((element) => element.scrollTop)).toBe(0);
+    await expectFullyUnclipped(cloud.getByRole("button").first());
     await board.screenshot({ path: "test-results/survey-cloud-projector.png", fullPage: true });
+    await cloud.getByRole("button").last().focus();
+    await expectFullyUnclipped(cloud.getByRole("button").last());
     for (const width of [320, 390]) {
       await board.setViewportSize({ width, height: 844 });
       expect(await board.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
@@ -1848,6 +1854,7 @@ async function createFixtureGame(page: Page, questions: Question[], title: strin
   const response = await page.request.post("/api/games", { data: {
     title, questionIds: questions.map((question) => question.id),
     teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
+    rules: { multipliers: questions.map(() => 1), stealAddsPoints: true },
   } });
   expect(response.ok()).toBe(true);
   return response.json() as Promise<HostGame>;
@@ -1866,8 +1873,29 @@ function sixAnswerFixture(): Question {
 async function expectFullBoundsAbove(locator: Locator, bottom: number, height: number) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.y).toBeGreaterThanOrEqual(-1);
-  expect(box!.y + box!.height).toBeLessThanOrEqual(Math.min(bottom, height) + 1);
+  const geometry = `Element ${JSON.stringify(box)}, viewport ${JSON.stringify(locator.page().viewportSize())}, lower boundary ${bottom}`;
+  expect(box!.y, geometry).toBeGreaterThanOrEqual(-1);
+  expect(box!.y + box!.height, geometry).toBeLessThanOrEqual(Math.min(bottom, height) + 1);
+}
+
+async function expectFullyUnclipped(locator: Locator) {
+  await expect.poll(() => locator.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      const bounds = parent.getBoundingClientRect();
+      if (/auto|scroll|hidden|clip/.test(style.overflowX)) {
+        left = Math.max(left, bounds.left + parent.clientLeft);
+        right = Math.min(right, bounds.left + parent.clientLeft + parent.clientWidth);
+      }
+      if (/auto|scroll|hidden|clip/.test(style.overflowY)) {
+        top = Math.max(top, bounds.top + parent.clientTop);
+        bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight);
+      }
+    }
+    return box.left >= left - 1 && box.top >= top - 1 && box.right <= right + 1 && box.bottom <= bottom + 1;
+  })).toBe(true);
 }
 
 test("the host sees six complete answers and floating actions together, with safe pause, undo and phone focus", async ({ page }) => {
@@ -1934,6 +1962,7 @@ test("the host sees six complete answers and floating actions together, with saf
     await lastReveal.click({ trial: true });
     const island = (await dock.boundingBox())!;
     await expectFullBoundsAbove(lastReveal, island.y, 844);
+    await expectFullBoundsAbove(rows.last(), island.y, 844);
     for (const button of await dock.getByRole("button").all()) {
       expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     }
@@ -2028,6 +2057,8 @@ test("published analytics distinguish banks from corrections and keep cloud perc
     await filter.selectOption("all");
     await expect(cloud.getByRole("listitem")).toHaveCount(8);
     await results.screenshot({ path: "test-results/results-analytics-cloud-desktop.png", fullPage: true });
+    await results.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await results.screenshot({ path: "test-results/results-analytics-desktop-viewport.png" });
     for (const width of [320, 390]) {
       await results.setViewportSize({ width, height: 844 });
       expect(await results.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
@@ -2035,6 +2066,13 @@ test("published analytics distinguish banks from corrections and keep cloud perc
       expect((await tag.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       await expect(detail).toContainText(longPhrase);
       await detail.getByRole("button", { name: "Закрыть подробности", exact: true }).click();
+      await cloud.evaluate((element) => { element.scrollTop = 0; });
+      await tag.focus();
+      await expectFullyUnclipped(tag);
+      await results.screenshot({ path: `test-results/results-answer-cloud-mobile-${width}-first.png` });
+      await cloud.getByRole("button").last().focus();
+      await expectFullyUnclipped(cloud.getByRole("button").last());
+      await results.screenshot({ path: `test-results/results-answer-cloud-mobile-${width}-last.png` });
       await results.screenshot({ path: `test-results/results-analytics-cloud-mobile-${width}.png`, fullPage: true });
     }
     expect(pageErrors).toEqual([]);
@@ -2074,6 +2112,7 @@ test("independent phones group private team ideas, search authors and send only 
       await expect(input).toHaveValue("");
     }
     await suggest(captain, "Обсудить вместе");
+    await expect(member.locator(".team-ideas .suggestion-list")).toContainText("Обсудить вместе");
     await suggest(member, "Обсудить вместе");
     await suggest(member, "Обсудить вместе");
     await suggest(member, "Неожиданная новая идея");
@@ -2086,7 +2125,7 @@ test("independent phones group private team ideas, search authors and send only 
     await expect(duplicate.locator("summary")).toContainText("3");
     await duplicate.locator("summary").click();
     await expect(duplicate.locator("details")).toHaveJSProperty("open", true);
-    await captain.getByLabel("Порядок идей", { exact: true }).selectOption({ label: "Сначала частые" });
+    await captain.getByRole("combobox", { name: /^Порядок идей/ }).selectOption({ label: "Сначала частые" });
     await expect(ideas.first()).toContainText("Обсудить вместе");
     const search = captain.getByLabel("Поиск идей команды", { exact: true });
     await search.fill("Мария");
@@ -2130,6 +2169,10 @@ test("independent phones group private team ideas, search authors and send only 
     expect(officialRequests).toHaveLength(1);
     const pending = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
     expect(pending.pendingAnswer?.text).toBe("Обсудить вместе");
+    const finalRivalState = await (await rival.request.get(`/api/games/${game.id}/team`)).json();
+    expect(finalRivalState.pendingAnswer).toBeNull();
+    expect(finalRivalState.suggestions).toEqual([]);
+    expect(JSON.stringify(finalRivalState)).not.toContain("Обсудить вместе");
     await expect(rival.locator("body")).not.toContainText("Обсудить вместе");
     for (const screen of [captain, member, rival]) {
       expect(await screen.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);

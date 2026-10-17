@@ -489,7 +489,12 @@ export function HostPage() {
             <div className="host-bank"><span>Банк <small>×{multiplier}</small></span><strong>{game.bank}</strong></div>
             <div className="host-mistakes"><span>Ошибки</span><Strikes count={game.strikes} /></div>
           </div>
-          <p className="host-next-step" role="status">{nextStep}</p>
+          {game.pendingAnswer && !game.paused ? (
+            <p className="host-next-step host-pending" role="status">
+              <span>Ответ капитана · {game.pendingAnswer.authorName}: </span>
+              <strong>{game.pendingAnswer.text}</strong>
+            </p>
+          ) : <p className="host-next-step" role="status">{nextStep}</p>}
         </section>
         {(game.phase === "lobby" || game.phase === "round-result") && (
           <section className="card host-start-panel">
@@ -603,12 +608,6 @@ export function HostPage() {
                 )}
               </div>
               <h2>{question?.prompt ?? "Нет вопроса"}</h2>
-              {game.pendingAnswer && (
-                <div className="host-pending host-answer-decision has-pending">
-                  <span>Ответ капитана · {game.teams.find((team) => team.id === game.pendingAnswer!.teamId)?.name} · {game.pendingAnswer.authorName}</span>
-                  <strong>{game.pendingAnswer.text}</strong>
-                </div>
-              )}
               {question && (
                 <div className="host-answer-list">
                   {currentBoardAnswers.map((answer, index) => {

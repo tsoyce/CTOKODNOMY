@@ -181,12 +181,11 @@ html:has(.host-page) {
 .host-turn-bank-panel .host-team-actions .button { min-height: 44px; padding: 9px; font-size: .76rem; }
 @media (min-width: 1050px) {
   .host-page .host-answer-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .host-page .host-answer { grid-template-columns: 18px minmax(0, 1fr) 29px; min-height: 76px; padding: 8px 10px; gap: 4px 8px; }
-  .host-page .host-answer .answer-number { grid-row: 1; }
-  .host-page .host-answer > div { grid-column: 2; grid-row: 1 / span 2; }
+  .host-page .host-answer { grid-template-columns: 18px minmax(0, 1fr) 24px auto; min-height: 66px; padding: 8px 10px; gap: 8px; }
+  .host-page .host-answer .answer-number { grid-column: 1; grid-row: 1; }
+  .host-page .host-answer > div { grid-column: 2; grid-row: 1; padding-right: 0; }
   .host-page .host-answer .answer-points { grid-column: 3; grid-row: 1; text-align: right; }
-  .host-page .host-answer .button { grid-column: 3; grid-row: 2; min-width: 64px; margin-left: -24px; padding: 8px; font-size: .7rem; }
-  .host-page .host-answer > div { padding-right: 22px; }
+  .host-page .host-answer .button { grid-column: 4; grid-row: 1; min-width: 64px; margin: 0; padding: 8px; font-size: .7rem; }
   .host-page .host-answer-aliases > summary { min-height: 30px; font-size: .62rem; }
 }
 @media (max-width: 1049px) {
@@ -270,4 +269,23 @@ html:has(.host-page) {
   .host-container > .team-scores { margin-block: 9px; }
   .host-page .team-scores.compact .team-score { padding-block: 8px; }
   .host-page .team-scores.compact .team-score-name > small { width: auto; padding-left: 0; }
+}
+
+.host-cockpit .host-pending {
+  display: block;
+  margin: 0;
+  padding: 5px 16px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  background: var(--surface-soft);
+  overflow-wrap: anywhere;
+  font-size: .75rem;
+  line-height: 1.4;
+}
+.host-cockpit .host-pending > span { color: var(--muted); }
+.host-cockpit .host-pending > strong { font-size: inherit; }
+@media (max-width: 650px) {
+  .host-cockpit .host-pending { padding: 7px 12px; font-size: .7rem; }
 }
