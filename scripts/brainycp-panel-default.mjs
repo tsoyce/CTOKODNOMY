@@ -72,14 +72,13 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    show('/etc/brainy/globals.php',/VHOST|ACCESS|SERVER_CONTROL|NODE|USERS_PATH/i,0,65);
-    show('/usr/local/brainycp/tpl/basic/js/apacserver.js',/nodejs|NodeJS|node_js|nodejs_port/i,3,160);
-    for (const root of ['/var/brainycp/data','/var/brainycp/data/server_control','/var/brainycp/data/server_control/tsoy','/var/brainycp/data/users/tsoy','/var/brainycp/data/vhosts','/var/brainycp/data/vhosts/tsoy']) {
-      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
+    for(const file of ['/var/brainycp/data/vhosts/utmns.ru.conf','/var/brainycp/data/vhosts/!!default.conf','/etc/brainy/conf/streams/webserver_webserver_convert_domain_179280090957714'])show(file,/./,0,135);
+    for (const root of ['/var/brainycp/data/nodejs','/var/brainycp/data/setting_virthost','/var/brainycp/data/webserver_config','/var/brainycp/data/server_control/vhosts','/usr/local/brainycp/scripts','/usr/local/brainycp/tpl/basic/js']) {
+      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).filter(x=>!root.endsWith('/js') || /node|domain|site|apac|server/i.test(x)).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
-    let count=0,printed=0; const walk=(root,depth)=>{if(depth>3 || count>2500 || printed>80)return;let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
-      for(const entry of entries){if(++count>2500)break;const file=path.join(root,entry.name);if(entry.isDirectory())walk(file,depth+1);else if(/utmns|nodejs|nginx|tsoy|\.ini$/i.test(entry.name)){report(`NATIVE_RECORD ${file}`);printed++;}}
-    };walk('/var/brainycp/data/server_control',0);walk('/var/brainycp/data/vhosts',0);walk('/var/brainycp/data/users/tsoy',0);
+    let count=0;const walk=(root,depth)=>{if(depth>3 || count>800)return;let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(++count>800)break;const file=path.join(root,entry.name);if(entry.isDirectory())walk(file,depth+1);else if(/utmns|3003|nginx|tsoy/i.test(entry.name))report(`NATIVE_HOOK ${file}`);}
+    };walk('/var/brainycp/data/nodejs',0);walk('/var/brainycp/data/setting_virthost',0);walk('/var/brainycp/data/webserver_config',0);
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
