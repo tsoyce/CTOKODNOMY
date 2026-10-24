@@ -56,7 +56,7 @@ describe("focused read-only BrainyCP routing diagnostics", () => {
     const result = f.run();
     expect(result.status).toBe(0); expect(result.stdout).toContain("curl=60 status=000 tls=62");
     expect(result.stdout).toContain("TLS validation failed; unsafe GET was not retried");
-    expect(readFileSync(f.curlLog, "utf8").split("\n").filter(value => value === "--url")).toHaveLength(10);
+    expect(readFileSync(f.curlLog, "utf8").split("\n").filter(value => value === "--url")).toHaveLength(12);
   });
 
   test("stops when a diagnostic process is killed", () => {

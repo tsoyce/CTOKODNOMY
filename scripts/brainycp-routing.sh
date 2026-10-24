@@ -46,7 +46,7 @@ function safeValue(value) {
     .replace(/\/[^\s;"']*/g, (item) => sensitive.test(item) ? '/[redacted-path]' : item);
 }
 function directive(statement) {
-  const match = statement.trim().match(/^(listen|server_name|return|rewrite|proxy_pass|include|ServerName|ProxyPass|ProxyPassMatch|proxy_set_header)\s+([\s\S]+)$/i);
+  const match = statement.trim().match(/^(listen|server_name|return|rewrite|proxy_pass|include|root|alias|index|error_page|try_files|ssl_certificate|ServerName|ProxyPass|ProxyPassMatch|proxy_set_header)\s+([\s\S]+)$/i);
   if (!match) return null;
   if (/^proxy_set_header$/i.test(match[1]) && !/^Host\s+/i.test(match[2])) return null;
   if (/^return$/i.test(match[1]) && !/^\d{3}(?:\s|$)/.test(match[2])) return 'return [non-status value omitted]';
@@ -107,11 +107,15 @@ out('READ-ONLY ROUTING DIAGNOSTICS'); out(`UTC: ${new Date().toISOString()}`);
 const dedicated = `/etc/nginx/conf.d/${appDomain}-game.conf`;
 let dedicatedHash;
 section('Dedicated game proxy (routing directives only)', 2400, () => { dedicatedHash = describe(dedicated, 24); });
-section('Selected panel site files', 2000, () => {
+section('Panel default page configuration', 2800, () => {
+  describe('/etc/nginx/sites-available/!!default.conf', 28);
+  describe('/etc/nginx/sites-available/!!ssl.default.conf', 28);
+});
+section('Selected panel site files', 1600, () => {
   for (const domain of domains) for (const file of [`/etc/nginx/sites-available/${domain}.conf`, `/etc/httpd/vhost.d/${domain}.conf`]) describe(file, 10);
 });
 let loaded = [];
-section('Loaded Nginx server blocks, in configuration order', 4800, () => {
+section('Loaded Nginx server blocks, in configuration order', 3200, () => {
   const result = run('nginx', ['-T'], 16 * 1024 * 1024);
   out(`nginx -T exit=${result.status ?? 'unavailable'}`);
   if (result.status !== 0) return;
@@ -127,7 +131,7 @@ section('Loaded Nginx server blocks, in configuration order', 4800, () => {
   out('Other server listen/name inventory (first block on an address is an implicit default if no explicit default):');
   for (const block of loaded.filter(block => !relevant.includes(block)).slice(0, 45)) out(`${safeValue(block.file)}:${block.line} ${block.directives.filter(value => /^(listen|server_name) /.test(value)).join(' | ')}`);
 });
-section('Recent private deployment proxy backups', 3200, () => {
+section('Recent private deployment proxy backups', 2000, () => {
   const root = `/var/lib/ctokodnomy-deploy/${appUser}-${appPort}/backups`;
   if (!fs.existsSync(root)) { out('No private backup directory.'); return; }
   const entries = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory() && /^\d{8}T\d{6}Z-[a-f0-9]{40}$/.test(entry.name)).map(entry => entry.name).sort().slice(-5);
@@ -160,9 +164,9 @@ section('DNS and HTTP GET probes (no redirects followed, strict TLS, discarded b
   candidates.push(...[...(interfaces.stdout ?? '').matchAll(/\binet\s+((?:\d{1,3}\.){3}\d{1,3})\//g)].map(match => match[1]));
   const address = candidates.find(value => value !== '0.0.0.0' && !value.startsWith('127.'));
   out(`Local IPv4 destination: ${address ?? '(unavailable)'}`);
-  for (const domain of [...domains, 'ctok-routing-probe.invalid']) for (const scheme of ['http', 'https']) {
+  for (const domain of [...domains, 'ctok-routing-probe.invalid', 'default']) for (const scheme of ['http', 'https']) {
     const port = scheme === 'https' ? '443' : '80'; const url = `${scheme}://${domain}/`;
-    for (const local of domain.endsWith('.invalid') ? [true] : [false, true]) {
+    for (const local of domain.endsWith('.invalid') || domain === 'default' ? [true] : [false, true]) {
       if (local && !address) continue;
       const args = ['--disable', '--noproxy', '*', '--proto', '=http,https', '--request', 'GET', '--connect-timeout', '4', '--max-time', '8', '--max-filesize', '1048576', '--silent', '--output', '/dev/null', '--dump-header', '-', '--write-out', '\nCTOK_ROUTE\t%{http_code}\t%{ssl_verify_result}\t%{remote_ip}'];
       if (local) args.push('--resolve', `${domain}:${port}:${address}`); args.push('--url', url);
