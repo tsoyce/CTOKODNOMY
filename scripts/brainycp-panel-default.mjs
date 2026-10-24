@@ -72,11 +72,19 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    for(const file of ['/usr/local/brainycp/scripts/rebuild_virt_host.php','/usr/local/brainycp/scripts/init.php','/var/brainycp/data/nodejs/main','/var/brainycp/data/webserver_config/user_includes/tsoy/utmns.ru.nginx','/var/brainycp/data/webserver_config/user_includes/tsoy/utmns.ru.nginx.ssl','/var/brainycp/data/setting_virthost/default_params'])show(file,/./,0,140);
-    for (const root of ['/usr/local/brainycp/tpl/basic/webserver','/usr/local/brainycp/api','/usr/local/brainycp/api/modules','/var/brainycp/data/setting_virthost']) {
-      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,80).join(', ')}`); } catch { report(`Unavailable ${root}`); }
-    }
-    for(const file of ['/etc/nginx/conf.d/xyux.ru-redirect.conf','/var/brainycp/data/vhosts/xyux.ru.conf']) {try{report(`NATIVE_HASH ${file} ${sha(io.readFileSync(file))}`);}catch{report(`Unavailable ${file}`);}}
+    for(const file of ['/etc/crontab','/var/spool/cron/crontabs/root','/var/spool/cron/root']) show(file,/brainy|rebuild_virt/i,0,35);
+    report('NATIVE_TOOLS '+spawn('bash',['-c','for utility in bwrap unshare setpriv mount timeout; do command -v "$utility" || true; done'],{encoding:'utf8',timeout:5000}).stdout);
+    const php='/usr/local/brainycp/src/compiled/php5/bin/php';
+    report('NATIVE_PHP '+spawn(php,['-r','echo PHP_VERSION," ioncube=",extension_loaded("ionCube Loader") ? "yes" : "no","\\n";'],{encoding:'utf8',timeout:5000}).stdout);
+    let count=0,printed=0;
+    const walk=(root,depth)=>{if(depth>4 || count>5000 || printed>140)return;let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(++count>5000 || printed>140)break;const file=path.join(root,entry.name);if(entry.isDirectory() && !/^(tpl_c|cache|logs|img|images|fonts|src|lib)$/.test(entry.name))walk(file,depth+1);
+        else if(entry.isFile() && /\.(sh|js|tpl|php)$/.test(entry.name)) {let data;try{if(io.statSync(file).size>1024*1024)continue;data=io.readFileSync(file,'utf8');}catch{continue;}if(data.includes('ionCube Loader'))continue;
+          const lines=data.split('\n'); for(let n=0;n<lines.length;n++)if(/rebuild_virt_host|webserver_convert_domain|nodejs_port_current|nodejs_port_default/.test(lines[n])){report(`NATIVE_CALLER ${file}:${n+1} ${clean(lines[n]).slice(0,800)}`);printed++;}
+        }
+      }
+    };for(const root of ['/usr/local/brainycp/scripts','/usr/local/brainycp/tpl/basic','/etc/cron.d'])walk(root,0);
+    for(const file of ['/var/brainycp/data/vhosts/utmns.ru.conf','/etc/nginx/sites-available/utmns.ru.conf','/etc/nginx/sites-available/ssl.utmns.ru.conf','/etc/httpd/vhost.d/utmns.ru.conf','/var/brainycp/data/webserver_config/user_includes/tsoy/utmns.ru.nginx']){try{report(`NATIVE_HASH ${file} ${sha(io.readFileSync(file))}`);}catch{}}
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
