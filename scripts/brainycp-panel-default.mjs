@@ -72,17 +72,14 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    for(const file of ['/etc/brainy/main.conf','/etc/brainy/globals.php','/usr/local/brainycp/globals.php'])show(file,/path|dir|config|user|data|site|vhost/i,0,75);
-    for (const root of ['/usr/local/brainycp','/usr/local/brainycp/conf','/var/brainycp','/var/lib/brainycp','/etc/brainy/conf/server_control','/etc/brainy/isp']) {
+    show('/etc/brainy/globals.php',/VHOST|ACCESS|SERVER_CONTROL|NODE|USERS_PATH/i,0,65);
+    show('/usr/local/brainycp/tpl/basic/js/apacserver.js',/nodejs|NodeJS|node_js|nodejs_port/i,3,160);
+    for (const root of ['/var/brainycp/data','/var/brainycp/data/server_control','/var/brainycp/data/server_control/tsoy','/var/brainycp/data/users/tsoy','/var/brainycp/data/vhosts','/var/brainycp/data/vhosts/tsoy']) {
       try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
-    let count=0, printed=0;
-    const walk=(root,depth)=>{if(depth>5 || count>8000 || printed>100)return; let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
-      for(const entry of entries){if(++count>8000)break;const file=path.join(root,entry.name);if(entry.isDirectory() && !/^(mod_security|streams|ssl|certs|backup|backup_conf|cache|logs|i18n|src|jail)$/.test(entry.name))walk(file,depth+1);else if(entry.isFile() && /utmns|nodejs|nginx.*access|nginx.*loct|tsoy|user.*conf/i.test(entry.name)){report(`NATIVE_CONFIG_FILE ${file}`);printed++;}}
-    };walk('/etc/brainy',0);
-    for(const root of ['/usr/local/brainycp/tpl/basic/server_control','/usr/local/brainycp/tpl/basic/js']) {
-      try{report(`NATIVE_TEMPLATES ${root}: ${io.readdirSync(root).filter(x=>/site|domain|server|node|web/i.test(x)).slice(0,80).join(', ')}`);}catch{}
-    }
+    let count=0,printed=0; const walk=(root,depth)=>{if(depth>3 || count>2500 || printed>80)return;let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(++count>2500)break;const file=path.join(root,entry.name);if(entry.isDirectory())walk(file,depth+1);else if(/utmns|nodejs|nginx|tsoy|\.ini$/i.test(entry.name)){report(`NATIVE_RECORD ${file}`);printed++;}}
+    };walk('/var/brainycp/data/server_control',0);walk('/var/brainycp/data/vhosts',0);walk('/var/brainycp/data/users/tsoy',0);
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
