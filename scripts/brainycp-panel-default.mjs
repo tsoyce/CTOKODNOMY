@@ -72,21 +72,10 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    show('/etc/nginx/nginx.conf', /^\s*(include|listen|server_name|server\s*\{)/, 0, 35);
-    show(`/etc/nginx/sites-available/${config.domain}.conf`, /./, 0, 100);
-    show(`/etc/nginx/sites-available/ssl.${config.domain}.conf`, /./, 0, 115);
-    show(`/etc/httpd/vhost.d/${config.domain}.conf`, /./, 0, 70);
-    for (const file of ['/usr/local/brainycp/modules/setting_virthost.php','/usr/local/brainycp/modules/webserver_config.php','/usr/local/brainycp/classes/webserver_config.php','/usr/local/brainycp/classes/webserver.php','/usr/local/brainycp/ssh/webserver.php'])
-      show(file, /setting_virthost|nodejs|NodeJS|vhost.?setting|vhost.?include|custom.?vhost|params_nginx|file_put_contents|nginx.*\.tpl|include.*nginx|\.conf.*include/i, 2, 100);
-    for (const root of ['/etc/brainy/conf','/etc/nginx','/usr/local/brainycp/tpl/basic']) {
-      let visited = 0, printed = 0;
-      const walk = (directory, depth) => { if (depth > 3 || visited > 1200 || printed > 65) return;
-        let entries; try { entries = io.readdirSync(directory,{withFileTypes:true}); } catch { return; }
-        for (const entry of entries) { if (++visited > 1200) break; const file = path.join(directory,entry.name);
-          if (entry.isDirectory() && !/^(tpl_c|cache|logs|sessions)$/.test(entry.name)) walk(file,depth+1);
-          else if (entry.isFile() && /nginx|vhost|virthost|nodejs|webserver/i.test(file)) { report(`NATIVE_PATH ${file}`); if (++printed > 65) break; }
-        }
-      }; walk(root,0);
+    for (const file of ['/usr/local/brainycp/tpl/basic/js/setting_virthost.js','/usr/local/brainycp/tpl/basic/js/webserver_config.js','/usr/local/brainycp/tpl/basic/setting_virthost/index.tpl','/usr/local/brainycp/tpl/basic/setting_virthost/get_domain.tpl','/usr/local/brainycp/tpl/basic/webserver_config/webserver_config.tpl'])
+      show(file, /./, 0, 220);
+    for (const root of ['/etc/brainy','/etc/brainy/conf','/etc/brainy/data','/etc/brainy/conf/webserver','/usr/local/brainycp/tpl/basic/webserver_config','/usr/local/brainycp/tpl/basic/setting_virthost']) {
+      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
     return {mode:'native-inspection'};
   }
