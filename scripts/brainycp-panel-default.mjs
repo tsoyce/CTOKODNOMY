@@ -72,15 +72,17 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    show('/etc/brainy/vhosts/vhosts.tpl',/node|Node|patf_|nginx_access|_loct|proxy_pass|web_server|portnginxpanel/i,3,190);
-    show('/usr/local/brainycp/tpl/basic/js/server_control.js',/nodejs|NodeJS|node_js/i,3,130);
-    for (const root of ['/home/tsoy/.brainy','/home/tsoy/data','/home/tsoy/etc','/etc/brainy/conf/properties','/etc/brainy/conf/server']) {
+    for(const file of ['/etc/brainy/main.conf','/etc/brainy/globals.php','/usr/local/brainycp/globals.php'])show(file,/path|dir|config|user|data|site|vhost/i,0,75);
+    for (const root of ['/usr/local/brainycp','/usr/local/brainycp/conf','/var/brainycp','/var/lib/brainycp','/etc/brainy/conf/server_control','/etc/brainy/isp']) {
       try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
-    let count=0;
-    const walk=(root,depth)=>{if(depth>4 || count>600)return; let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
-      for(const entry of entries){if(++count>600)break;const file=path.join(root,entry.name);if(entry.isDirectory())walk(file,depth+1);else if(/utmns|nginx|vhost|nodejs|apache/i.test(entry.name))report(`NATIVE_USER_FILE ${file}`);}
-    };walk('/home/tsoy/.brainy',0);walk('/home/tsoy/data',0);
+    let count=0, printed=0;
+    const walk=(root,depth)=>{if(depth>5 || count>8000 || printed>100)return; let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(++count>8000)break;const file=path.join(root,entry.name);if(entry.isDirectory() && !/^(mod_security|streams|ssl|certs|backup|backup_conf|cache|logs|i18n|src|jail)$/.test(entry.name))walk(file,depth+1);else if(entry.isFile() && /utmns|nodejs|nginx.*access|nginx.*loct|tsoy|user.*conf/i.test(entry.name)){report(`NATIVE_CONFIG_FILE ${file}`);printed++;}}
+    };walk('/etc/brainy',0);
+    for(const root of ['/usr/local/brainycp/tpl/basic/server_control','/usr/local/brainycp/tpl/basic/js']) {
+      try{report(`NATIVE_TEMPLATES ${root}: ${io.readdirSync(root).filter(x=>/site|domain|server|node|web/i.test(x)).slice(0,80).join(', ')}`);}catch{}
+    }
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
