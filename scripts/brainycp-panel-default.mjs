@@ -61,6 +61,35 @@ export function repairDefault(config, mode, dependencies = {}) {
   const fixed = { http: map(HTTP), https: map(HTTPS), panel: map(PANEL), game: map(`/etc/nginx/conf.d/${config.domain}-game.conf`), target: map(TARGET) };
   const guardSource = dependencies.guardSource ?? (typeof CTOK_GUARD_SOURCE !== 'undefined' ? CTOK_GUARD_SOURCE : fs.readFileSync(new URL('./brainycp-guards.sh', import.meta.url), 'utf8'));
   const fail = message => { throw new Error(message); };
+  if (mode === 'plan' && config.inspect_native === true) {
+    const clean = line => /password|passwd|secret|token|cookie|authorization|ssl_certificate_key|license/i.test(line) ? '[sensitive line omitted]' : line.replace(/(https?:\/\/)[^\s/@]+@/g, '$1[redacted]@');
+    const show = (file, pattern, context = 1, maximum = 45) => {
+      report(`NATIVE_SOURCE ${file}`);
+      try {
+        const stat = io.lstatSync(file); assert(stat.isFile() && stat.size < 1024 * 1024, 'Not a bounded regular file.');
+        const lines = io.readFileSync(file, 'utf8').split('\n'); const selected = new Set();
+        lines.forEach((line, index) => { if (pattern.test(line)) for (let n = Math.max(0,index-context); n <= Math.min(lines.length-1,index+context); n++) selected.add(n); });
+        for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
+      } catch { report('Unavailable'); }
+    };
+    show('/etc/nginx/nginx.conf', /^\s*(include|listen|server_name|server\s*\{)/, 0, 35);
+    show(`/etc/nginx/sites-available/${config.domain}.conf`, /./, 0, 100);
+    show(`/etc/nginx/sites-available/ssl.${config.domain}.conf`, /./, 0, 115);
+    show(`/etc/httpd/vhost.d/${config.domain}.conf`, /./, 0, 70);
+    for (const file of ['/usr/local/brainycp/modules/setting_virthost.php','/usr/local/brainycp/modules/webserver_config.php','/usr/local/brainycp/classes/webserver_config.php','/usr/local/brainycp/classes/webserver.php','/usr/local/brainycp/ssh/webserver.php'])
+      show(file, /setting_virthost|nodejs|NodeJS|vhost.?setting|vhost.?include|custom.?vhost|params_nginx|file_put_contents|nginx.*\.tpl|include.*nginx|\.conf.*include/i, 2, 100);
+    for (const root of ['/etc/brainy/conf','/etc/nginx','/usr/local/brainycp/tpl/basic']) {
+      let visited = 0, printed = 0;
+      const walk = (directory, depth) => { if (depth > 3 || visited > 1200 || printed > 65) return;
+        let entries; try { entries = io.readdirSync(directory,{withFileTypes:true}); } catch { return; }
+        for (const entry of entries) { if (++visited > 1200) break; const file = path.join(directory,entry.name);
+          if (entry.isDirectory() && !/^(tpl_c|cache|logs|sessions)$/.test(entry.name)) walk(file,depth+1);
+          else if (entry.isFile() && /nginx|vhost|virthost|nodejs|webserver/i.test(file)) { report(`NATIVE_PATH ${file}`); if (++printed > 65) break; }
+        }
+      }; walk(root,0);
+    }
+    return {mode:'native-inspection'};
+  }
   function physical(file, directory = false) {
     const stat = io.lstatSync(file);
     assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()) && io.realpathSync(file) === file && stat.uid === expectedUid && !(stat.mode & 0o022), 'Unsafe physical file or directory metadata.');
