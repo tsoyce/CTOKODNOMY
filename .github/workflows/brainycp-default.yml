@@ -1,0 +1,53 @@
+name: Repair BrainyCP default routing (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: SSH hostname or IP of the existing server
+        required: true
+        type: string
+      ssh_user:
+        description: Existing authorized SSH user (remote transaction requires root)
+        required: true
+        default: root
+        type: string
+      mode:
+        description: Inspect the exact candidate, or apply the previously reviewed candidate hash
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply]
+      configuration:
+        description: JSON instance settings and expected source hashes (no credentials)
+        required: true
+        type: string
+      known_hosts:
+        description: Verified public host pin (optional if secret is configured)
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: brainycp-routing-${{ inputs.server }}
+  cancel-in-progress: false
+jobs:
+  repair:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Plan or apply the isolated default-host correction
+        env:
+          DEPLOY_HOST: ${{ inputs.server }}
+          DEPLOY_USER: ${{ inputs.ssh_user }}
+          REPAIR_MODE: ${{ inputs.mode }}
+          REPAIR_CONFIGURATION: ${{ inputs.configuration }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          SSH_KNOWN_HOSTS: ${{ inputs.known_hosts || secrets.SSH_KNOWN_HOSTS }}
+        run: bash scripts/fix-brainycp-default-ssh.sh
