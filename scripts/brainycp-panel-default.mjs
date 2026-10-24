@@ -26,6 +26,7 @@ function restoreNative(c, mode) {
   function run(command,args,options={}) {
     const r=spawnSync(command,args,{encoding:'utf8',timeout:20000,maxBuffer:15*1024*1024,...options});
     if(r.signal==='SIGKILL' || r.status===137) { const e=new Error(`${command} killed; stopped without retry.`);e.code=137;throw e; }
+    if(command==='openssl' && r.status!==0)console.log(`NATIVE_TLS_DIAGNOSTIC ${(r.stdout??'').slice(0,1800)} ${(r.stderr??'').slice(0,1800)}`);
     assert(!r.error && !r.signal && r.status===0, `${command} failed (${r.status ?? r.signal ?? 'unavailable'}).`); return r.stdout??'';
   }
   const guard=()=>run('bash',['-s','--',main,c.php_checks.join(',')],{input:CTOK_GUARD_SOURCE});
@@ -59,6 +60,7 @@ function restoreNative(c, mode) {
   const candidates=new Map([[http,Buffer.from(include(originals.get(http),hook))],[https,Buffer.from(include(originals.get(https),`${hook}.ssl`))],[hook,Buffer.from(httpHook)],[`${hook}.ssl`,Buffer.from(sslHook)],[game,null],[clone,null],[legacy,null]]);
   const certificate=originals.get(https).data.toString().match(/^\s*ssl_certificate\s+([^;\s]+);/m)?.[1];
   assert(certificate && /^\/[A-Za-z0-9_.:/-]+$/.test(certificate),'Unexpected native TLS certificate path.');
+  console.log(`NATIVE_TLS_PUBLIC ${run('openssl',['x509','-in',certificate,'-noout','-dates','-ext','subjectAltName'])}`);
   run('openssl',['x509','-in',certificate,'-noout','-checkend','86400']);
   for(const hostname of [c.domain,`www.${c.domain}`])run('openssl',['verify','-purpose','sslserver','-verify_hostname',hostname,'-CApath','/etc/ssl/certs','-untrusted',certificate,certificate]);
   console.log(`NATIVE_TLS_VERIFIED ${certificate} ${run('openssl',['x509','-in',certificate,'-noout','-dates']).trim().replaceAll('\n',' ')}`);
