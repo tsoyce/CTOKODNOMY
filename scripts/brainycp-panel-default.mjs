@@ -80,6 +80,7 @@ function restoreNative(c, mode) {
   const certData=file=>trustedSources.get(fs.realpathSync(file)).data;
   const privateTargets=new Set([profile.key,nativeKey]);
   const certCandidates=new Map([[profile.crt,certData(leaf)],[profile.chein,certData(chain)],[profile.key,certData(keys[0])],[certificate,certData(fullchain[0])],[nativeKey,certData(keys[0])]]);
+  for(const file of certCandidates.keys()){let parent=path.dirname(file);while(parent!=='/'){const st=fs.lstatSync(parent);assert(st.isDirectory() && !st.isSymbolicLink() && fs.realpathSync(parent)===parent && st.uid===0 && !(st.mode&0o022),'Untrusted native certificate target parent.');parent=path.dirname(parent);}}
   for(const [file,bytes]of certCandidates){assert(!originals.has(file),'Certificate target conflicts with routing files.');originals.set(file,read(file,true));candidates.set(file,bytes);}
   console.log(`NATIVE_TLS_REFRESH from_existing_working_certificate=true profile_unchanged=true ${run('openssl',['x509','-in',leaf,'-noout','-dates']).trim().replaceAll('\n',' ')}`);
   function websocket() {
@@ -90,7 +91,7 @@ function restoreNative(c, mode) {
   }
   const otherFiles=[main,record,'/etc/brainy/vhosts/vhosts.tpl','/etc/nginx/nginx.conf'];
   for(const directory of ['/etc/nginx/conf.d','/etc/nginx/sites-available','/etc/httpd/vhost.d','/var/brainycp/data/vhosts'])for(const name of fs.readdirSync(directory).filter(n=>n.endsWith('.conf'))) {const file=path.join(directory,name);if(!originals.has(file))otherFiles.push(file);}
-  for(const file of otherFiles.filter(file=>file.startsWith('/var/brainycp/data/vhosts/') && file!==record)){const data=read(file).data.toString();for(const value of Object.values(profile))assert(!data.includes(value),'Native certificate is shared with another site; automatic refresh refused.');}
+  for(const file of otherFiles.filter(file=>file!==record && ![ `/etc/httpd/vhost.d/${c.domain}.conf`,`/etc/httpd/vhost.d/ssl.${c.domain}.conf`].includes(file))){const data=read(file).data.toString();for(const value of Object.values(profile))assert(!data.includes(value),'Native certificate is shared with another site; automatic refresh refused.');}
   const protectedFiles=new Map([...new Set(otherFiles)].map(file=>[file,read(file)]));
   for(const [file,value]of trustedSources)protectedFiles.set(file,value);
   const same=(a,b)=>a===null?b===null:b!==null && a.uid===b.uid && a.gid===b.gid && a.mode===b.mode && sha(a.data)===sha(b.data);
