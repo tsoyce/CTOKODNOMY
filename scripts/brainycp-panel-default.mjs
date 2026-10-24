@@ -72,16 +72,15 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    show('/etc/brainy/vhosts/vhosts.tpl',/node|Node|include|proxy_pass|redirect|location|vhost|custom|config|port/i,3,240);
-    for (const root of ['/etc/brainy/conf/conf','/home/tsoy','/home/tsoy/sites','/home/tsoy/.brainycp','/home/tsoy/sites/.brainycp','/etc/brainy/backup_conf']) {
+    show('/etc/brainy/vhosts/vhosts.tpl',/node|Node|patf_|nginx_access|_loct|proxy_pass|web_server|portnginxpanel/i,3,190);
+    show('/usr/local/brainycp/tpl/basic/js/server_control.js',/nodejs|NodeJS|node_js/i,3,130);
+    for (const root of ['/home/tsoy/.brainy','/home/tsoy/data','/home/tsoy/etc','/etc/brainy/conf/properties','/etc/brainy/conf/server']) {
       try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
-    for (const file of ['/etc/brainy/conf/apacserver/main','/etc/brainy/conf/hostacc/main','/etc/brainy/conf/user_info/main']) {
-      try { const content=io.readFileSync(file,'utf8'); report(`NATIVE_FORMAT ${file} bytes=${Buffer.byteLength(content)} prefix=${content.slice(0,1)} lines=${content.split('\n').length}`);
-        if(content.trimStart().startsWith('{') || content.trimStart().startsWith('[')) { const data=JSON.parse(content); report(`NATIVE_KEYS ${file}: ${Object.keys(data).slice(0,75).join(', ')}`); }
-        else for(const line of content.split('\n').filter(line=>/utmns\.ru|nodejs|NodeJS|sites\/100k1|^\[/.test(line)).slice(0,30)) report(`NATIVE_SITE ${clean(line).slice(0,700)}`);
-      } catch { report(`NATIVE_FORMAT_UNAVAILABLE ${file}`); }
-    }
+    let count=0;
+    const walk=(root,depth)=>{if(depth>4 || count>600)return; let entries;try{entries=io.readdirSync(root,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(++count>600)break;const file=path.join(root,entry.name);if(entry.isDirectory())walk(file,depth+1);else if(/utmns|nginx|vhost|nodejs|apache/i.test(entry.name))report(`NATIVE_USER_FILE ${file}`);}
+    };walk('/home/tsoy/.brainy',0);walk('/home/tsoy/data',0);
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
