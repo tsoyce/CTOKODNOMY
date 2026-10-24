@@ -57,6 +57,17 @@ function restoreNative(c, mode) {
   const sslHook=`# Individual site settings managed through BrainyCP Webserver VHOST configurator.\nif ($host = www.${c.domain}) { return 301 https://${c.domain}$request_uri; }\nlocation ~ ^/ {\n${upstream}\n}\n`;
   const include=(outer,file)=>{const body=outer.data.toString();const anchor=/^([ \t]*)location \^~ \/\.well-known\/acme-challenge\/ \{ allow all; \}$/gm; const hits=[...body.matchAll(anchor)];assert(hits.length===1 && !body.includes(file) && new RegExp(`server_name\\s+${c.domain.replaceAll('.','\\.')}\\s+www\\.${c.domain.replaceAll('.','\\.')}\\s*;`).test(body),'Unexpected native virtual-host structure.');return body.slice(0,hits[0].index)+`            include ${file};\n\n`+body.slice(hits[0].index);};
   const candidates=new Map([[http,Buffer.from(include(originals.get(http),hook))],[https,Buffer.from(include(originals.get(https),`${hook}.ssl`))],[hook,Buffer.from(httpHook)],[`${hook}.ssl`,Buffer.from(sslHook)],[game,null],[clone,null],[legacy,null]]);
+  const certificate=originals.get(https).data.toString().match(/^\s*ssl_certificate\s+([^;\s]+);/m)?.[1];
+  assert(certificate && /^\/[A-Za-z0-9_.:/-]+$/.test(certificate),'Unexpected native TLS certificate path.');
+  run('openssl',['x509','-in',certificate,'-noout','-checkend','86400']);
+  for(const hostname of [c.domain,`www.${c.domain}`])run('openssl',['verify','-purpose','sslserver','-verify_hostname',hostname,'-CApath','/etc/ssl/certs','-untrusted',certificate,certificate]);
+  console.log(`NATIVE_TLS_VERIFIED ${certificate} ${run('openssl',['x509','-in',certificate,'-noout','-dates']).trim().replaceAll('\n',' ')}`);
+  function websocket() {
+    const args=['--disable','--noproxy','*','--http1.1','--silent','--connect-timeout','5','--max-time','3','--max-filesize','65536','--resolve',`${c.domain}:443:${c.address}`,'--header','Connection: Upgrade','--header','Upgrade: websocket','--header','Sec-WebSocket-Version: 13','--header','Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==','--header',`Origin: https://${c.domain}`,'--output','/dev/null','--write-out','%{http_code}',`https://${c.domain}/api/ws/games/codex-routing-probe`];
+    const r=spawnSync('curl',args,{encoding:'utf8',timeout:8000,maxBuffer:65536});
+    if(r.signal==='SIGKILL' || r.status===137){const e=new Error('WebSocket curl killed; stopped without retry.');e.code=137;throw e;}
+    assert(!r.error && !r.signal && [0,28,52].includes(r.status) && r.stdout==='101','WebSocket upgrade failed.');return 101;
+  }
   const otherFiles=[main,record,'/etc/brainy/vhosts/vhosts.tpl','/etc/nginx/nginx.conf'];
   for(const directory of ['/etc/nginx/conf.d','/etc/nginx/sites-available','/etc/httpd/vhost.d'])for(const name of fs.readdirSync(directory).filter(n=>n.endsWith('.conf'))) {const file=path.join(directory,name);if(!originals.has(file))otherFiles.push(file);}
   const protectedFiles=new Map([...new Set(otherFiles)].map(file=>[file,read(file)]));
@@ -69,6 +80,9 @@ function restoreNative(c, mode) {
   const home=response(`https://${c.domain}/`);assert(home.status===200,'Game landing page unavailable.');
   const asset=home.body.toString().match(/href=["'](\/assets\/[A-Za-z0-9_.\/-]+\.css)["']/)?.[1];assert(asset,'Could not identify the current game stylesheet.');
   const css=response(`https://${c.domain}${asset}`);assert(css.status===200,'Game stylesheet is not healthy.');
+  websocket();
+  const acmePath=`/.well-known/acme-challenge/ctok-native-${c.run_id}-${c.run_attempt}`;
+  const acmeBefore=response(`https://${c.domain}${acmePath}`);assert(acmeBefore.status===404,'ACME control path unexpectedly exists.');
   const pid=run('systemctl',['show',`nodejs@${c.port}.service`,'--property=MainPID','--value']).trim();assert(/^[1-9][0-9]*$/.test(pid),'Game service is not running.');
   const plan={sources:[...originals].map(([file,v])=>({file,sha256:v?sha(v.data):null,uid:v?.uid,gid:v?.gid,mode:v?.mode})),targets:[...candidates].map(([file,v])=>({file,sha256:v?sha(v):null})),protected:[...protectedFiles].map(([file,v])=>({file,sha256:sha(v.data)}))};
   const fingerprint=sha(JSON.stringify(plan));console.log(`NATIVE_ROUTING_PLAN ${fingerprint}`);console.log(JSON.stringify(plan.targets));console.log(`NATIVE_HTTP_HOOK\n${httpHook}NATIVE_HTTPS_HOOK\n${sslHook}`);console.log(`NATIVE_BASELINE ${JSON.stringify({panel:safe(baseline),named:named.map(safe),game:safe(health),stylesheet:safe(css)})}`);
@@ -90,11 +104,13 @@ function restoreNative(c, mode) {
     const currentDefault=response(`http://${c.address}/`,'default');assert(currentDefault.hash===baseline.hash && currentDefault.status===baseline.status && !currentDefault.location,'Native panel page changed.');
     for(const host of c.unknown_hosts){const r=response(`http://${host}/`);assert(r.hash===baseline.hash && r.status===baseline.status && !r.location,'Unknown host did not reach the original panel page.');console.log(`NATIVE_UNKNOWN ${host} ${JSON.stringify(safe(r))}`);}
     c.named_checks.forEach((url,i)=>{const r=response(url);assert(r.status===named[i].status && r.location===named[i].location,'Named site routing changed.');});
-    const r=response(`https://${c.domain}/api/health`);assert(r.status===200 && JSON.parse(r.body).ok===true,'Game API failed.');assert(response(`https://${c.domain}${asset}`).hash===css.hash,'Game stylesheet changed.');
+    const r=response(`https://${c.domain}/api/health`);assert(r.status===200 && JSON.parse(r.body).ok===true,'Game API failed.');assert(response(`https://${c.domain}${asset}`).hash===css.hash,'Game stylesheet changed.');assert(response(`https://${c.domain}/`).hash===home.hash,'Game landing page changed.');websocket();
+    const acmeNow=response(`https://${c.domain}${acmePath}`);assert(acmeNow.status===404 && acmeNow.hash!==acmeBefore.hash,'Native ACME location is not serving through the new workers.');console.log('NATIVE_LIVE_ACME_CONFIRMED 404 websocket=101');
     const www=response(`https://www.${c.domain}/`);assert(www.status===301 && www.location===`https://${c.domain}/`,'Canonical www redirect failed.');
     assert(run('systemctl',['show',`nodejs@${c.port}.service`,'--property=MainPID','--value']).trim()===pid,'Game process changed.');
     const loaded=run('nginx',['-T']);for(const file of [http,https,hook,`${hook}.ssl`])assert(loaded.split(`\n# configuration file ${file}:`).length===2,'Native file not loaded exactly once.');
     assert(loaded.indexOf('# configuration file /etc/nginx/sites-available/!!default.conf:')<loaded.indexOf(`# configuration file ${http}:`),'Native default is not first.');
+    assert(loaded.indexOf('# configuration file /etc/nginx/sites-available/!!ssl.default.conf:')<loaded.indexOf(`# configuration file ${https}:`),'Native TLS default is not first.');
     console.log(`NATIVE_ROUTING_APPLIED ${fingerprint} game_pid_unchanged=${pid} stylesheet_unchanged=true original_defaults_unchanged=true unrelated_configuration_unchanged=true`);
   } catch(error) {
     for(const file of written.reverse()){const expected=candidates.get(file),now=read(file,expected===null);assert(expected===null?now===null:now && sha(now.data)===sha(expected),`Rollback refused: external change to ${file}`);const before=originals.get(file);if(before===null)fs.unlinkSync(file);else put(file,before.data,before);}
