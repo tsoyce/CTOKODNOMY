@@ -72,11 +72,12 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    for (const file of ['/usr/local/brainycp/tpl/basic/js/setting_virthost.js','/usr/local/brainycp/tpl/basic/js/webserver_config.js','/usr/local/brainycp/tpl/basic/setting_virthost/index.tpl','/usr/local/brainycp/tpl/basic/setting_virthost/get_domain.tpl','/usr/local/brainycp/tpl/basic/webserver_config/webserver_config.tpl'])
-      show(file, /./, 0, 220);
-    for (const root of ['/etc/brainy','/etc/brainy/conf','/etc/brainy/data','/etc/brainy/conf/webserver','/usr/local/brainycp/tpl/basic/webserver_config','/usr/local/brainycp/tpl/basic/setting_virthost']) {
-      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
+    for (const file of ['/etc/brainy/nginx.conf','/etc/brainy/nginx_def.conf','/etc/brainy/nginx_fpm.conf','/etc/brainy/http.conf','/etc/brainy/https.conf'])
+      show(file, /include|node|Node|proxy|location|user|custom|vhost/i, 2, 100);
+    for (const root of ['/etc/brainy/conf/apacserver','/etc/brainy/conf/apacserver/tsoy','/etc/brainy/vhosts','/etc/brainy/server_control','/etc/brainy/conf/hostacc','/etc/brainy/conf/user_info']) {
+      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,120).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
+    for (const file of ['/usr/local/brainycp/tpl/basic/webserver_config/list_sites.tpl','/etc/nginx/tajelo-delivery.conf']) show(file,/./,0,85);
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
