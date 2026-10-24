@@ -40,7 +40,12 @@ function fixture(scenario = "success") {
   const newRelease = join(base, "releases", sha);
   const incoming = join(root, "var/lib/ctokodnomy-deploy/player-3003", `${sha}-39035775715-1`);
   const panel = join(root, "etc/brainy/conf/server_control/main");
-  const site = join(root, "etc/nginx/conf.d/game.example-game.conf");
+  const nativeRecord = join(root, "var/brainycp/data/vhosts/game.example.conf");
+  const site = join(root, "etc/nginx/sites-available/game.example.conf");
+  const sslSite = join(root, "etc/nginx/sites-available/ssl.game.example.conf");
+  const httpHook = join(root, "var/brainycp/data/webserver_config/user_includes/player/game.example.nginx");
+  const httpsHook = join(root, "var/brainycp/data/webserver_config/user_includes/player/game.example.nginx.ssl");
+  const nativeFiles = [nativeRecord, site, sslSite, httpHook, httpsHook];
   const service = join(root, "etc/systemd/system/nodejs@3003.service.d/game.conf");
   const config = join(home, ".config/ctokodnomy/native-3003.env");
   const backups = join(dirname(incoming), "backups");
@@ -57,7 +62,9 @@ function fixture(scenario = "success") {
   }
   if (scenario === "release-exists") mkdirSync(newRelease);
   put(panel, scenario === "missing-back-server" ? "front_server=nginx\n" : "front_server=nginx\nback_server=apache\n");
-  put(site, "# Existing, operator-provisioned game proxy\n");
+  nativeFiles.forEach((file, index) => {
+    if (scenario !== ["native-record-missing", "native-http-missing", "native-https-missing", "native-http-hook-missing", "native-https-hook-missing"][index]) put(file, "# Existing native BrainyCP site configuration\n");
+  });
   put(service, "[Service]\n# Existing game unit owned by the operator\n");
   put(config, "DATABASE_URL=postgresql://fixture/fixture\n");
   let configuredHome = home;
@@ -102,6 +109,13 @@ if [[ $FIXTURE_SCENARIO == stage-137 ]]; then exit 137; fi
 mkdir "$1/releases/$3"
 echo '// candidate release' > "$1/releases/$3/app.mjs"
 if [[ $FIXTURE_SCENARIO == panel-changed ]]; then echo '# concurrent panel update' >> "$FIXTURE_PANEL"; fi
+case "$FIXTURE_SCENARIO" in
+  native-record-changed) echo '# concurrent native site update' >> "$FIXTURE_NATIVE_RECORD" ;;
+  native-http-changed) echo '# concurrent native site update' >> "$FIXTURE_SITE" ;;
+  native-https-changed) echo '# concurrent native site update' >> "$FIXTURE_SSL_SITE" ;;
+  native-http-hook-changed) echo '# concurrent native site update' >> "$FIXTURE_HTTP_HOOK" ;;
+  native-https-hook-changed) echo '# concurrent native site update' >> "$FIXTURE_HTTPS_HOOK" ;;
+esac
 `);
   const command = (name: string, body: string) => put(join(bin, name), `#!/usr/bin/env bash\nset -eu\n${body}\n`, true);
   command("id", 'if [[ $1 == -u && $# == 1 ]]; then echo 0; elif [[ $1 == -u && $2 == player ]]; then echo 1001; else exit 91; fi');
@@ -142,7 +156,10 @@ esac`);
 printf 'nginx %s\\n' "$*" >> "$FIXTURE_EVENTS"
 case "$1" in
   -t) exit 0 ;;
-  -T) printf '# configuration file %s:\\n' "$FIXTURE_SITE" ;;
+  -T)
+    printf '# configuration file %s:\\n' "$FIXTURE_SITE"
+    if [[ $FIXTURE_SCENARIO != native-https-unloaded ]]; then printf '# configuration file %s:\\n' "$FIXTURE_SSL_SITE"; fi
+    if [[ $FIXTURE_SCENARIO == native-http-loaded-twice ]]; then printf '# configuration file %s:\\n' "$FIXTURE_SITE"; fi ;;
   *) echo 'Unexpected nginx mutation' >&2; exit 94 ;;
 esac`);
   command("runuser", `[[ $1 == -u && $2 == player && $3 == -- ]]
@@ -168,8 +185,8 @@ else
   if [[ $FIXTURE_SCENARIO == app-post-fail && $target == "$FIXTURE_NEW_RELEASE" && $url == https://game.example/api/health ]]; then exit 22; fi
   printf '{"ok":true}'
 fi`);
-  const protectedFiles = [panel, site, service, config];
-  const fingerprint = () => protectedFiles.map((file) => createHash("sha256").update(readFileSync(file)).digest("hex"));
+  const protectedFiles = [panel, ...nativeFiles, service, config];
+  const fingerprint = () => protectedFiles.map((file) => existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : "missing");
   const before = fingerprint();
   const env = {
     ...process.env,
@@ -180,7 +197,11 @@ fi`);
     FIXTURE_SCENARIO: scenario,
     FIXTURE_EVENTS: events,
     FIXTURE_PANEL: panel,
+    FIXTURE_NATIVE_RECORD: nativeRecord,
     FIXTURE_SITE: site,
+    FIXTURE_SSL_SITE: sslSite,
+    FIXTURE_HTTP_HOOK: httpHook,
+    FIXTURE_HTTPS_HOOK: httpsHook,
     FIXTURE_SERVICE: service,
     FIXTURE_BASE: base,
     FIXTURE_HOME: configuredHome,
@@ -191,7 +212,7 @@ fi`);
     FIXTURE_DEPLOY_ROOT: join(root, "var/lib/ctokodnomy-deploy"),
   };
   return {
-    base, backups, incoming, panel, config, current, oldRelease, newRelease, before, fingerprint,
+    base, backups, incoming, panel, nativeFiles, config, current, oldRelease, newRelease, before, fingerprint,
     run: (incomingPath = incoming) => spawnSync("bash", [join(scripts, "brainycp-activate.sh"), base, "player", "3003", "game.example", sha, "c".repeat(64), incomingPath, node, "https://php.example/health.php"], { env, encoding: "utf8", timeout: 10_000 }),
     events: () => readFileSync(events, "utf8").trim().split("\n"),
   };
@@ -275,6 +296,30 @@ describe("BrainyCP release activation transaction", () => {
     expect(f.fingerprint()).toEqual(f.before);
   });
 
+  test.each(["native-record-missing", "native-http-missing", "native-https-missing", "native-http-hook-missing", "native-https-hook-missing"])("refuses missing native site configuration before any service or release change: %s", (scenario) => {
+    const f = fixture(scenario);
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Native BrainyCP site files must be physical");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(f.events().filter(Boolean)).toEqual([]);
+    expect(f.fingerprint()).toEqual(f.before);
+  });
+
+  test.each(["native-https-unloaded", "native-http-loaded-twice"])("refuses native Nginx files that are not loaded exactly once: %s", (scenario) => {
+    const f = fixture(scenario);
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Both native BrainyCP Nginx site files must already be loaded exactly once");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(f.events()).not.toContain("stage");
+    expect(f.events()).not.toContain("db-backup");
+    expectOnlyGameRestarts(f.events(), 0);
+    expect(f.fingerprint()).toEqual(f.before);
+  });
+
   test.each(["missing-back-server", "php-baseline-fail"])("refuses %s before staging, backup or service changes", (scenario) => {
     const f = fixture(scenario);
     const result = f.run();
@@ -323,6 +368,19 @@ describe("BrainyCP release activation transaction", () => {
     expectOnlyGameRestarts(f.events(), 0);
   });
 
+  test.each(["native-record-changed", "native-http-changed", "native-https-changed", "native-http-hook-changed", "native-https-hook-changed"])("detects native site changes before switching or restarting the game: %s", (scenario) => {
+    const f = fixture(scenario);
+    const result = f.run();
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr).toContain("configuration changed during deployment");
+    expect(f.events()).toContain("stage");
+    expect(readlinkSync(f.current)).toBe(f.oldRelease);
+    const changed = ["native-record-changed", "native-http-changed", "native-https-changed", "native-http-hook-changed", "native-https-hook-changed"].indexOf(scenario);
+    expect(readFileSync(f.nativeFiles[changed], "utf8")).toContain("concurrent native site update");
+    expect(f.fingerprint().filter((_, index) => index !== changed + 1)).toEqual(f.before.filter((_, index) => index !== changed + 1));
+    expectOnlyGameRestarts(f.events(), 0);
+  });
+
   test.each(["stage-137", "link-137"])("stops on %s instead of retrying or switching the working release", (scenario) => {
     const f = fixture(scenario);
     const result = f.run();
@@ -368,9 +426,12 @@ describe("BrainyCP release activation transaction", () => {
     expect(f.events().filter((event) => event === "php-check")).toHaveLength(3);
     const [backup] = readdirSync(f.backups);
     expect(readdirSync(join(f.backups, backup)).sort()).toEqual([
-      "application.env", "brainy-main.conf", "configuration.sha256", "database.dump", "nginx-game.conf",
+      "application.env", "brainy-main.conf", "configuration.sha256", "database.dump", "native-vhost.conf", "nginx-http.conf", "nginx-https.conf", "nginx-user-http.conf", "nginx-user-https.conf",
       "php-health.txt", "previous-release.txt", "service-state.txt", "service.conf",
     ]);
+    for (const [index, name] of ["native-vhost.conf", "nginx-http.conf", "nginx-https.conf", "nginx-user-http.conf", "nginx-user-https.conf"].entries()) {
+      expect(readFileSync(join(f.backups, backup, name), "utf8")).toBe(readFileSync(f.nativeFiles[index], "utf8"));
+    }
     expect(readFileSync(join(f.backups, backup, "previous-release.txt"), "utf8").trim()).toBe(f.oldRelease);
     expect(readFileSync(join(f.oldRelease, "app.mjs"), "utf8")).toBe("// previous working release\n");
     expect(result.stdout).toContain("Release verified");

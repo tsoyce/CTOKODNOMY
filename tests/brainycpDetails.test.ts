@@ -13,17 +13,20 @@ function fixture() {
   roots.push(root);
   const bin = join(root, "bin"), app = join(root, "app"), home = join(root, "home");
   const etc = join(root, "etc"), php = join(root, "php");
-  for (const path of [bin, app, home, php, join(etc, "httpd/vhost.d"), join(etc, "nginx/conf.d"), join(etc, "brainy/conf/server_control"), join(home, ".config/ctokodnomy"), join(app, "releases/previous")]) mkdirSync(path, { recursive: true });
+  for (const path of [bin, app, home, php, join(etc, "httpd/vhost.d"), join(etc, "nginx/sites-available"), join(root, "var/brainycp/data/vhosts"), join(root, "var/brainycp/data/webserver_config/user_includes/player"), join(etc, "brainy/conf/server_control"), join(home, ".config/ctokodnomy"), join(app, "releases/previous")]) mkdirSync(path, { recursive: true });
   symlinkSync(join(app, "releases/previous"), join(app, "current"));
   writeFileSync(join(home, ".config/ctokodnomy/native-3003.env"), "CTOKODNOMY_MANAGED_CONFIG=1\nDATABASE_URL=DO_NOT_PRINT_DATABASE_SECRET\n", { mode: 0o600 });
   writeFileSync(join(etc, "brainy/conf/server_control/main"), "# back_server=old\r\nback_server=apache\r\nPANEL_SECRET=DO_NOT_PRINT_PANEL_SECRET\r\n");
-  writeFileSync(join(etc, "nginx/conf.d/game.example-game.conf"), "# DO_NOT_PRINT_NGINX_SECRET\n");
+  writeFileSync(join(etc, "nginx/sites-available/game.example.conf"), "# DO_NOT_PRINT_NGINX_SECRET\n");
+  writeFileSync(join(etc, "nginx/sites-available/ssl.game.example.conf"), "# DO_NOT_PRINT_SSL_SECRET\n");
+  writeFileSync(join(root, "var/brainycp/data/vhosts/game.example.conf"), "PANEL_PARAMETER=DO_NOT_PRINT_SITE_RECORD\n");
+  for (const suffix of ["", ".ssl"]) writeFileSync(join(root, `var/brainycp/data/webserver_config/user_includes/player/game.example.nginx${suffix}`), "# DO_NOT_PRINT_INCLUDE_SECRET\n");
   writeFileSync(join(etc, "httpd/vhost.d/php.example.conf"), `<VirtualHost *:443>\nServerName php.example\nDocumentRoot ${php}\n<FilesMatch \\.php$>\nSetHandler \"proxy:unix:/run/php-fpm/php84-player.sock|fcgi://localhost\"\n</FilesMatch>\n</VirtualHost>\n`);
   writeFileSync(join(php, "index.php"), "<?php $password='DO_NOT_PRINT_PHP_SOURCE'; echo 'ok';");
   const command = (name: string, body: string) => { const path = join(bin, name); writeFileSync(path, `#!/usr/bin/env bash\nset -eu\n${body}\n`); chmodSync(path, 0o755); };
   command("systemctl", `printf '%s\\n' 'ExecStart={ path=/opt/production-node/bin/node ; argv[]=/opt/production-node/bin/node --password=DO_NOT_PRINT_EXEC_SECRET ; }' 'MainPID=${process.pid}' 'EnvironmentFiles=${home}/.config/ctokodnomy/native-3003.env (ignore_errors=no)'`);
   command("getent", `printf '%s\\n' 'player:x:1000:1000::${home}:/bin/bash'`);
-  command("nginx", `printf '%s\\n' '# configuration file ${etc}/nginx/conf.d/game.example-game.conf:' 'DO_NOT_PRINT_OTHER_SITES_CONFIG'`);
+  command("nginx", `printf '%s\\n' '# configuration file ${etc}/nginx/sites-available/game.example.conf:' 'DO_NOT_PRINT_OTHER_SITES_CONFIG' '# configuration file ${etc}/nginx/sites-available/ssl.game.example.conf:' '# configuration file ${root}/var/brainycp/data/webserver_config/user_includes/player/game.example.nginx:' '# configuration file ${root}/var/brainycp/data/webserver_config/user_includes/player/game.example.nginx.ssl:'`);
   command("curl", `printf '%s\\n' "$@" > "$FIXTURE_CURL"; printf 'HTTP/1.1 200 OK\\r\\nX-Powered-By: PHP/8.4.17\\r\\nSet-Cookie: DO_NOT_PRINT_COOKIE\\r\\nLocation: /login?code=DO_NOT_PRINT_TOKEN\\r\\n\\r\\n\\nCTOK-PROBE\\t200\\ttext/html; charset=UTF-8\\t0'`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, APP_ROOT: app, APP_USER: "player", APP_PORT: "3003", APP_DOMAIN: "game.example", PROBE_DOMAIN: "php.example", FIXTURE_CURL: join(root, "curl-args") };
   return { root, bin, app, home, etc, php, command, env };
@@ -37,7 +40,7 @@ describe("read-only BrainyCP details", () => {
     expect(block).toBeTruthy();
     // Relocate only fixed server files; execute the real diagnostics with fake
     // systemctl/nginx/curl, never access a remote host or privileged config.
-    const relocated = block!.replaceAll("/etc/", `${f.etc}/`);
+    const relocated = block!.replaceAll("/etc/", `${f.etc}/`).replaceAll("/var/brainycp/", `${f.root}/var/brainycp/`);
     const result = spawnSync(process.execPath, ["--input-type=module"], { input: relocated, encoding: "utf8", env: f.env });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("Effective ExecStart executable: /opt/production-node/bin/node");
@@ -47,7 +50,11 @@ describe("read-only BrainyCP details", () => {
     expect(result.stdout).toContain("regular=true symlink=false mode=600");
     expect(result.stdout).toContain("Managed configuration marker present: true");
     expect(result.stdout).toContain("active_count=1; single_nonempty_supported=true");
-    expect(result.stdout).toContain("Dedicated proxy loaded count: 1");
+    expect(result.stdout).toContain("Native site record:");
+    expect(result.stdout).toContain("Native HTTP site loaded count: 1");
+    expect(result.stdout).toContain("Native HTTPS site loaded count: 1");
+    expect(result.stdout).toContain("Native HTTP routing include loaded count: 1");
+    expect(result.stdout).toContain("Native HTTPS routing include loaded count: 1");
     expect(result.stdout).toContain("DocumentRoot identified=true; index.php regular_exists=true; php_prefix=true");
     expect(result.stdout).toContain("Selected PHP handler socket: /run/php-fpm/php84-player.sock");
     expect(result.stdout).toContain("status=200; content_type=text/html; charset=UTF-8; tls_verify=0; redirects_followed=false");

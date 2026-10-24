@@ -31,8 +31,20 @@ done
 [[ $("$node_bin" --version) =~ ^v24\.[0-9]+\.[0-9]+$ ]] || fail 'The existing application runtime must be Node.js 24.'
 for utility in nginx pg_dump pg_restore runuser curl flock sha256sum cp ln mv; do command -v "$utility" >/dev/null; done
 panel_main=/etc/brainy/conf/server_control/main
-site="/etc/nginx/conf.d/$domain-game.conf"
-[[ -f $site && ! -L $site && $(readlink -e "$site") == "$site" ]] || fail 'A separately provisioned conf.d/<domain>-game.conf is required.'
+site_files=(
+  "/var/brainycp/data/vhosts/$domain.conf"
+  "/etc/nginx/sites-available/$domain.conf"
+  "/etc/nginx/sites-available/ssl.$domain.conf"
+  "/var/brainycp/data/webserver_config/user_includes/$app_user/$domain.nginx"
+  "/var/brainycp/data/webserver_config/user_includes/$app_user/$domain.nginx.ssl"
+)
+validate_site_files() {
+  local site
+  for site in "${site_files[@]}"; do
+    [[ -f $site && ! -L $site && $(readlink -e "$site") == "$site" && $(stat -c %u "$site") == 0 ]] && (( (8#$(stat -c %a "$site") & 8#022) == 0 )) || fail 'Native BrainyCP site files must be physical, root-owned and not writable by group/others.'
+  done
+}
+validate_site_files
 unit="nodejs@$port.service"
 app_home=$(getent passwd "$app_user" | cut -d: -f6)
 # BrainyCP may record the same home as /home/account/./sites. Remove only
@@ -72,12 +84,12 @@ if nginx -t >/dev/null 2>&1; then :; else
   exit "$status"
 fi
 # Inspect active includes without logging other sites' configuration.
-nginx -T 2>/dev/null | awk -v expected="# configuration file $site:" '$0 == expected {found++} END {exit(found != 1)}' || {
+nginx -T 2>/dev/null | awk -v http="# configuration file ${site_files[1]}:" -v https="# configuration file ${site_files[2]}:" '$0 == http {plain++} $0 == https {tls++} END {exit(plain != 1 || tls != 1)}' || {
   pipeline_status=("${PIPESTATUS[@]}")
   for status in "${pipeline_status[@]}"; do
     if (( status == 137 )); then deployment_error "$status" "$LINENO"; exit "$status"; fi
   done
-  fail 'The dedicated proxy configuration must already be loaded exactly once.'
+  fail 'Both native BrainyCP Nginx site files must already be loaded exactly once.'
 }
 systemctl is-active --quiet "$unit" || fail 'The existing game service is not running.'
 app_health() {
@@ -89,14 +101,16 @@ app_health() {
 }
 app_health
 php_baseline=$(php_snapshot "$php_checks")
-files_state=$(sha256sum "$panel_main" "$site" "$config")
-file_modes=$(stat -c '%u:%g:%a' "$panel_main" "$site" "$config")
+config_files=("$panel_main" "${site_files[@]}" "$config")
+files_state=$(sha256sum "${config_files[@]}")
+file_modes=$(stat -c '%u:%g:%a' "${config_files[@]}")
 unit_state=$(service_state)
 unit_text=$(systemctl cat "$unit")
 assert_unchanged() {
   brainycp_guard "$panel_main"
   validate_service_exec
-  [[ $(sha256sum "$panel_main" "$site" "$config") == "$files_state" && $(stat -c '%u:%g:%a' "$panel_main" "$site" "$config") == "$file_modes" ]] || fail 'Panel, proxy or application configuration changed during deployment.'
+  validate_site_files
+  [[ $(sha256sum "${config_files[@]}") == "$files_state" && $(stat -c '%u:%g:%a' "${config_files[@]}") == "$file_modes" ]] || fail 'Panel, site or application configuration changed during deployment.'
   [[ $(service_state) == "$unit_state" && $(systemctl cat "$unit") == "$unit_text" ]] || fail 'Service configuration changed during deployment.'
 }
 # Serialize even deployments started outside GitHub Actions, after read-only checks.
@@ -110,7 +124,11 @@ if [[ ! -e $backup_parent && ! -L $backup_parent ]]; then mkdir -m 700 "$backup_
 backup="$backup_parent/$(date -u +%Y%m%dT%H%M%SZ)-$sha"
 mkdir -m 700 "$backup"
 cp --preserve=mode,ownership,timestamps --no-dereference -- "$panel_main" "$backup/brainy-main.conf"
-cp --preserve=mode,ownership,timestamps --no-dereference -- "$site" "$backup/nginx-game.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "${site_files[0]}" "$backup/native-vhost.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "${site_files[1]}" "$backup/nginx-http.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "${site_files[2]}" "$backup/nginx-https.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "${site_files[3]}" "$backup/nginx-user-http.conf"
+cp --preserve=mode,ownership,timestamps --no-dereference -- "${site_files[4]}" "$backup/nginx-user-https.conf"
 cp --preserve=mode,ownership,timestamps --no-dereference -- "$config" "$backup/application.env"
 printf '%s\n' "$unit_state" > "$backup/service-state.txt"
 printf '%s\n' "$unit_text" > "$backup/service.conf"

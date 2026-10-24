@@ -10,13 +10,20 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "ctokodnomy-routing-")); roots.push(root);
-  const bin = join(root, "bin"), etc = join(root, "etc"), app = join(root, "app"), privateRoot = join(root, "var/lib");
-  for (const directory of [bin, app, join(etc, "nginx/conf.d"), join(etc, "nginx/sites-available"), join(etc, "httpd/vhost.d")]) mkdirSync(directory, { recursive: true });
+  const bin = join(root, "bin"), etc = join(root, "etc"), app = join(root, "app"), privateRoot = join(root, "var/lib"), records = join(root, "var/brainycp/data/vhosts"), hooks = join(root, "var/brainycp/data/webserver_config/user_includes/player");
+  for (const directory of [bin, app, records, hooks, join(etc, "nginx/conf.d"), join(etc, "nginx/sites-available"), join(etc, "httpd/vhost.d")]) mkdirSync(directory, { recursive: true });
   const configuration = `server { listen 45.131.40.141:80; server_name game.example; location / { return 301 https://game.example\${request_uri}; } }\nserver { listen 45.131.40.141:443 ssl; server_name game.example; ssl_certificate_key /private/DO_NOT_PRINT_KEY; include /private/DO_NOT_PRINT_ENV.env; location / { proxy_pass http://user:DO_NOT_PRINT_PASSWORD@127.0.0.1:3003/; proxy_set_header Host $host; proxy_set_header Authorization DO_NOT_PRINT_AUTH; proxy_set_header Cookie DO_NOT_PRINT_COOKIE; } }\n`;
-  const dedicated = join(etc, "nginx/conf.d/game.example-game.conf"); writeFileSync(dedicated, configuration);
+  const [http, https] = configuration.trimEnd().split("\n");
+  const nativeHttp = join(etc, "nginx/sites-available/game.example.conf"); writeFileSync(nativeHttp, http + "\n");
+  const nativeHttps = join(etc, "nginx/sites-available/ssl.game.example.conf"); writeFileSync(nativeHttps, https + "\n");
+  writeFileSync(join(records, "game.example.conf"), "PANEL_PARAMETER=DO_NOT_PRINT_RECORD_SECRET\n");
+  const httpInclude = join(hooks, "game.example.nginx"), httpsInclude = httpInclude + ".ssl";
+  const httpFragment = "return 301 https://game.example$request_uri;\n";
+  const httpsFragment = "if ($host = www.game.example) { return 301 https://game.example$request_uri; }\nlocation ~ ^/ { proxy_pass http://user:DO_NOT_PRINT_HOOK_PASSWORD@127.0.0.1:3003; proxy_set_header Host $host; proxy_set_header Authorization DO_NOT_PRINT_HOOK_AUTH; }\n";
+  writeFileSync(httpInclude, httpFragment); writeFileSync(httpsInclude, httpsFragment);
   const panel = join(etc, "nginx/sites-available/other.example.conf"); writeFileSync(panel, "server { listen 45.131.40.141:80; server_name other.example; return 200 \"DO_NOT_PRINT_RESPONSE_BODY\"; }\n");
-  const backup = join(privateRoot, "ctokodnomy-deploy/player-3003/backups/20261017T132411Z-" + "a".repeat(40)); mkdirSync(backup, { recursive: true }); writeFileSync(join(backup, "nginx-game.conf"), configuration);
-  const loaded = join(root, "loaded-nginx"); writeFileSync(loaded, `# configuration file ${dedicated}:\n${configuration}\n# configuration file ${panel}:\n${readFileSync(panel, "utf8")}\n`);
+  const backup = join(privateRoot, "ctokodnomy-deploy/player-3003/backups/20261017T132411Z-" + "a".repeat(40)); mkdirSync(backup, { recursive: true }); writeFileSync(join(backup, "nginx-http.conf"), http + "\n"); writeFileSync(join(backup, "nginx-https.conf"), https + "\n"); writeFileSync(join(backup, "nginx-user-http.conf"), httpFragment); writeFileSync(join(backup, "nginx-user-https.conf"), httpsFragment);
+  const loaded = join(root, "loaded-nginx"); writeFileSync(loaded, `# configuration file ${nativeHttp}:\n${http}\n# configuration file ${nativeHttps}:\n${https}\n# configuration file ${panel}:\n${readFileSync(panel, "utf8")}\n# configuration file ${httpInclude}:\n${httpFragment}\n# configuration file ${httpsInclude}:\n${httpsFragment}`);
   const curlLog = join(root, "curl-requests"); writeFileSync(curlLog, "");
   const command = (name: string, body: string) => { const file = join(bin, name); writeFileSync(file, `#!/usr/bin/env bash\nset -eu\n${body}\n`); chmodSync(file, 0o755); };
   command("nginx", 'cat "$FIXTURE_NGINX"');
@@ -25,9 +32,9 @@ function fixture() {
   command("ss", "printf 'LISTEN 0 511 45.131.40.141:80 0.0.0.0:*\\nLISTEN 0 511 45.131.40.141:443 0.0.0.0:*\\n'");
   command("ip", "printf '2: eth0 inet 45.131.40.141/24 scope global eth0\\n'");
   command("curl", `printf '%s\\n' "$@" >> "$FIXTURE_CURL"; printf 'HTTP/1.1 301 Moved\\r\\nSet-Cookie: DO_NOT_PRINT_COOKIE\\r\\nLocation: https://user:DO_NOT_PRINT_LOCATION_PASS@game.example/login?token=DO_NOT_PRINT_TOKEN\\r\\n\\r\\nDO_NOT_PRINT_BODY\\nCTOK_ROUTE\\t301\\t0\\t45.131.40.141'`);
-  const source = readFileSync(join(scripts, "brainycp-routing.sh"), "utf8").match(/<<'NODE'\n([\s\S]*?)\nNODE/)![1].replaceAll("/etc/", `${etc}/`).replaceAll("/var/lib/", `${privateRoot}/`);
+  const source = readFileSync(join(scripts, "brainycp-routing.sh"), "utf8").match(/<<'NODE'\n([\s\S]*?)\nNODE/)![1].replaceAll("/etc/", `${etc}/`).replaceAll("/var/lib/", `${privateRoot}/`).replaceAll("/var/brainycp/", `${root}/var/brainycp/`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FIXTURE_NGINX: loaded, FIXTURE_CURL: curlLog };
-  return { root, bin, app, command, source, env, curlLog, run: () => spawnSync(process.execPath, ["--input-type=module", "-", app, "player", "3003", "game.example", "other.example"], { input: source, encoding: "utf8", env, timeout: 10000 }) };
+  return { root, bin, app, loaded, nativeHttp, nativeHttps, command, source, env, curlLog, run: () => spawnSync(process.execPath, ["--input-type=module", "-", app, "player", "3003", "game.example", "other.example"], { input: source, encoding: "utf8", env, timeout: 10000 }) };
 }
 
 describe("focused read-only BrainyCP routing diagnostics", () => {
@@ -39,7 +46,13 @@ describe("focused read-only BrainyCP routing diagnostics", () => {
     expect(result.stdout).toContain("location / => return 301 https://game.example${request_uri};");
     expect(result.stdout).toContain("proxy_set_header Host $host;");
     expect(result.stdout).toContain("return 200 [body omitted]");
-    expect(result.stdout).toContain("matches current dedicated proxy: true");
+    expect(result.stdout).toContain("HTTP matches current native site: true");
+    expect(result.stdout).toContain("HTTPS matches current native site: true");
+    expect(result.stdout).toContain("loaded native HTTP copies=1; HTTPS copies=1");
+    expect(result.stdout).toContain("Native per-site routing includes");
+    expect(result.stdout).toContain("location ~ ^/ => proxy_pass http://[redacted]@127.0.0.1:3003;");
+    expect(result.stdout).toContain("Loaded native routing includes: HTTP=1; HTTPS=1");
+    expect(result.stdout).toContain("HTTPS include matches current native site: true");
     expect(result.stdout).toContain("addresses=45.131.40.141,2001:db8::1");
     expect(result.stdout).toContain("LOCAL GET http://ctok-routing-probe.invalid/");
     expect(result.stdout).toContain("Location=https://game.example/login?[redacted]");
@@ -48,6 +61,15 @@ describe("focused read-only BrainyCP routing diagnostics", () => {
     const curl = readFileSync(f.curlLog, "utf8").split("\n");
     expect(curl).toContain("--request"); expect(curl).toContain("GET"); expect(curl).toContain("--resolve"); expect(curl).toContain("/dev/null");
     for (const argument of ["--location", "-L", "--insecure", "-k"]) expect(curl).not.toContain(argument);
+  });
+
+  test("reports an unloaded HTTPS site separately from the loaded HTTP site", () => {
+    const f = fixture();
+    writeFileSync(f.loaded, `# configuration file ${f.nativeHttp}:\n${readFileSync(f.nativeHttp, "utf8")}`);
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("loaded native HTTP copies=1; HTTPS copies=0");
+    expect(result.stdout + result.stderr).not.toContain("DO_NOT_PRINT");
   });
 
   test("keeps strict TLS and reports a certificate failure without an unsafe retry", () => {

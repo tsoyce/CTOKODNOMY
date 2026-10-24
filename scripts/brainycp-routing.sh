@@ -92,11 +92,12 @@ function read(file) {
 function fingerprint(file) {
   const item = read(file); return { ...item, hash: createHash('sha256').update(item.text).digest('hex') };
 }
-function describe(file, maxDirectives = 14) {
+function describe(file, maxDirectives = 14, serverFragment = false) {
   try {
     const item = fingerprint(file);
     out(`${safeValue(file)}: mtime=${item.stat.mtime.toISOString()} bytes=${item.stat.size} sha256=${item.hash}`);
-    const selected = servers(item.text).flatMap((block, index) => [`server#${index + 1} line=${block.line}`, ...block.directives]);
+    const blocks = servers(serverFragment ? `server {\n${item.text}\n}` : item.text);
+    const selected = serverFragment ? blocks.flatMap(block => block.directives) : blocks.flatMap((block, index) => [`server#${index + 1} line=${block.line}`, ...block.directives]);
     for (const value of selected.slice(0, maxDirectives)) out(`  ${value}`);
     // Apache panel vhosts have no Nginx server{} blocks.
     if (!selected.length) for (const line of item.text.split('\n').map(directive).filter(Boolean).slice(0, maxDirectives)) out(`  ${line}`);
@@ -104,40 +105,59 @@ function describe(file, maxDirectives = 14) {
   } catch { out(`${safeValue(file)}: absent or unsupported`); return null; }
 }
 out('READ-ONLY ROUTING DIAGNOSTICS'); out(`UTC: ${new Date().toISOString()}`);
-const dedicated = `/etc/nginx/conf.d/${appDomain}-game.conf`;
-let dedicatedHash;
-section('Dedicated game proxy (routing directives only)', 2400, () => { dedicatedHash = describe(dedicated, 24); });
-section('Panel default page configuration', 2800, () => {
+const nativeHttp = `/etc/nginx/sites-available/${appDomain}.conf`;
+const nativeHttps = `/etc/nginx/sites-available/ssl.${appDomain}.conf`;
+const nativeRecord = `/var/brainycp/data/vhosts/${appDomain}.conf`;
+const nativeHttpInclude = `/var/brainycp/data/webserver_config/user_includes/${appUser}/${appDomain}.nginx`;
+const nativeHttpsInclude = `${nativeHttpInclude}.ssl`;
+const legacyProxy = `/etc/nginx/conf.d/${appDomain}-game.conf`;
+const nativeHashes = new Map();
+section('Native game site (routing directives only; record metadata)', 2200, () => {
+  nativeHashes.set(nativeHttp, describe(nativeHttp, 16));
+  nativeHashes.set(nativeHttps, describe(nativeHttps, 18));
+  // The persistent panel record may contain private parameters. Report only
+  // its fingerprint and file metadata, never its contents.
+  try { const item = fingerprint(nativeRecord); out(`${safeValue(nativeRecord)}: mtime=${item.stat.mtime.toISOString()} bytes=${item.stat.size} sha256=${item.hash}`); }
+  catch { out(`${safeValue(nativeRecord)}: absent or unsupported`); }
+});
+section('Native per-site routing includes', 1400, () => {
+  for (const file of [nativeHttpInclude, nativeHttpsInclude]) nativeHashes.set(file, describe(file, 12, true));
+});
+if (fs.existsSync(legacyProxy)) section('Legacy conf.d game override (should be absent after native migration)', 600, () => describe(legacyProxy, 5));
+section('Panel default page configuration', 2400, () => {
   describe('/etc/nginx/sites-available/!!default.conf', 28);
   describe('/etc/nginx/sites-available/!!ssl.default.conf', 28);
 });
-section('Selected panel site files', 1600, () => {
-  for (const domain of domains) for (const file of [`/etc/nginx/sites-available/${domain}.conf`, `/etc/httpd/vhost.d/${domain}.conf`]) describe(file, 10);
+section('Other selected panel site files', 1000, () => {
+  for (const domain of domains.filter(domain => domain !== appDomain)) for (const file of [`/etc/nginx/sites-available/${domain}.conf`, `/etc/nginx/sites-available/ssl.${domain}.conf`, `/etc/httpd/vhost.d/${domain}.conf`]) describe(file, 8);
 });
 let loaded = [];
-section('Loaded Nginx server blocks, in configuration order', 3200, () => {
+section('Loaded Nginx server blocks, in configuration order', 3000, () => {
   const result = run('nginx', ['-T'], 16 * 1024 * 1024);
   out(`nginx -T exit=${result.status ?? 'unavailable'}`);
   if (result.status !== 0) return;
-  let file, lines = [], dedicatedCopies = 0;
+  let file, lines = []; const nativeCopies = new Map([[nativeHttp, 0], [nativeHttps, 0], [nativeHttpInclude, 0], [nativeHttpsInclude, 0]]);
   function save() { if (file) for (const block of servers(lines.join('\n'))) loaded.push({ file, ...block }); }
   for (const line of result.stdout.split('\n')) {
     const header = line.match(/^# configuration file (\/[^\r\n]+):$/);
-    if (header) { save(); file = header[1]; lines = []; if (file === dedicated) dedicatedCopies++; } else lines.push(line);
+    if (header) { save(); file = header[1]; lines = []; if (nativeCopies.has(file)) nativeCopies.set(file, nativeCopies.get(file) + 1); } else lines.push(line);
   }
-  save(); out(`server blocks=${loaded.length}; loaded dedicated copies=${dedicatedCopies}`);
-  const relevant = loaded.filter(block => block.file === dedicated || block.directives.some(value => /^server_name /.test(value) && domains.some(domain => value.split(/[\s;]+/).includes(domain))));
+  save(); out(`server blocks=${loaded.length}; loaded native HTTP copies=${nativeCopies.get(nativeHttp)}; HTTPS copies=${nativeCopies.get(nativeHttps)}`);
+  out(`Loaded native routing includes: HTTP=${nativeCopies.get(nativeHttpInclude)}; HTTPS=${nativeCopies.get(nativeHttpsInclude)}`);
+  const relevant = loaded.filter(block => nativeCopies.has(block.file) || block.file === legacyProxy || block.directives.some(value => /^server_name /.test(value) && domains.some(domain => value.split(/[\s;]+/).includes(domain))));
   for (const block of relevant) { out(`${safeValue(block.file)} server line=${block.line}`); for (const value of block.directives) out(`  ${value}`); }
   out('Other server listen/name inventory (first block on an address is an implicit default if no explicit default):');
   for (const block of loaded.filter(block => !relevant.includes(block)).slice(0, 45)) out(`${safeValue(block.file)}:${block.line} ${block.directives.filter(value => /^(listen|server_name) /.test(value)).join(' | ')}`);
 });
-section('Recent private deployment proxy backups', 2000, () => {
+section('Recent private deployment proxy backups', 1600, () => {
   const root = `/var/lib/ctokodnomy-deploy/${appUser}-${appPort}/backups`;
   if (!fs.existsSync(root)) { out('No private backup directory.'); return; }
-  const entries = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory() && /^\d{8}T\d{6}Z-[a-f0-9]{40}$/.test(entry.name)).map(entry => entry.name).sort().slice(-5);
+  const entries = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory() && /^\d{8}T\d{6}Z-[a-f0-9]{40}$/.test(entry.name)).map(entry => entry.name).sort().slice(-3).reverse();
   for (const name of entries) {
-    const file = path.join(root, name, 'nginx-game.conf'); const hash = describe(file, 10);
-    out(`  matches current dedicated proxy: ${hash && dedicatedHash ? hash === dedicatedHash : 'unavailable'}`);
+    for (const [label, backupName, currentFile] of [['HTTP', 'nginx-http.conf', nativeHttp], ['HTTPS', 'nginx-https.conf', nativeHttps], ['HTTP include', 'nginx-user-http.conf', nativeHttpInclude], ['HTTPS include', 'nginx-user-https.conf', nativeHttpsInclude]]) {
+      const file = path.join(root, name, backupName); const hash = describe(file, 2, label.endsWith('include')); const currentHash = nativeHashes.get(currentFile);
+      out(`  ${label} matches current native site: ${hash && currentHash ? hash === currentHash : 'unavailable'}`);
+    }
   }
 });
 section('Nginx service metadata (no reload or restart)', 900, () => {

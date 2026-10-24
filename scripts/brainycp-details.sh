@@ -98,10 +98,18 @@ try {
   console.log(`back_server selected value (comments omitted): ${JSON.stringify(value.split(/[;#]/)[0].trim().slice(0, 120))}`);
   console.log(`back_server selected entry (comments omitted): ${JSON.stringify((lines[0] ?? '').split(/[;#]/)[0].slice(0, 160))}`);
 } catch { console.log('back_server metadata unavailable'); }
-const dedicated = `/etc/nginx/conf.d/${domain}-game.conf`;
-console.log(`Dedicated proxy: ${dedicated}; ${metadata(dedicated)}; physical=${resolved(dedicated) === dedicated}`);
+const record = `/var/brainycp/data/vhosts/${domain}.conf`;
+console.log(`Native site record: ${record}; ${metadata(record)}; physical=${resolved(record) === record}`);
 const nginx = run('nginx', ['-T'], 16 * 1024 * 1024);
-console.log(`Dedicated proxy loaded count: ${nginx.status === 0 ? (nginx.stdout ?? '').split('\n').filter(line => line === `# configuration file ${dedicated}:`).length : '(unavailable)'}`);
+for (const [label, file] of [['HTTP', `/etc/nginx/sites-available/${domain}.conf`], ['HTTPS', `/etc/nginx/sites-available/ssl.${domain}.conf`]]) {
+  console.log(`Native ${label} site: ${file}; ${metadata(file)}; physical=${resolved(file) === file}`);
+  console.log(`Native ${label} site loaded count: ${nginx.status === 0 ? (nginx.stdout ?? '').split('\n').filter(line => line === `# configuration file ${file}:`).length : '(unavailable)'}`);
+}
+for (const [label, suffix] of [['HTTP', ''], ['HTTPS', '.ssl']]) {
+  const file = `/var/brainycp/data/webserver_config/user_includes/${appUser}/${domain}.nginx${suffix}`;
+  console.log(`Native ${label} routing include: ${file}; ${metadata(file)}; physical=${resolved(file) === file}`);
+  console.log(`Native ${label} routing include loaded count: ${nginx.status === 0 ? (nginx.stdout ?? '').split('\n').filter(line => line === `# configuration file ${file}:`).length : '(unavailable)'}`);
+}
 if (probe) {
   let root, handler;
   try {
@@ -144,7 +152,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const domain = process.env.APP_DOMAIN;
 const certificates = new Set();
-for (const file of [`/etc/nginx/sites-available/${domain}.conf`, `/etc/httpd/vhost.d/${domain}.conf`]) {
+for (const file of [`/etc/nginx/sites-available/${domain}.conf`, `/etc/nginx/sites-available/ssl.${domain}.conf`, `/etc/httpd/vhost.d/${domain}.conf`]) {
   if (!existsSync(file)) continue;
   console.log(file);
   for (const line of readFileSync(file, 'utf8').split('\n')) {
