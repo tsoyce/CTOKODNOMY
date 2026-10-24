@@ -59,11 +59,29 @@ function restoreNative(c, mode) {
   const include=(outer,file)=>{const body=outer.data.toString();const anchor=/^([ \t]*)location \^~ \/\.well-known\/acme-challenge\/ \{ allow all; \}$/gm; const hits=[...body.matchAll(anchor)];assert(hits.length===1 && !body.includes(file) && new RegExp(`server_name\\s+${c.domain.replaceAll('.','\\.')}\\s+www\\.${c.domain.replaceAll('.','\\.')}\\s*;`).test(body),'Unexpected native virtual-host structure.');return body.slice(0,hits[0].index)+`            include ${file};\n\n`+body.slice(hits[0].index);};
   const candidates=new Map([[http,Buffer.from(include(originals.get(http),hook))],[https,Buffer.from(include(originals.get(https),`${hook}.ssl`))],[hook,Buffer.from(httpHook)],[`${hook}.ssl`,Buffer.from(sslHook)],[game,null],[clone,null],[legacy,null]]);
   const certificate=originals.get(https).data.toString().match(/^\s*ssl_certificate\s+([^;\s]+);/m)?.[1];
-  assert(certificate && /^\/[A-Za-z0-9_.:/-]+$/.test(certificate),'Unexpected native TLS certificate path.');
+  const nativeKey=originals.get(https).data.toString().match(/^\s*ssl_certificate_key\s+([^;\s]+);/m)?.[1];
+  const profile={};for(const key of ['crt','key','chein'])profile[key]=source.match(new RegExp(`^${key}="([^"\r\n]+)"`,'m'))?.[1];
+  for(const value of Object.values(profile))assert(value && value.startsWith(`/etc/certs/${c.app_user}/${c.domain}_`) && /^\/[A-Za-z0-9_.:/-]+$/.test(value),'Unexpected native certificate profile.');
+  assert(certificate===`${profile.crt}_v2` && [profile.key,`${profile.key}_v2`].includes(nativeKey),'Native certificate paths differ from the reviewed panel format.');
   console.log(`NATIVE_TLS_PUBLIC ${run('openssl',['x509','-in',certificate,'-noout','-dates','-ext','subjectAltName'])}`);
-  run('openssl',['x509','-in',certificate,'-noout','-checkend','86400']);
-  for(const hostname of [c.domain,`www.${c.domain}`])run('openssl',['verify','-purpose','sslserver','-verify_hostname',hostname,'-CApath','/etc/ssl/certs','-untrusted',certificate,certificate]);
-  console.log(`NATIVE_TLS_VERIFIED ${certificate} ${run('openssl',['x509','-in',certificate,'-noout','-dates']).trim().replaceAll('\n',' ')}`);
+  const expiry=spawnSync('openssl',['x509','-in',certificate,'-noout','-checkend','86400'],{encoding:'utf8',timeout:5000});
+  if(expiry.signal==='SIGKILL' || expiry.status===137){const e=new Error('Certificate check killed; stopped.');e.code=137;throw e;}
+  assert(!expiry.error && !expiry.signal && expiry.status===1,'Native certificate no longer needs the reviewed refresh; inspect it again.');
+  const fullchain=[...new Set([...text.matchAll(/^\s*ssl_certificate\s+([^;\s]+);/gm)].map(m=>m[1]))];
+  const keys=[...new Set([...text.matchAll(/^\s*ssl_certificate_key\s+([^;\s]+);/gm)].map(m=>m[1]))];
+  assert(fullchain.length===1 && keys.length===1 && fullchain[0].startsWith('/etc/letsencrypt/live/') && fullchain[0].endsWith('/fullchain.pem') && keys[0]===path.join(path.dirname(fullchain[0]),'privkey.pem'),'Unexpected working certificate source.');
+  const leaf=path.join(path.dirname(fullchain[0]),'cert.pem'),chain=path.join(path.dirname(fullchain[0]),'chain.pem');
+  const trustedSources=new Map();
+  for(const file of [fullchain[0],keys[0],leaf,chain]) {const physical=fs.realpathSync(file);assert(physical.startsWith('/etc/letsencrypt/archive/'),'Working certificate does not resolve into the root-managed archive.');let parent=path.dirname(physical);while(parent!=='/'){const st=fs.lstatSync(parent);assert(st.isDirectory() && !st.isSymbolicLink() && st.uid===0 && !(st.mode&0o022),'Untrusted working certificate parent.');parent=path.dirname(parent);}trustedSources.set(physical,read(physical));}
+  run('openssl',['x509','-in',fullchain[0],'-noout','-checkend','86400']);
+  for(const hostname of [c.domain,`www.${c.domain}`])run('openssl',['verify','-purpose','sslserver','-verify_hostname',hostname,'-CApath','/etc/ssl/certs','-untrusted',chain,leaf]);
+  assert(run('openssl',['x509','-in',leaf,'-noout','-pubkey'])===run('openssl',['pkey','-in',keys[0],'-pubout']),'Working TLS certificate and key differ.');
+  assert(run('openssl',['x509','-in',leaf,'-noout','-fingerprint','-sha256'])===run('openssl',['x509','-in',fullchain[0],'-noout','-fingerprint','-sha256']),'Working certificate files are inconsistent.');
+  const certData=file=>trustedSources.get(fs.realpathSync(file)).data;
+  const privateTargets=new Set([profile.key,nativeKey]);
+  const certCandidates=new Map([[profile.crt,certData(leaf)],[profile.chein,certData(chain)],[profile.key,certData(keys[0])],[certificate,certData(fullchain[0])],[nativeKey,certData(keys[0])]]);
+  for(const [file,bytes]of certCandidates){assert(!originals.has(file),'Certificate target conflicts with routing files.');originals.set(file,read(file,true));candidates.set(file,bytes);}
+  console.log(`NATIVE_TLS_REFRESH from_existing_working_certificate=true profile_unchanged=true ${run('openssl',['x509','-in',leaf,'-noout','-dates']).trim().replaceAll('\n',' ')}`);
   function websocket() {
     const args=['--disable','--noproxy','*','--http1.1','--silent','--connect-timeout','5','--max-time','3','--max-filesize','65536','--resolve',`${c.domain}:443:${c.address}`,'--header','Connection: Upgrade','--header','Upgrade: websocket','--header','Sec-WebSocket-Version: 13','--header','Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==','--header',`Origin: https://${c.domain}`,'--output','/dev/null','--write-out','%{http_code}',`https://${c.domain}/api/ws/games/codex-routing-probe`];
     const r=spawnSync('curl',args,{encoding:'utf8',timeout:8000,maxBuffer:65536});
@@ -71,8 +89,10 @@ function restoreNative(c, mode) {
     assert(!r.error && !r.signal && [0,28,52].includes(r.status) && r.stdout==='101','WebSocket upgrade failed.');return 101;
   }
   const otherFiles=[main,record,'/etc/brainy/vhosts/vhosts.tpl','/etc/nginx/nginx.conf'];
-  for(const directory of ['/etc/nginx/conf.d','/etc/nginx/sites-available','/etc/httpd/vhost.d'])for(const name of fs.readdirSync(directory).filter(n=>n.endsWith('.conf'))) {const file=path.join(directory,name);if(!originals.has(file))otherFiles.push(file);}
+  for(const directory of ['/etc/nginx/conf.d','/etc/nginx/sites-available','/etc/httpd/vhost.d','/var/brainycp/data/vhosts'])for(const name of fs.readdirSync(directory).filter(n=>n.endsWith('.conf'))) {const file=path.join(directory,name);if(!originals.has(file))otherFiles.push(file);}
+  for(const file of otherFiles.filter(file=>file.startsWith('/var/brainycp/data/vhosts/') && file!==record)){const data=read(file).data.toString();for(const value of Object.values(profile))assert(!data.includes(value),'Native certificate is shared with another site; automatic refresh refused.');}
   const protectedFiles=new Map([...new Set(otherFiles)].map(file=>[file,read(file)]));
+  for(const [file,value]of trustedSources)protectedFiles.set(file,value);
   const same=(a,b)=>a===null?b===null:b!==null && a.uid===b.uid && a.gid===b.gid && a.mode===b.mode && sha(a.data)===sha(b.data);
   const unchanged=()=>{for(const [file,before]of protectedFiles)assert(same(before,read(file)),`Unrelated configuration changed: ${file}`);guard();};
   const originalsUnchanged=()=>{for(const [file,before]of originals)assert(same(before,read(file,before===null,file!==hook)),`Target configuration changed: ${file}`);};
@@ -100,7 +120,7 @@ function restoreNative(c, mode) {
     const backups=path.join(parent,'routing-backups');if(!fs.existsSync(backups))fs.mkdirSync(backups,{mode:0o700});const s=fs.lstatSync(backups);assert(s.isDirectory() && !s.isSymbolicLink() && s.uid===0 && (s.mode&0o777)===0o700,'Unsafe routing backup directory.');
     backup=path.join(backups,`${new Date().toISOString().replace(/[-:.]/g,'')}-${c.run_id}-${c.run_attempt}`);fs.mkdirSync(backup,{mode:0o700});let n=0;for(const [file,value]of originals){if(value)fs.writeFileSync(path.join(backup,`${n}.conf`),value.data,{flag:'wx',mode:0o600});n++;}fs.writeFileSync(path.join(backup,'manifest.json'),JSON.stringify(plan,null,2),{flag:'wx',mode:0o600});console.log(`NATIVE_ROUTING_BACKUP ${backup}`);
     unchanged();originalsUnchanged();
-    for(const [file,value]of candidates){if(value===null)fs.unlinkSync(file);else put(file,value);written.push(file);}
+    for(const [file,value]of candidates){if(value===null)fs.unlinkSync(file);else put(file,value,privateTargets.has(file)?{uid:0,gid:0,mode:0o600}:undefined);written.push(file);}
     run('nginx',['-t']);unchanged();reload=true;run('nginx',['-s','reload']);run('sleep',['1']);
     unchanged();for(const [file,value]of candidates){const now=read(file,value===null);assert(value===null?now===null:now && sha(now.data)===sha(value),'A repaired target changed during verification.');}
     const currentDefault=response(`http://${c.address}/`,'default');assert(currentDefault.hash===baseline.hash && currentDefault.status===baseline.status && !currentDefault.location,'Native panel page changed.');
