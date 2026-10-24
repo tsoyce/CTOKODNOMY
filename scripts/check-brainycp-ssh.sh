@@ -58,8 +58,11 @@ fi
 if [[ ${CHECK_WEB_SERVICES:-false} == true ]]; then
   inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-web-diagnostics.sh"
 fi
+if [[ ${CHECK_ROUTING:-false} == true ]]; then
+  inspection_script="$(dirname "${BASH_SOURCE[0]}")/brainycp-routing.sh"
+fi
 inspection_command="bash -s -- '$APP_ROOT' '$APP_USER' '$APP_PORT' '$APP_DOMAIN'"
-if [[ ${CHECK_WEB_SERVICES:-false} == true || ${CHECK_DETAILS:-false} == true ]]; then
+if [[ ${CHECK_WEB_SERVICES:-false} == true || ${CHECK_DETAILS:-false} == true || ${CHECK_ROUTING:-false} == true ]]; then
   inspection_command+=" '${CHECK_PROBE_DOMAIN:-}'"
 fi
 if report=$(ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \

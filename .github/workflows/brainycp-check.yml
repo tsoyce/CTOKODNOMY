@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      routing:
+        description: Read-only focused Nginx routing, redirect and proxy-backup diagnostics
+        required: false
+        default: false
+        type: boolean
       probe_domain:
         description: Additional affected hostname for read-only web diagnostics
         required: false
@@ -68,6 +73,7 @@ jobs:
           APP_DOMAIN: ${{ inputs.domain }}
           CHECK_DETAILS: ${{ inputs.details }}
           CHECK_WEB_SERVICES: ${{ inputs.web_services }}
+          CHECK_ROUTING: ${{ inputs.routing }}
           CHECK_PROBE_DOMAIN: ${{ inputs.probe_domain }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
