@@ -72,12 +72,16 @@ export function repairDefault(config, mode, dependencies = {}) {
         for (const n of [...selected].slice(0,maximum)) report(`${n+1}: ${clean(lines[n]).slice(0,380)}`);
       } catch { report('Unavailable'); }
     };
-    for (const file of ['/etc/brainy/nginx.conf','/etc/brainy/nginx_def.conf','/etc/brainy/nginx_fpm.conf','/etc/brainy/http.conf','/etc/brainy/https.conf'])
-      show(file, /include|node|Node|proxy|location|user|custom|vhost/i, 2, 100);
-    for (const root of ['/etc/brainy/conf/apacserver','/etc/brainy/conf/apacserver/tsoy','/etc/brainy/vhosts','/etc/brainy/server_control','/etc/brainy/conf/hostacc','/etc/brainy/conf/user_info']) {
-      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,120).join(', ')}`); } catch { report(`Unavailable ${root}`); }
+    show('/etc/brainy/vhosts/vhosts.tpl',/node|Node|include|proxy_pass|redirect|location|vhost|custom|config|port/i,3,240);
+    for (const root of ['/etc/brainy/conf/conf','/home/tsoy','/home/tsoy/sites','/home/tsoy/.brainycp','/home/tsoy/sites/.brainycp','/etc/brainy/backup_conf']) {
+      try { report(`NATIVE_DIRECTORY ${root}: ${io.readdirSync(root).slice(0,100).join(', ')}`); } catch { report(`Unavailable ${root}`); }
     }
-    for (const file of ['/usr/local/brainycp/tpl/basic/webserver_config/list_sites.tpl','/etc/nginx/tajelo-delivery.conf']) show(file,/./,0,85);
+    for (const file of ['/etc/brainy/conf/apacserver/main','/etc/brainy/conf/hostacc/main','/etc/brainy/conf/user_info/main']) {
+      try { const content=io.readFileSync(file,'utf8'); report(`NATIVE_FORMAT ${file} bytes=${Buffer.byteLength(content)} prefix=${content.slice(0,1)} lines=${content.split('\n').length}`);
+        if(content.trimStart().startsWith('{') || content.trimStart().startsWith('[')) { const data=JSON.parse(content); report(`NATIVE_KEYS ${file}: ${Object.keys(data).slice(0,75).join(', ')}`); }
+        else for(const line of content.split('\n').filter(line=>/utmns\.ru|nodejs|NodeJS|sites\/100k1|^\[/.test(line)).slice(0,30)) report(`NATIVE_SITE ${clean(line).slice(0,700)}`);
+      } catch { report(`NATIVE_FORMAT_UNAVAILABLE ${file}`); }
+    }
     return {mode:'native-inspection'};
   }
   function physical(file, directory = false) {
