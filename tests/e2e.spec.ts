@@ -186,7 +186,7 @@ test("organizer names an imported pack, moves questions in bulk and creates a st
   await page.getByLabel("Новое название набора", { exact: true }).fill("Вечер знакомств");
   await page.getByRole("button", { name: "Сохранить название", exact: true }).click();
   await expect(page.getByRole("button", { name: "Показать набор: Вечер знакомств", exact: true })).toBeVisible();
-  expect((await library()).every((question) => question.pack === "Вечер знакомств")).toBe(true);
+  await expect.poll(async () => (await library()).every((question) => question.pack === "Вечер знакомств")).toBe(true);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.screenshot({ path: "test-results/question-packs-desktop.png", fullPage: true });
 
