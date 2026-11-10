@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -38,9 +39,79 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { isLightBrand, projectorPalette } from "../theme";
 import { filterTeamIdeas, groupTeamIdeas, sortTeamIdeas, type TeamIdeaOrder } from "../../shared/teamIdeas";
 import "./Game.css";
+import "./BoardClassic.css";
 import "./TeamRoom.css";
 
 import { Connection, GameUnavailable, TeamScores, Strikes, RoundMeta } from "../components/GameCommon";
+
+function GameRoundMeta({ game, children }: { game: PublicGame; children?: ReactNode }) {
+  if (!game.classic) return <RoundMeta game={game}>{children}</RoundMeta>;
+  const label = game.classic.stage === "final" ? "Большая игра"
+    : game.classic.stage === "tiebreak" ? "Дополнительный вопрос"
+    : `Раунд ${Math.min(game.questionIndex + 1, 4)} / 5`;
+  return (
+    <div className="round-meta">
+      <span>{label}</span>
+      {game.classic.stage !== "final" && game.classic.stage !== "tiebreak" && game.questionIndex < 3 && (
+        <span className="badge">×{game.multiplier} очки</span>
+      )}
+      {game.isDemo && <span className="badge demo">Демонстрационный вопрос</span>}
+      {children}
+    </div>
+  );
+}
+
+function Countdown({ deadlineAt, remainingMs }: { deadlineAt?: number | null; remainingMs?: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    if (deadlineAt == null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [deadlineAt]);
+  const remaining = remainingMs ?? (deadlineAt == null ? null : deadlineAt - now);
+  if (remaining === null) return null;
+  const seconds = Math.max(0, Math.ceil(remaining / 1000));
+  return <strong className="classic-round-timer" role="timer" aria-label={`Осталось ${seconds} секунд`}>{seconds} сек.</strong>;
+}
+
+function ClassicFinalBoard({ game }: { game: PublicGame }) {
+  const final = game.classic?.final;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    if (!final?.deadlineAt || final.phase !== "answering") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [final?.deadlineAt, final?.phase]);
+  if (!final) return null;
+  const team = game.teams.find((candidate) => candidate.id === final.teamId);
+  const duration = final.player === 1 ? 15 : 20;
+  const seconds = final.phase === "ready" ? duration : final.remainingMs !== null
+    ? Math.max(0, Math.ceil(final.remainingMs / 1000))
+    : final.deadlineAt !== null ? Math.max(0, Math.ceil((final.deadlineAt - now) / 1000)) : null;
+  const status = game.paused ? "Пауза" : final.phase === "ready" ? "Готовимся к старту"
+    : final.phase === "answering" ? (seconds === 0 ? "Время вышло" : "Игрок отвечает")
+      : final.phase === "review" ? "Проверяем ответы" : "Ответы проверены";
+  return (
+    <section className="classic-final-board" aria-label="Финал">
+      <h1>Большая игра</h1>
+      <p className="classic-final-team">Команда «{team?.name ?? "Финалисты"}»</p>
+      <div className="classic-final-status" role="status">{status}</div>
+      <p className="classic-final-player">Игрок {final.player} из 2</p>
+      {final.player === 2 && final.phase === "ready" && (
+        <p className="classic-final-player">Первый игрок набрал {final.score} очков</p>
+      )}
+      {seconds !== null && final.phase !== "complete" && (
+        <div className="classic-final-clock" role="timer" aria-label={`Осталось ${seconds} секунд`}>
+          <span>{seconds}</span><small>секунд</small>
+        </div>
+      )}
+      <p className="classic-final-goal">Цель команды — 200 очков</p>
+    </section>
+  );
+}
+
 export function BoardPage() {
   const { gameId } = useParams();
   const { game, loading, error, connected, refresh } = useLiveGame<PublicGame>(
@@ -116,6 +187,11 @@ export function BoardPage() {
   );
   const tied =
     standings.length > 1 && standings[0].score === standings[1].score;
+  const classicStage = game.classic?.stage;
+  const finalTeam = game.teams.find((team) => team.id === game.classic?.final?.teamId);
+  const duelTeam = game.teams.find((team) => team.id === game.classic?.duel?.awaitingTeamId);
+  const isDuel = (classicStage === "duel" || classicStage === "tiebreak") && game.phase === "playing";
+  const isReverse = classicStage === "reverse" && game.phase === "playing";
   const displayBrand = projector
     ? { ...game.brand, ...projectorPalette }
     : game.brand;
@@ -221,17 +297,23 @@ export function BoardPage() {
             <p className="eyebrow">{game.title} · Финал</p>
             <h1>Игра завершена</h1>
             <h2>
-              {tied ? "Победила дружба!" : `Победители — ${standings[0]?.name}`}
+              {finalTeam ? `Победители — ${finalTeam.name}` : tied ? "Победила дружба!" : `Победители — ${standings[0]?.name}`}
             </h2>
+            {game.classic?.final?.phase === "complete" && (
+              <p className="classic-final-result">
+                Большая игра: <strong>{game.classic.final.score}</strong> из 200 очков
+                {game.classic.final.score >= 200 ? " · Суперприз!" : ""}
+              </p>
+            )}
             <p>Спасибо за ваши идеи, азарт и командную работу.</p>
             <div className="final-standings">
               {standings.map((team, index) => (
                 <div
-                  className={`final-team ${index === 0 ? "winner" : ""}`}
+                  className={`final-team ${(finalTeam ? team.id === finalTeam.id : index === 0) ? "winner" : ""}`}
                   key={team.id}
                   style={{ "--team-color": team.color } as CSSProperties}
                 >
-                  <span className="final-place">{tied ? "1" : index + 1}</span>
+                  <span className="final-place">{finalTeam && tied ? (team.id === finalTeam.id ? "1" : "2") : tied ? "1" : index + 1}</span>
                   <span className="final-team-name">{team.name}</span>
                   <strong>
                     {team.score}
@@ -256,16 +338,24 @@ export function BoardPage() {
               </Link>
             )}
           </section>
+        ) : classicStage === "final" && game.classic?.final ? (
+          <ClassicFinalBoard game={game} />
+        ) : classicStage === "tiebreak" && !game.classic?.duel && !game.prompt ? (
+          <section className="classic-tiebreak-wait" role="status">
+            <h1>Ничья</h1>
+            <p>Ведущий определяет команду для большой игры.</p>
+            <TeamScores teams={game.teams} activeTeamId={null} />
+          </section>
         ) : (
           <>
-            <RoundMeta game={game}>
+            <GameRoundMeta game={game}>
               <span className={`board-phase-pill ${game.phase === "steal" ? "steal" : ""}`}>
-                {game.paused ? "Пауза" : game.phase === "steal" ? "Перехват" : game.phase === "round-result" ? "Раунд завершён" : "Идёт раунд"}
+                {game.paused ? "Пауза" : isDuel ? (classicStage === "tiebreak" ? "Тай-брейк" : "Розыгрыш хода") : isReverse ? "Игра наоборот" : game.phase === "steal" ? "Перехват" : game.phase === "round-result" ? "Раунд завершён" : "Идёт раунд"}
               </span>
               <span className="board-reveal-count">
                 Открыто {game.answers.filter((answer) => answer.opened).length} из {game.answers.length}
               </span>
-            </RoundMeta>
+            </GameRoundMeta>
             <h1 className="board-question">{game.prompt}</h1>
             {game.phase === "round-result" && game.roundStats ? (
               <div className="board-round-statistics">
@@ -308,13 +398,19 @@ export function BoardPage() {
                       </span>
                       {answer.opened && (
                         <strong className="board-answer-points">
-                          {answer.points}
+                          {isReverse ? [15, 30, 60, 120, 180, 240][answer.position - 1] : answer.points}
                         </strong>
                       )}
                     </div>
                   ))}
                 </div>
-                <div className="board-round-status">
+                {isDuel || isReverse ? (
+                  <div className="classic-round-status" role="status">
+                    <span>{isDuel ? (duelTeam ? `Отвечает команда «${duelTeam.name}»` : "Команды готовы к розыгрышу") : `Отвечает команда «${activeTeam?.name ?? "—"}»`}</span>
+                    {isDuel && game.classic?.duel?.playerIndex != null && <span>Игрок {game.classic.duel.playerIndex}</span>}
+                    {isReverse && <Countdown deadlineAt={game.classic?.reverse?.deadlineAt} remainingMs={game.classic?.reverse?.remainingMs} />}
+                  </div>
+                ) : <div className="board-round-status">
                   <div className="round-bank">
                     <span>
                       {game.phase === "round-result"
@@ -336,8 +432,11 @@ export function BoardPage() {
                           : "Ход команды"}
                     </span>
                     <strong>{activeTeam?.name ?? "Решает ведущий"}</strong>
+                    {game.classic?.stage === "play" && game.phase === "playing" && game.classic.activePlayerIndex != null && (
+                      <span>Игрок {game.classic.activePlayerIndex}</span>
+                    )}
                   </div>
-                </div>
+                </div>}
               </>
             )}
             <TeamScores
@@ -421,10 +520,11 @@ export function TeamPage() {
   const phaseKey = `${gameId}:${game?.self.id ?? "anonymous"}:${game?.questionIndex ?? "lobby"}:${game?.phase ?? "loading"}`;
   const [draft, setDraft] = useDraft(`ctokodnomy:suggestion:${phaseKey}`);
   const [answer, setAnswer] = useDraft(`ctokodnomy:answer:${phaseKey}`);
-  const [busy, setBusy] = useState<"suggest" | "submit" | null>(null);
+  const [busy, setBusy] = useState<"suggest" | "submit" | "buzz" | null>(null);
   const [sendError, setSendError] = useState("");
   const [notice, setNotice] = useState("");
   const lastAttempt = useRef<PendingSend | null>(null);
+  const lastBuzz = useRef<{ requestId: string; revision: number } | null>(null);
   const sendInFlight = useRef(false);
   const captainForm = useRef<HTMLFormElement>(null);
   const [ideaSearch, setIdeaSearch] = useState("");
@@ -433,6 +533,7 @@ export function TeamPage() {
     setNotice("");
     setSendError("");
     lastAttempt.current = null;
+    lastBuzz.current = null;
   }, [phaseKey]);
   if (loading) return <Loading />;
   if (!game)
@@ -445,19 +546,33 @@ export function TeamPage() {
     );
   const team = game.teams.find((team) => team.id === game.self.teamId);
   const activeTeam = game.teams.find((team) => team.id === game.activeTeamId);
-  const players = game.players.filter((player) => player.teamId === game.self.teamId).sort((a, b) =>
-    Number(b.role === "captain") - Number(a.role === "captain") ||
-    Number(b.id === game.self.id) - Number(a.id === game.self.id) ||
-    a.name.localeCompare(b.name, "ru"),
-  );
-  const captain = players.find((player) => player.role === "captain");
+  // The server returns participants in join order. In classic mode the
+  // captain is player 1 and the rest fill positions 2–5 in that same order.
+  const teamPlayers = game.players.filter((player) => player.teamId === game.self.teamId);
+  const captain = teamPlayers.find((player) => player.role === "captain");
+  const positions = new Map<string, number>();
+  if (captain) positions.set(captain.id, 1);
+  teamPlayers.filter((player) => player.role !== "captain").forEach((player, index) => positions.set(player.id, index + 2));
+  const players = [...teamPlayers].sort((a, b) => game.classic
+    ? (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity)
+    : Number(b.role === "captain") - Number(a.role === "captain") ||
+      Number(b.id === game.self.id) - Number(a.id === game.self.id) ||
+      a.name.localeCompare(b.name, "ru"));
   const suggestions = game.suggestions.filter((suggestion) => suggestion.teamId === game.self.teamId);
   const ideaGroups = groupTeamIdeas(suggestions);
   const visibleIdeas = sortTeamIdeas(filterTeamIdeas(ideaGroups, ideaSearch), ideaOrder);
   const isCaptain = game.self.role === "captain";
   const ownTurn = game.activeTeamId === game.self.teamId;
+  const isDuel = (game.classic?.stage === "duel" || game.classic?.stage === "tiebreak") && game.phase === "playing";
+  const buzzOpen = isDuel && !!game.classic?.duel && !game.classic.duel.firstTeamId && !game.classic.duel.awaitingTeamId;
+  const duelPlayerIndex = game.classic?.duel?.playerIndex ?? 1;
+  const designatedDuelPlayer = positions.get(game.self.id) === duelPlayerIndex;
+  const canBuzz = isCaptain || designatedDuelPlayer;
+  const isFinal = game.classic?.stage === "final";
+  const individualPlay = game.classic?.stage === "play" && game.phase === "playing";
   const canSend =
     (game.phase === "playing" || game.phase === "steal") &&
+    !isDuel && !isFinal && !individualPlay &&
     ownTurn &&
     !game.paused &&
     connected &&
@@ -513,6 +628,33 @@ export function TeamPage() {
       setBusy(null);
     }
   }
+  async function buzz() {
+    if (!game || !canBuzz || !buzzOpen || game.paused || !connected || !!error || sendInFlight.current) return;
+    sendInFlight.current = true;
+    setBusy("buzz");
+    setSendError("");
+    setNotice("");
+    const attempt = lastBuzz.current ?? { requestId: crypto.randomUUID(), revision: game.revision };
+    lastBuzz.current = attempt;
+    try {
+      await api<TeamGame>(`/games/${game.id}/buzz`, {
+        method: "POST",
+        body: JSON.stringify(attempt),
+      });
+      lastBuzz.current = null;
+      await refresh();
+      setNotice("Сигнал отправлен ведущему.");
+    } catch (err) {
+      if (err instanceof ApiError && err.status < 500) lastBuzz.current = null;
+      await refresh();
+      setSendError(err instanceof ApiError && err.status === 409
+        ? "Состояние игры изменилось. Посмотрите, какая команда отвечает."
+        : err instanceof Error ? err.message : "Сигнал не подтверждён. Проверьте состояние игры.");
+    } finally {
+      sendInFlight.current = false;
+      setBusy(null);
+    }
+  }
   const statusText = game.paused
     ? "Игра на паузе"
     : game.phase === "lobby"
@@ -521,6 +663,10 @@ export function TeamPage() {
         ? "Спасибо за игру!"
         : game.phase === "round-result"
           ? "Раунд завершён"
+          : isDuel
+            ? buzzOpen ? "Розыгрыш хода" : "Команды разыгрывают ход"
+          : isFinal
+            ? "Большая игра"
           : ownTurn
             ? game.phase === "steal"
               ? "Ваш шанс на перехват"
@@ -625,19 +771,46 @@ export function TeamPage() {
             </>
           ) : (
             <>
-              <RoundMeta game={game} />
-              <h2 className="team-question">{game.prompt}</h2>
-              <div className="team-bank-row">
-                <span>
-                  Банк: <strong>{game.bank}</strong>
-                </span>
-                <span>
-                  Ваш счёт: <strong>{team?.score ?? 0}</strong>
-                </span>
-              </div>
+              <GameRoundMeta game={game} />
+              <h2 className="team-question">{isFinal ? "Большая игра" : game.prompt}</h2>
+              {!isFinal && (
+                <div className="team-bank-row">
+                  <span>Банк: <strong>{game.bank}</strong></span>
+                  <span>Ваш счёт: <strong>{team?.score ?? 0}</strong></span>
+                </div>
+              )}
+              {individualPlay && game.classic?.activePlayerIndex != null && (
+                <p className="team-classic-progress">{ownTurn ? "От вашей команды" : `От команды «${activeTeam?.name ?? "соперников"}»`} отвечает игрок {game.classic.activePlayerIndex}.</p>
+              )}
+              {game.classic?.stage === "reverse" && game.phase === "playing" && (
+                <div className="team-classic-progress">Время на обсуждение: <Countdown deadlineAt={game.classic.reverse?.deadlineAt} remainingMs={game.classic.reverse?.remainingMs} /></div>
+              )}
+              {isDuel && (
+                <div className="team-duel" role="region" aria-label="Розыгрыш хода">
+                  <strong>{buzzOpen ? "Кто ответит первым?" : "Сигнал получен"}</strong>
+                  <p className="form-hint">
+                    {buzzOpen
+                      ? designatedDuelPlayer ? `Ваш выход: игрок ${duelPlayerIndex} подаёт сигнал.`
+                        : isCaptain ? `Вы можете подать сигнал за игрока ${duelPlayerIndex}, если ему нужна помощь.`
+                        : `Сигнал подаёт игрок ${duelPlayerIndex}; капитан может помочь.`
+                      : "Следите за указаниями ведущего."}
+                  </p>
+                  {canBuzz && buzzOpen && (
+                    <button className="button primary" type="button" disabled={!!busy || game.paused || !connected || !!error} onClick={() => void buzz()}>
+                      {busy === "buzz" ? "Отправляем сигнал…" : "Мы готовы отвечать"}
+                    </button>
+                  )}
+                </div>
+              )}
               <p className="form-hint">
                 {game.paused
                   ? "Во время паузы отправка закрыта. Черновик сохранится в этой вкладке."
+                  : isDuel
+                    ? "Ведущий разыгрывает право первого хода."
+                  : isFinal
+                    ? "Финальные ответы записывает ведущий."
+                  : individualPlay
+                    ? "Игроки отвечают по очереди без совещания. Ведущий отмечает ответы."
                   : game.phase === "round-result"
                     ? "Ведущий готовит следующий раунд."
                     : !ownTurn
@@ -659,7 +832,7 @@ export function TeamPage() {
             </>
           )}
         </section>
-        {game.phase !== "finished" && game.phase !== "round-result" && (
+        {game.phase !== "finished" && game.phase !== "round-result" && !isDuel && !isFinal && !individualPlay && (
           <div
             className={`team-room-grid ${isCaptain || game.pendingAnswer ? "with-captain" : "member-room"}`}
           >
@@ -840,6 +1013,7 @@ export function TeamPage() {
             {players.map((player) => (
               <li key={player.id}>
                 <span>
+                  {game.classic && <strong>{(positions.get(player.id) ?? 6) <= 5 ? `№${positions.get(player.id)} · ` : "Запасной · "}</strong>}
                   {player.name}
                   {player.id === game.self.id && <small>вы</small>}
                 </span>

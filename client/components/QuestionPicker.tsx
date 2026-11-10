@@ -14,7 +14,21 @@ interface QuestionPickerProps {
   multiplierById: Record<string, number>;
   onSelectionChange: (ids: string[]) => void;
   onMultiplierChange: (id: string, multiplier: number) => void;
+  mode?: "standard" | "classic";
 }
+
+const CLASSIC_SLOTS = [
+  "Раунд 1 · простая игра ×1",
+  "Раунд 2 · двойная игра ×2",
+  "Раунд 3 · тройная игра ×3",
+  "Раунд 4 · игра наоборот",
+  "Финал · вопрос 1",
+  "Финал · вопрос 2",
+  "Финал · вопрос 3",
+  "Финал · вопрос 4",
+  "Финал · вопрос 5",
+  "Тай-брейк · дополнительный вопрос",
+];
 
 export function QuestionPicker({
   questions,
@@ -22,10 +36,12 @@ export function QuestionPicker({
   multiplierById,
   onSelectionChange,
   onMultiplierChange,
+  mode = "standard",
 }: QuestionPickerProps) {
   const [search, setSearch] = useState("");
   const [packName, setPackName] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [replacingId, setReplacingId] = useState<string | null>(null);
   const packs = questionPacks(questions);
   const pack = packName === null ? undefined : packs.find((group) => group.name === packName);
   const query = search.trim().toLocaleLowerCase("ru");
@@ -54,14 +70,101 @@ export function QuestionPicker({
     [next[index], next[target]] = [next[target], next[index]];
     applySelection(next);
   };
+  const replace = (index: number, nextId: string) => {
+    const previousId = selected[index];
+    if (!previousId || nextId === previousId || selectedSet.has(nextId)) return;
+    const next = [...selected];
+    next[index] = nextId;
+    applySelection(next);
+    onMultiplierChange(nextId, multiplierById[previousId] || 1);
+    setReplacingId(null);
+  };
+  if (mode === "classic") {
+    const slots = CLASSIC_SLOTS.map((_, index) => selected[index] || "");
+    const chosen = new Set(slots.filter(Boolean));
+    return (
+      <div className="question-picker-workspace classic-question-picker">
+        <div className="classic-pack-picker">
+          <label className="field">
+            Набор вопросов
+            <select
+              aria-label="Набор вопросов"
+              value={packName === null ? "" : `pack:${packName}`}
+              onChange={(event) => {
+                setPackName(event.target.value ? event.target.value.slice(5) : null);
+                setError("");
+              }}
+            >
+              <option value="">Выберите набор</option>
+              {packs.map((group) => (
+                <option key={group.name} value={`pack:${group.name}`}>
+                  {group.name || "Без набора"} · {group.questions.length}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!pack}
+            onClick={() => {
+              if (!pack) return;
+              if (pack.questions.length > CLASSIC_SLOTS.length) {
+                setError("В наборе больше 10 вопросов. Выберите нужные вопросы для раундов по отдельности.");
+                return;
+              }
+              setError("");
+              const ids = pack.questions.map((question) => question.id);
+              onSelectionChange(CLASSIC_SLOTS.map((_, index) => ids[index] || ""));
+            }}
+          >Заполнить из набора</button>
+          <p className="muted">Набор заполняет раунды по порядку и заменяет текущий выбор. Каждый вопрос можно изменить отдельно.</p>
+        </div>
+        {error && <ErrorMessage message={error} />}
+        <div className="classic-rounds-heading">
+          <h3>Вопросы по раундам</h3>
+          <span className="muted" role="status">Обязательных выбрано: {slots.slice(0, 9).filter(Boolean).length} / 9</span>
+        </div>
+        <p className="muted">Выберите разные вопросы для каждого раунда. Десятый вопрос пригодится при равном счёте и необязателен.</p>
+        <div className="classic-rounds-list">
+          {CLASSIC_SLOTS.map((label, index) => (
+            <label className="classic-round-field" key={label}>
+              <span>{label}{index === 9 ? " · необязательно" : ""}</span>
+              <select
+                aria-label={label}
+                value={slots[index]}
+                onChange={(event) => {
+                  const next = [...slots];
+                  next[index] = event.target.value;
+                  onSelectionChange(next);
+                  setError("");
+                }}
+              >
+                <option value="">{index === 9 ? "Без тай-брейка" : "Выберите вопрос"}</option>
+                {packs.map((group) => (
+                  <optgroup key={group.name} label={group.name || "Без набора"}>
+                    {group.questions.map((question) => (
+                      <option key={question.id} value={question.id} disabled={question.id !== slots[index] && chosen.has(question.id)}>
+                        {question.prompt}{question.id !== slots[index] && chosen.has(question.id) ? " · уже выбран" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="question-picker-workspace">
       <div className="question-pack-picker">
         <div className="question-pack-heading">
           <Layers3 size={22} aria-hidden="true" />
           <div>
-            <h3>Вся игра из одного набора</h3>
-            <p className="muted">Выберите готовый набор или соберите раунды из разных вопросов. До 20 раундов в игре.</p>
+            <h3>Вопросы для раундов</h3>
+            <p className="muted">Выберите готовый набор или соберите игру из отдельных вопросов. Каждый выбранный вопрос станет отдельным раундом. До 20 раундов в игре.</p>
           </div>
         </div>
         <label className="field">
@@ -157,6 +260,7 @@ export function QuestionPicker({
                     {answerSummary(question.answers)}
                     {question.pack ? ` · ${question.pack}` : ""}
                     {question.isDemo ? " · Демо" : ""}
+                    {selectedSet.has(question.id) ? ` · Раунд ${selected.indexOf(question.id) + 1}` : ""}
                   </small>
                 </div>
               </label>
@@ -179,7 +283,37 @@ export function QuestionPicker({
             <div key={id} className="selected-question">
               <span className="round-number">{index + 1}</span>
               <div>
-                <strong>{questions.find((question) => question.id === id)?.prompt}</strong>
+                <strong>{questions.find((question) => question.id === id)?.prompt || "Вопрос не найден в библиотеке"}</strong>
+                {replacingId === id ? (
+                  <div className="round-question-replacement">
+                    <label>
+                      Вопрос для раунда {index + 1}
+                      <select
+                        autoFocus
+                        aria-label={`Вопрос для раунда ${index + 1}`}
+                        value={id}
+                        onChange={(event) => replace(index, event.target.value)}
+                      >
+                        {packs.map((group) => (
+                          <optgroup key={group.name} label={group.name || "Без набора"}>
+                            {group.questions.map((question) => (
+                              <option key={question.id} value={question.id} disabled={question.id !== id && selectedSet.has(question.id)}>
+                                {question.prompt}{question.id !== id && selectedSet.has(question.id) ? " · уже выбран" : ""}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" className="round-replace-cancel" onClick={() => setReplacingId(null)}>
+                      Отмена
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" className="round-replace-button" onClick={() => setReplacingId(id)}>
+                    Заменить вопрос
+                  </button>
+                )}
                 <label className="multiplier-field">
                   Очки
                   <select

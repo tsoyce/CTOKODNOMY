@@ -138,6 +138,31 @@ describe("Создание партии", () => {
   });
 });
 
+describe("Переименование команды", () => {
+  it("сохраняет счёт, приглашения и новое название после отмены предыдущего решения", () => {
+    const before = commands(playing(), { type: "reveal", answerId: "q1-0" }, { type: "strike" });
+    const old = structuredClone(before);
+    const renamed = applyCommand(before, { type: "rename-team", teamId: "a", name: "  Исследователи  " });
+    expect(before).toEqual(old);
+    expect(renamed.teams[0]).toMatchObject({ name: "Исследователи", id: "a", score: 0, joinCode: "SECRET-A" });
+    expect(renamed.bank).toBe(before.bank);
+    expect(renamed.strikes).toBe(before.strikes);
+    expect(renamed.history).toHaveLength(before.history.length);
+    expect(publicView(renamed).teams[0]!.name).toBe("Исследователи");
+    const undone = applyCommand(renamed, { type: "undo" });
+    expect(undone.teams[0]!.name).toBe("Исследователи");
+    expect(undone.strikes).toBe(0);
+    expect(resetGame(undone).teams[0]!.name).toBe("Исследователи");
+  });
+
+  it("отклоняет пустое название и неизвестную команду без изменения партии", () => {
+    const game = playing();
+    expect(() => applyCommand(game, { type: "rename-team", teamId: "a", name: "  " })).toThrow(GameRuleError);
+    expect(() => applyCommand(game, { type: "rename-team", teamId: "missing", name: "Новая" })).toThrow(GameRuleError);
+    expect(game.teams[0]!.name).toBe("Социологи");
+  });
+});
+
 describe("Шесть ответов на табло и полная статистика опроса", () => {
   function surveyGame(points: number[]): GameState {
     return createGame({
@@ -1063,6 +1088,7 @@ describe("Управление статистикой с пульта", () => {
       ...publicView(round),
       statisticsView: "cloud",
       revision: round.revision + 1,
+      lastActionEventId: cloud.events.at(-1)?.id,
     });
     expect(cloud.questions).toEqual(round.questions);
     expect(cloud.teams).toEqual(round.teams);

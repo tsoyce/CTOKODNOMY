@@ -70,11 +70,20 @@ export function gameAnalytics(
     const winner = round.winnerTeamId
       ? teamById.get(round.winnerTeamId)
       : undefined;
-    const validAward =
+    const hasTeamAwards = round.teamAwards !== undefined;
+    const awardIds = new Set<string>();
+    const validTeamAwards = Array.isArray(round.teamAwards) &&
+      round.winnerTeamId === null && round.awardedPoints === 0 &&
+      round.teamAwards.every((award) => {
+        if (!teamById.has(award.teamId) || awardIds.has(award.teamId) ||
+          !Number.isSafeInteger(award.points) || award.points < 0) return false;
+        awardIds.add(award.teamId);
+        return true;
+      });
+    const validAward = hasTeamAwards ? validTeamAwards :
       Number.isFinite(round.awardedPoints) &&
       round.awardedPoints >= 0 &&
-      (Boolean(winner) ||
-        (round.winnerTeamId === null && round.awardedPoints === 0));
+      (Boolean(winner) || (round.winnerTeamId === null && round.awardedPoints === 0));
     // An unfinished round awards nothing, even if a stale saved field disagrees.
     const awardKnown =
       !round.completed || (recorded && validIndex && validAward);
@@ -85,6 +94,13 @@ export function gameAnalytics(
       winner.bankPoints += round.awardedPoints;
       winner.roundWins += 1;
       running[winner.id] += round.awardedPoints;
+    }
+    if (round.completed && awardKnown && Array.isArray(round.teamAwards)) {
+      for (const award of round.teamAwards) {
+        const team = teamById.get(award.teamId)!;
+        team.bankPoints += award.points;
+        running[team.id] += award.points;
+      }
     }
 
     return {

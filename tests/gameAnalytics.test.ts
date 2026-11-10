@@ -43,6 +43,28 @@ function report(
 }
 
 describe("public game analytics", () => {
+  it("includes both teams' reverse-round awards without inventing a winner", () => {
+    const result = gameAnalytics(report([
+      round(0),
+      round(1, { winnerTeamId: null, awardedPoints: 0,
+        teamAwards: [{ teamId: "a", points: 60 }, { teamId: "b", points: 120 }] }),
+    ], [100, 120]));
+    expect(result.completeHistory).toBe(true);
+    expect(result.teams).toMatchObject([
+      { bankPoints: 100, roundWins: 1, scoreAdjustment: 0 },
+      { bankPoints: 120, roundWins: 0, scoreAdjustment: 0 },
+    ]);
+    expect(result.rounds[1].cumulativeBanks).toEqual({ a: 100, b: 120 });
+  });
+
+  it("does not invent a legacy reverse-round breakdown or accept duplicate awards", () => {
+    for (const teamAwards of [null, [{ teamId: "a", points: 1 }, { teamId: "a", points: 2 }]]) {
+      const result = gameAnalytics(report([round(0, { winnerTeamId: null, awardedPoints: 0, teamAwards })]));
+      expect(result.completeHistory).toBe(false);
+      expect(result.rounds[0].awardKnown).toBe(false);
+      expect(result.rounds[0].cumulativeBanks).toEqual({ a: null, b: null });
+    }
+  });
   it("separates confirmed banks, round wins and final score adjustments", () => {
     const source = report([
       round(0),

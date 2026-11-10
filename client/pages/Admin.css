@@ -653,6 +653,38 @@
 .admin-content > .form-grid {
   margin-bottom: 24px;
 }
+.admin-content .team-rename-section {
+  margin-bottom: 24px;
+}
+.admin-content .team-rename-section h2 {
+  margin: 0 0 8px;
+}
+.admin-content .team-rename-section > p {
+  margin: 0 0 12px;
+}
+.admin-content .team-rename-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+}
+.admin-content .team-rename-row + .team-rename-row {
+  border-top: 1px solid var(--border, #d1d5db);
+}
+.admin-content .team-rename-row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.admin-content .team-rename-form {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+.admin-content .team-rename-form .actions {
+  margin: 0;
+}
 .admin-content .invite-card {
   padding: 24px;
 }

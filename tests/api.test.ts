@@ -206,6 +206,134 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     return response.json<HostGame>();
   }
 
+  test("only the organizer can rename a team without changing play, sessions or undo history", async () => {
+    const cookie = await initialize();
+    const { game, questions } = await createFixture(cookie);
+    const member = await join(game.teams[0]!.joinCode, "Игрок");
+    let state = (await call("GET", `/games/${game.id}/host`, undefined, cookie)).json<HostGame>();
+    state = await hostCommand(state, cookie, { type: "start", teamId: game.teams[0]!.id });
+    state = await hostCommand(state, cookie, { type: "reveal", answerId: questions[0]!.answers[0]!.id });
+    const endpoint = `/games/${game.id}/commands`;
+    const rename = { requestId: randomUUID(), revision: state.revision, command: { type: "rename-team", teamId: game.teams[0]!.id, name: "  Новое имя  " } };
+    expect((await call("POST", endpoint, rename)).statusCode).toBe(401);
+    expect((await call("POST", endpoint, rename, member.cookie)).statusCode).toBe(401);
+    expect((await call("POST", endpoint, rename, cookie, "https://other.example")).statusCode).toBe(403);
+    expect((await call("POST", endpoint, { ...rename, command: { ...rename.command, name: " " } }, cookie)).statusCode).toBe(400);
+    expect((await call("POST", endpoint, { ...rename, revision: state.revision - 1 }, cookie)).statusCode).toBe(409);
+    const response = await call("POST", endpoint, rename, cookie);
+    expect(response.statusCode, response.body).toBe(200);
+    const renamed = response.json<HostGame>();
+    expect(renamed.teams[0]).toMatchObject({ name: "Новое имя", joinCode: game.teams[0]!.joinCode, score: state.teams[0]!.score });
+    expect(renamed.bank).toBe(state.bank);
+    expect(renamed.openedAnswerIds).toEqual(state.openedAnswerIds);
+    expect((await call("GET", `/games/${game.id}/public`)).json().teams[0].name).toBe("Новое имя");
+    expect((await call("GET", `/games/${game.id}/team`, undefined, member.cookie)).json().teams[0].name).toBe("Новое имя");
+    const replay = await call("POST", endpoint, rename, cookie);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().revision).toBe(renamed.revision);
+    const undone = await hostCommand(renamed, cookie, { type: "undo" });
+    expect(undone.teams[0]!.name).toBe("Новое имя");
+    expect(undone.bank).toBe(0);
+  });
+
+  test("classic game setup validates its round and final question slots", async () => {
+    const adminCookie = await initialize();
+    const questions = Array.from({ length: 10 }, (_, i) =>
+      question(`Вопрос ${i + 1}`, `Первый ${i}`, `Второй ${i}`));
+    const imported = await call("POST", "/questions/import", {
+      format: "ctokodnomy-questions-v1", questions,
+    }, adminCookie);
+    expect(imported.statusCode).toBe(200);
+    const payload = {
+      title: "Классическая игра",
+      questionIds: questions.map((item) => item.id),
+      teams: [
+        { name: "Первая команда", color: "#123456" },
+        { name: "Вторая команда", color: "#abcdef" },
+      ],
+      rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true },
+    };
+    expect((await call("POST", "/games", payload)).statusCode).toBe(401);
+    for (const count of [1, 8]) {
+      const rejected = await call("POST", "/games", {
+        ...payload, questionIds: payload.questionIds.slice(0, count),
+      }, adminCookie);
+      expect(rejected.statusCode).toBe(400);
+    }
+    let classic: HostGame | undefined;
+    for (const count of [9, 10]) {
+      const created = await call("POST", "/games", {
+        ...payload, questionIds: payload.questionIds.slice(0, count),
+      }, adminCookie);
+      expect(created.statusCode, created.body).toBe(200);
+      expect(created.json().rules.mode).toBe("classic");
+      if (count === 9) classic = created.json<HostGame>();
+    }
+    expect(classic).toBeDefined();
+    let game = classic!;
+    const first = await join(game.teams[0]!.joinCode, "Первый капитан");
+    const second = await join(game.teams[1]!.joinCode, "Второй капитан");
+    const ordinary = await join(game.teams[0]!.joinCode, "Участник");
+    const third = await join(game.teams[0]!.joinCode, "Третий игрок");
+    for (const participant of [first.participant, second.participant]) {
+      const assigned = await call("POST", `/games/${game.id}/captain`, {
+        participantId: participant.id,
+      }, adminCookie);
+      expect(assigned.statusCode).toBe(200);
+      game = assigned.json<HostGame>();
+    }
+    game = await hostCommand(game, adminCookie, {
+      type: "start", teamId: game.teams[0]!.id,
+    });
+    const url = `/games/${game.id}/buzz`;
+    const request = { requestId: randomUUID(), revision: game.revision };
+    expect((await call("POST", url, request)).statusCode).toBe(403);
+    expect((await call("POST", url, request, ordinary.cookie)).statusCode).toBe(403);
+    expect((await call("POST", url, { ...request, teamId: game.teams[1]!.id }, first.cookie)).statusCode).toBe(400);
+    const secondRequest = { requestId: randomUUID(), revision: game.revision };
+    const competing = await Promise.all([
+      call("POST", url, request, first.cookie),
+      call("POST", url, secondRequest, second.cookie),
+    ]);
+    expect(competing.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    const winningIndex = competing.findIndex((response) => response.statusCode === 200);
+    const expectedTeamId = winningIndex === 0 ? game.teams[0]!.id : game.teams[1]!.id;
+    const host = await call("GET", `/games/${game.id}/host`, undefined, adminCookie);
+    expect(host.json<HostGame>().classic?.duel?.firstTeamId).toBe(expectedTeamId);
+    const replay = await call("POST", url, winningIndex === 0 ? request : secondRequest,
+      winningIndex === 0 ? first.cookie : second.cookie);
+    expect(replay.statusCode).toBe(200);
+    // After both teams miss the opening duel, the next players answer in turn.
+    // The second round opens the buzzer for player 2; player 3 must be denied,
+    // while the captain may still signal as a fallback.
+    game = host.json<HostGame>();
+    game = await hostCommand(game, adminCookie, { type: "strike" });
+    game = await hostCommand(game, adminCookie, { type: "strike" });
+    expect(game.classic?.duel?.playerIndex).toBe(2);
+    game = await hostCommand(game, adminCookie, { type: "reveal", answerId: questions[0]!.answers[0]!.id });
+    game = await hostCommand(game, adminCookie, { type: "reveal", answerId: questions[0]!.answers[1]!.id });
+    expect(game.phase).toBe("round-result");
+    game = await hostCommand(game, adminCookie, { type: "next" });
+    expect(game.classic?.duel?.playerIndex).toBe(2);
+    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie)).statusCode).toBe(403);
+    const playerRequest = { requestId: randomUUID(), revision: game.revision };
+    expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
+    game = (await call("GET", `/games/${game.id}/host`, undefined, adminCookie)).json<HostGame>();
+    game = await hostCommand(game, adminCookie, { type: "reveal", answerId: questions[1]!.answers[0]!.id });
+    game = await hostCommand(game, adminCookie, { type: "reveal", answerId: questions[1]!.answers[1]!.id });
+    game = await hostCommand(game, adminCookie, { type: "next" });
+    expect(game.classic?.duel?.playerIndex).toBe(3);
+    // A retransmission of an accepted request stays idempotent even after the
+    // current player changes; the original signal is not processed again.
+    expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
+    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, ordinary.cookie)).statusCode).toBe(403);
+    const [playerSignal, captainSignal] = await Promise.all([
+      call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie),
+      call("POST", url, { requestId: randomUUID(), revision: game.revision }, first.cookie),
+    ]);
+    expect([playerSignal.statusCode, captainSignal.statusCode].sort()).toEqual([200, 409]);
+  });
+
   test("first-run grants expire, cannot be replayed, and credentials stay hashed and revocable", async () => {
     expect((await call("GET", "/site")).json().initialized).toBe(false);
     expect((await call("GET", "/settings")).statusCode).toBe(401);
@@ -417,6 +545,25 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     expect((await call("GET", "/site")).json().brand.logoUrl).toBe(logoUrl);
     expect((await setupUpload(token)).statusCode).toBe(409);
     expect((await upload(png, "image/png", "logo.png")).statusCode).toBe(401);
+  });
+
+  test("custom sound uploads require an administrator and only accept supported audio", async () => {
+    const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt "), Buffer.alloc(20)]);
+    expect((await upload(wav, "audio/wav", "sound.wav", {}, "/api/media/audio")).statusCode).toBe(401);
+    const cookie = await initialize();
+    expect((await upload(Buffer.from("<script>bad</script>"), "audio/wav", "fake.wav", { cookie }, "/api/media/audio")).statusCode).toBe(415);
+    expect((await upload(wav, "image/png", "sound.wav", { cookie }, "/api/media/audio")).statusCode).toBe(415);
+    const uploaded = await upload(wav, "audio/wav", "sound.wav", { cookie }, "/api/media/audio");
+    expect(uploaded.statusCode).toBe(200);
+    const soundCorrectUrl = uploaded.json<{ url: string }>().url;
+    expect(soundCorrectUrl).toMatch(/^\/media\/[a-f0-9-]+\.wav$/);
+    expect((await app.inject({ method: "GET", url: soundCorrectUrl })).rawPayload).toEqual(wav);
+    expect((await call("PUT", "/settings", { ...defaultBrand, soundCorrectUrl, soundRepeatUrl: soundCorrectUrl }, cookie)).statusCode).toBe(200);
+    const brand = (await call("GET", "/site")).json().brand;
+    expect(brand.soundCorrectUrl).toBe(soundCorrectUrl);
+    expect(brand.soundRepeatUrl).toBe(soundCorrectUrl);
+    expect((await call("PUT", "/settings", { ...defaultBrand, soundCorrectUrl: "https://example.com/a.mp3" }, cookie)).statusCode).toBe(400);
+    expect((await call("PUT", "/settings", { ...defaultBrand, soundRepeatUrl: "https://example.com/a.mp3" }, cookie)).statusCode).toBe(400);
   });
 
   test("older stored branding receives new text defaults without overwriting existing fields or game snapshots", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -13,7 +13,7 @@ import {
   Sparkles,
   Trophy,
 } from "lucide-react";
-import { defaultBrand, type PublicGameResults } from "../../shared/types";
+import { defaultBrand, type PublicGameResults, type PublicFinalQuestion } from "../../shared/types";
 import { gameAnalytics } from "../../shared/gameAnalytics";
 import { ApiError, api, brandStyle, useAppearance } from "../lib";
 import { Loading } from "../components/Common";
@@ -23,12 +23,68 @@ import { isLightBrand } from "../theme";
 import "./Results.css";
 
 const number = new Intl.NumberFormat("ru-RU");
+const percent = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 const resultsSections = [
   { id: "results-heading", label: "Итоги" },
   { id: "results-team-comparison-heading", label: "Команды" },
   { id: "results-dynamics-heading", label: "Раунды" },
   { id: "results-questions-heading", label: "Ответы" },
 ];
+
+/** The final's complete survey is separate from the scored board rounds. */
+function FinalQuestionStatistics({ question }: { question: PublicFinalQuestion }) {
+  const [view, setView] = useState<"list" | "cloud">("list");
+  const max = Math.max(0, ...question.answers.map((answer) => answer.points));
+  return (
+    <details className="results-final-question">
+      <summary>
+        <span>Вопрос {question.questionIndex + 1}</span>
+        <strong>{question.prompt}</strong>
+      </summary>
+      <div className="results-final-question-content">
+        <div className="statistics-view-switch" role="group" aria-label={`Вид ответов: ${question.prompt}`}>
+          <button type="button" aria-pressed={view === "list"} onClick={() => setView("list")}>Список</button>
+          <button type="button" aria-pressed={view === "cloud"} onClick={() => setView("cloud")}>Облако ответов</button>
+        </div>
+        {view === "list" ? (
+          <ol className="results-final-answer-list" aria-label="Все ответы опроса">
+            {question.answers.map((answer) => (
+              <li key={answer.position}>
+                <div className="results-final-answer-heading"><strong>{answer.text}</strong><span>{number.format(answer.points)} · {percent.format(answer.share)}%</span></div>
+                <div className="statistics-bar-track" aria-hidden="true"><div className="statistics-bar" style={{ width: `${Math.max(0, Math.min(100, answer.share))}%` }} /></div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <ul className="results-final-cloud" aria-label="Облако всех ответов опроса">
+            {question.answers.map((answer) => (
+              <li key={answer.position} style={{ "--final-cloud-weight": max > 0 ? Math.sqrt(answer.points / max) : 0 } as CSSProperties}>
+                <span>{answer.text}</span><strong aria-label={`Вес ответа: ${number.format(answer.points)}`}>{number.format(answer.points)}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="results-final-source">Проценты — доля суммы сохранённых весов, а не доля опрошенных. Источник: {question.source || "не указан"}{question.surveyDate ? ` · Дата опроса: ${question.surveyDate}` : ""}{question.respondentCount !== null ? ` · Опрошено: ${number.format(question.respondentCount)}` : ""}{question.isDemo ? " · Учебный вопрос" : ""}</p>
+      </div>
+    </details>
+  );
+}
+
+function ClassicFinalResults({ final, teams }: { final: NonNullable<PublicGameResults["classicFinal"]>; teams: PublicGameResults["teams"] }) {
+  const team = teams.find((candidate) => candidate.id === final.teamId);
+  return (
+    <section className="results-classic-final" aria-labelledby="results-classic-final-heading">
+      <div className="results-classic-final-heading">
+        <div><h2 id="results-classic-final-heading">Большая игра</h2><p>{team?.name ?? "Команда финалистов"} · {final.superPrize ? "Суперприз выигран" : "Меньше 200 очков"}</p></div>
+        <strong>{number.format(final.score)} <small>очков · цель 200</small></strong>
+      </div>
+      <p>Ответы на пять вопросов финала. Показаны сохранённые веса опроса; они могут отличаться от игровых очков.</p>
+      <div className="results-final-questions">
+        {final.questions.map((question) => <FinalQuestionStatistics key={question.questionId} question={question} />)}
+      </div>
+    </section>
+  );
+}
 
 function useResults(id: string | undefined) {
   const [report, setReport] = useState<PublicGameResults | null>(null);
@@ -427,9 +483,18 @@ export default function ResultsPage() {
     );
   }
 
-  const teams = [...report.teams].sort((a, b) => b.score - a.score);
+  const finalWinnerId = report.classicFinal?.teamId;
+  const teams = [...report.teams].sort((a, b) =>
+    Number(b.id === finalWinnerId) - Number(a.id === finalWinnerId) || b.score - a.score,
+  );
   const topScore = teams[0]?.score ?? 0;
-  const winners = teams.filter((team) => team.score === topScore);
+  const winners = finalWinnerId && teams.some((team) => team.id === finalWinnerId)
+    ? teams.filter((team) => team.id === finalWinnerId)
+    : teams.filter((team) => team.score === topScore);
+  const winnerIds = new Set(winners.map((team) => team.id));
+  const place = (team: (typeof teams)[number]) =>
+    finalWinnerId ? teams.findIndex((entry) => entry.id === team.id) + 1
+      : teams.findIndex((entry) => entry.score === team.score) + 1;
   const completed = report.rounds.filter((round) => round.completed);
   const guessed = report.rounds.reduce(
     (total, round) =>
@@ -597,20 +662,20 @@ export default function ResultsPage() {
             </div>
           </div>
           <ol className="results-team-list">
-            {teams.map((team, index) => (
+            {teams.map((team) => (
               <li
-                className={`results-team${team.score === topScore ? " results-team-winner" : ""}`}
+                className={`results-team${winnerIds.has(team.id) ? " results-team-winner" : ""}`}
                 key={team.id}
               >
                 <span
                   className="results-team-place"
-                  aria-label={`${index === 0 || team.score !== teams[index - 1].score ? index + 1 : teams.findIndex((entry) => entry.score === team.score) + 1} место`}
+                  aria-label={`${place(team)} место`}
                 >
-                  {teams.findIndex((entry) => entry.score === team.score) + 1}
+                  {place(team)}
                 </span>
                 <span className="results-team-name">
                   <strong>{team.name}</strong>
-                  {team.score === topScore && (
+                  {winnerIds.has(team.id) && (
                     <small>
                       {winners.length > 1
                         ? "Разделённое первое место"
@@ -637,7 +702,7 @@ export default function ResultsPage() {
           <div className="results-metric">
             <BarChart3 size={21} aria-hidden="true" />
             <strong>
-              {number.format(completed.length)}{" "}
+              {number.format(report.completedRounds ?? completed.length)}{" "}
               <small>из {number.format(report.totalRounds)}</small>
             </strong>
             <span>раундов завершено</span>
@@ -741,6 +806,7 @@ export default function ResultsPage() {
               </div>
             )}
           </div>
+          {report.classicFinal && <ClassicFinalResults final={report.classicFinal} teams={report.teams} />}
         </section>
       </main>
 

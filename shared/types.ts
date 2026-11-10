@@ -13,6 +13,10 @@ export interface Brand {
   gameLogoUrl: string;
   faviconUrl: string;
   partnerLogoUrls: string[];
+  soundCorrectUrl: string;
+  soundWrongUrl: string;
+  soundBankUrl: string;
+  soundRepeatUrl: string;
 }
 export const defaultBrand: Brand = {
   title: "100 к 1",
@@ -30,6 +34,10 @@ export const defaultBrand: Brand = {
   gameLogoUrl: "",
   faviconUrl: "",
   partnerLogoUrls: [],
+  soundCorrectUrl: "",
+  soundWrongUrl: "",
+  soundBankUrl: "",
+  soundRepeatUrl: "",
 };
 export interface Answer {
   id: string;
@@ -78,6 +86,44 @@ export type Phase = "lobby" | "playing" | "steal" | "round-result" | "finished";
 export interface Rules {
   multipliers: number[];
   stealAddsPoints: boolean;
+  /** Older games omit mode and retain the original flexible rules. */
+  mode?: "standard" | "classic";
+}
+export interface ClassicFinalEntry {
+  text: string;
+  answerId: string | null;
+  points: number;
+}
+export interface ClassicState {
+  stage: "duel" | "play" | "reverse" | "tiebreak" | "final";
+  /** Position 1–5 of the next player in an ordinary round. */
+  activePlayerIndex?: number | null;
+  duel: {
+    firstTeamId: string | null;
+    awaitingTeamId: string | null;
+    firstAnswerPosition: number | null;
+    attempts: number;
+    /** Position 1–5 of the player currently answering at the button. */
+    playerIndex?: number;
+  } | null;
+  reverse: {
+    firstTeamId: string;
+    attempts: number;
+    deadlineAt?: number | null;
+    remainingMs?: number | null;
+    /** Awards already decided in this reverse round; absent in early saved states. */
+    awards?: Array<{ teamId: string; points: number }>;
+  } | null;
+  final: {
+    teamId: string;
+    player: 1 | 2;
+    attemptId?: string;
+    phase: "ready" | "answering" | "review" | "complete";
+    deadlineAt: number | null;
+    remainingMs: number | null;
+    entries: [Array<ClassicFinalEntry | null>, Array<ClassicFinalEntry | null>];
+    score: number;
+  } | null;
 }
 export interface GameEvent {
   id: string;
@@ -89,6 +135,8 @@ export interface RoundResult {
   questionIndex: number;
   winnerTeamId: string | null;
   awardedPoints: number;
+  /** Reverse play can award both teams; null means the historical breakdown is unknown. */
+  teamAwards?: Array<{ teamId: string; points: number }> | null;
   openedAnswerIds: string[];
   strikes: number;
   multiplier: number;
@@ -111,6 +159,7 @@ export interface GameSnapshot {
   resultsPublished: boolean;
   /** Missing in older saved games; shown as a list until the host changes it. */
   statisticsView?: "list" | "cloud";
+  classic?: ClassicState;
 }
 export interface GameState extends GameSnapshot {
   id: string;
@@ -159,6 +208,7 @@ export interface PublicRoundStats {
   multiplier: number;
   winnerTeamId: string | null;
   awardedPoints: number;
+  teamAwards?: Array<{ teamId: string; points: number }> | null;
   strikes: number;
   completed: boolean;
   completedAt: string;
@@ -169,6 +219,8 @@ export interface PublicGame {
   brand: Brand;
   teams: PublicTeam[];
   revision: number;
+  lastAction?: "reveal" | "strike" | "repeat" | null;
+  lastActionEventId?: string;
   phase: Phase;
   paused: boolean;
   activeTeamId: string | null;
@@ -183,6 +235,14 @@ export interface PublicGame {
   roundStats: PublicRoundStats | null;
   statisticsView: "list" | "cloud";
   resultsAvailable: boolean;
+  /** Public progress only; unrevealed final answers never leave the host. */
+  classic?: {
+    stage: ClassicState["stage"];
+    activePlayerIndex?: number | null;
+    duel: ClassicState["duel"];
+    reverse: ClassicState["reverse"];
+    final: Pick<NonNullable<ClassicState["final"]>, "teamId" | "player" | "phase" | "deadlineAt" | "remainingMs" | "score"> | null;
+  };
 }
 export interface PublicGameResults {
   id: string;
@@ -194,6 +254,25 @@ export interface PublicGameResults {
   published: boolean;
   rounds: PublicRoundStats[];
   totalRounds: number;
+  completedRounds?: number;
+  /** Present only when the classic final was completed; no player responses. */
+  classicFinal?: {
+    teamId: string;
+    score: number;
+    superPrize: boolean;
+    questions: PublicFinalQuestion[];
+  };
+}
+export interface PublicFinalQuestion {
+  questionId: string;
+  /** Zero-based position within the five final questions. */
+  questionIndex: number;
+  prompt: string;
+  source: string;
+  surveyDate: string;
+  respondentCount: number | null;
+  isDemo: boolean;
+  answers: Array<{ position: number; text: string; points: number; share: number }>;
 }
 export interface HostGame extends GameState {
   players: Participant[];
@@ -211,10 +290,18 @@ export type HostCommand =
   | { type: "next"; teamId?: string }
   | { type: "award"; teamId: string }
   | { type: "turn"; teamId: string }
+  | { type: "rename-team"; teamId: string; name: string }
   | { type: "pause" | "resume" | "undo" | "finish" }
   | { type: "adjust"; teamId: string; delta: number; reason: string }
   | { type: "statistics-view"; view: "list" | "cloud" }
-  | { type: "join-toggle"; teamId: string; open: boolean };
+  | { type: "join-toggle"; teamId: string; open: boolean }
+  | { type: "classic-buzz"; teamId: string }
+  | { type: "classic-tiebreak-winner"; teamId: string }
+  | { type: "classic-final-start" }
+  | { type: "classic-final-stop" }
+  | { type: "classic-final-repeat" }
+  | { type: "classic-final-answer"; questionIndex: number; text: string; answerId?: string | null }
+  | { type: "classic-final-next" };
 export type GameCommand =
   | HostCommand
   | {

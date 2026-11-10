@@ -5,8 +5,10 @@ import {
   gameBoardAnswers,
   rankedAnswers,
 } from "../shared/questionAnswers";
+import { classicBoardPoints, classicPoints } from "../shared/classicPoints";
 import type {
   Brand,
+  ClassicState,
   GameCommand,
   GameSnapshot,
   GameState,
@@ -102,9 +104,17 @@ export function createGame(input: CreateGameInput): GameState {
       );
     }
   }
+  const classicMode = input.rules?.mode === "classic";
+  if (classicMode) {
+    requireRule(input.questions.length === 9 || input.questions.length === 10,
+      "Для классической игры выберите 9 вопросов и при желании десятый для тай-брейка.", 400);
+    requireRule(new Set(input.questions.map((question) => question.id)).size === input.questions.length,
+      "Вопросы классической игры должны быть разными.", 400);
+  }
   const rules: Rules = {
-    multipliers: [...(input.rules?.multipliers ?? [1, 2, 3])],
-    stealAddsPoints: input.rules?.stealAddsPoints ?? true,
+    multipliers: classicMode ? [1, 2, 3, 1, 1, 1, 1, 1, 1, 1] : [...(input.rules?.multipliers ?? [1, 2, 3])],
+    stealAddsPoints: classicMode ? true : (input.rules?.stealAddsPoints ?? true),
+    ...(input.rules?.mode ? { mode: input.rules.mode } : {}),
   };
   requireRule(
     rules.multipliers.length > 0 &&
@@ -157,6 +167,7 @@ export function createGame(input: CreateGameInput): GameState {
     roundResults: [],
     resultsPublished: false,
     statisticsView: "list",
+    ...(classicMode ? { classic: { stage: "duel" as const, duel: null, reverse: null, final: null } } : {}),
     revision: 0,
     events: [],
     history: [],
@@ -165,7 +176,7 @@ export function createGame(input: CreateGameInput): GameState {
 }
 
 function snapshot(game: GameState): GameSnapshot {
-  return structuredClone({
+  const saved = structuredClone({
     teams: game.teams,
     questionIndex: game.questionIndex,
     phase: game.phase,
@@ -180,7 +191,15 @@ function snapshot(game: GameState): GameSnapshot {
     roundResults: game.roundResults,
     resultsPublished: game.resultsPublished,
     statisticsView: game.statisticsView,
+    ...(game.classic ? { classic: game.classic } : {}),
   });
+  // In history, remember the actual remaining time at this decision. The
+  // deadline itself is an absolute clock value and becomes stale after undo.
+  if (saved.classic?.stage === "reverse" && saved.classic.reverse?.deadlineAt != null)
+    saved.classic.reverse.remainingMs = Math.max(0, saved.classic.reverse.deadlineAt - Date.now());
+  if (saved.classic?.final?.phase === "answering" && saved.classic.final.deadlineAt !== null)
+    saved.classic.final.remainingMs = Math.max(0, saved.classic.final.deadlineAt - Date.now());
+  return saved;
 }
 
 /** Fill legacy JSON snapshots without treating unplayed questions as results. */
@@ -296,11 +315,13 @@ function recordRound(
   winnerTeamId: string | null,
   awardedPoints: number,
   completed: boolean,
+  teamAwards?: Array<{ teamId: string; points: number }> | null,
 ): void {
   const result: RoundResult = {
     questionIndex: game.questionIndex,
     winnerTeamId,
     awardedPoints,
+    ...(teamAwards !== undefined ? { teamAwards: structuredClone(teamAwards) } : {}),
     openedAnswerIds: [...game.openedAnswerIds],
     strikes: game.strikes,
     multiplier: multiplier(game),
@@ -354,8 +375,125 @@ function beginRound(game: GameState, teamId: string): void {
   clearAnswers(game);
 }
 
+function beginDuel(game: GameState, tieBreak = false): void {
+  requireRule(game.classic, "Классический режим недоступен.");
+  game.classic.stage = tieBreak ? "tiebreak" : "duel";
+  game.classic.activePlayerIndex = null;
+  game.classic.duel = { firstTeamId: null, awaitingTeamId: null, firstAnswerPosition: null, attempts: 0,
+    playerIndex: tieBreak ? 1 : (game.questionIndex % 5) + 1 };
+  game.classic.reverse = null;
+  game.phase = "playing";
+  game.activeTeamId = null;
+  game.originTeamId = null;
+  game.bank = 0;
+  game.strikes = 0;
+  game.openedAnswerIds = [];
+  clearAnswers(game);
+}
+
+function beginClassicFinal(game: GameState, teamId: string): void {
+  const classic = game.classic!;
+  teamById(game, teamId);
+  classic.stage = "final";
+  classic.activePlayerIndex = null;
+  classic.duel = null;
+  classic.reverse = null;
+  classic.final = {
+    teamId, player: 1, phase: "ready", deadlineAt: null, remainingMs: null,
+    entries: [Array(5).fill(null), Array(5).fill(null)], score: 0,
+  };
+  game.questionIndex = 4;
+  game.phase = "playing";
+  game.activeTeamId = teamId;
+  game.originTeamId = teamId;
+  game.openedAnswerIds = [];
+  game.bank = 0;
+  game.strikes = 0;
+  clearAnswers(game);
+}
+
+function otherTeamId(game: GameState, teamId: string): string {
+  teamById(game, teamId);
+  return game.teams.find((team) => team.id !== teamId)!.id;
+}
+
+/** Resolve a face-off without counting its misses as round strikes. */
+function classicDuelAttempt(game: GameState, answerPosition: number | null): void {
+  const classic = game.classic!;
+  const duel = classic.duel!;
+  const responding = duel.awaitingTeamId;
+  requireRule(responding, "Дождитесь нажатия кнопки одной из команд.");
+  if (classic.stage === "tiebreak") {
+    if (answerPosition !== null) beginClassicFinal(game, responding);
+    else {
+      duel.awaitingTeamId = otherTeamId(game, responding);
+      game.activeTeamId = duel.awaitingTeamId;
+    }
+    return;
+  }
+  duel.attempts += 1;
+  if (duel.attempts === 1) {
+    duel.firstTeamId = responding;
+    duel.firstAnswerPosition = answerPosition;
+    if (answerPosition === 0) {
+      classic.stage = "play";
+      classic.activePlayerIndex = ((duel.playerIndex ?? 1) % 5) + 1;
+      game.activeTeamId = responding;
+      game.originTeamId = responding;
+      duel.awaitingTeamId = null;
+    } else {
+      duel.awaitingTeamId = otherTeamId(game, responding);
+      game.activeTeamId = duel.awaitingTeamId;
+    }
+    return;
+  }
+  if (duel.firstAnswerPosition === null && answerPosition === null) {
+    // Both missed: subsequent players alternate until any valid answer.
+    if (duel.attempts % 2 === 0) duel.playerIndex = ((duel.playerIndex ?? 1) % 5) + 1;
+    duel.awaitingTeamId = otherTeamId(game, responding);
+    game.activeTeamId = duel.awaitingTeamId;
+    return;
+  }
+  const winner = duel.firstAnswerPosition === null ||
+      (answerPosition !== null && answerPosition < duel.firstAnswerPosition)
+    ? responding : duel.firstTeamId!;
+  classic.stage = "play";
+  classic.activePlayerIndex = ((duel.playerIndex ?? 1) % 5) + 1;
+  duel.awaitingTeamId = null;
+  game.activeTeamId = winner;
+  game.originTeamId = winner;
+}
+
+function classicReverseAttempt(game: GameState, answerPosition: number | null): void {
+  const classic = game.classic!;
+  const reverse = classic.reverse!;
+  const team = teamById(game, game.activeTeamId);
+  if (!reverse.awards && reverse.attempts === 0) reverse.awards = [];
+  if (answerPosition !== null) {
+    const amount = [15, 30, 60, 120, 180, 240][answerPosition]!;
+    requireRule(Number.isSafeInteger(team.score + amount), "Счёт выходит за допустимые пределы.", 400);
+    team.score += amount;
+    reverse.awards?.push({ teamId: team.id, points: amount });
+  }
+  reverse.attempts += 1;
+  clearAnswers(game);
+  if (reverse.attempts === 1) {
+    game.activeTeamId = otherTeamId(game, team.id);
+    reverse.deadlineAt = Date.now() + 20_000;
+    reverse.remainingMs = null;
+  }
+  else {
+    reverse.deadlineAt = null;
+    reverse.remainingMs = null;
+    recordRound(game, null, 0, true, reverse.awards ?? null);
+    game.phase = "round-result";
+    game.activeTeamId = null;
+  }
+}
+
 function endGame(game: GameState): void {
-  if (game.phase === "playing" || game.phase === "steal")
+  if ((game.phase === "playing" || game.phase === "steal") &&
+    game.classic?.stage !== "final" && game.classic?.stage !== "tiebreak")
     recordRound(game, null, 0, false);
   game.phase = "finished";
   game.paused = false;
@@ -377,12 +515,19 @@ export function applyCommand(
         game.phase === "lobby" && !game.paused,
         "Начать можно только игру в лобби без паузы.",
       );
-      beginRound(game, command.teamId);
-      message = `Игра началась. Отвечает команда «${teamById(game, command.teamId).name}».`;
+      teamById(game, command.teamId);
+      if (game.classic) {
+        beginDuel(game);
+        message = "Игра началась. Команды разыгрывают право хода.";
+      } else {
+        beginRound(game, command.teamId);
+        message = `Игра началась. Отвечает команда «${teamById(game, command.teamId).name}».`;
+      }
       break;
     }
     case "reveal": {
       requireLiveRound(game);
+      requireRule(game.classic?.stage !== "final", "Финальные ответы проверяются отдельно.");
       const question = game.questions[game.questionIndex]!;
       const board = gameBoardAnswers(game, question);
       const answer = question.answers.find(
@@ -398,16 +543,43 @@ export function applyCommand(
         !game.openedAnswerIds.includes(answer.id),
         "Этот ответ уже открыт.",
       );
+      const position = board.findIndex((candidate) => candidate.id === answer.id);
+      if (game.classic?.stage === "duel" || game.classic?.stage === "tiebreak") {
+        requireRule(game.classic.duel?.awaitingTeamId, "Дождитесь нажатия кнопки одной из команд.");
+        if (game.classic.stage === "duel") {
+          game.openedAnswerIds.push(answer.id);
+          game.bank += classicBoardPoints(question.answers)[position]! * multiplier(game);
+        }
+        classicDuelAttempt(game, position);
+        if ((game.classic as ClassicState).stage === "play" && board.every((candidate) => game.openedAnswerIds.includes(candidate.id)))
+          awardBank(game, teamById(game, game.activeTeamId).id);
+        message = "Ответ на дуэли открыт.";
+        break;
+      }
+      if (game.classic?.stage === "reverse") {
+        requireRule(game.classic.reverse?.deadlineAt == null || Date.now() <= game.classic.reverse.deadlineAt,
+          "Время команды вышло. Отметьте ошибку, чтобы продолжить.");
+        game.openedAnswerIds.push(answer.id);
+        classicReverseAttempt(game, position);
+        message = "Ответ в игре наоборот открыт.";
+        break;
+      }
       game.openedAnswerIds.push(answer.id);
-      if (game.phase === "playing" || game.rules.stealAddsPoints)
-        game.bank += answer.points * multiplier(game);
+      const answerWeight = game.classic ? classicBoardPoints(question.answers)[position]! : answer.points;
+      const addsPoints = game.phase === "playing" || game.rules.stealAddsPoints;
+      if (addsPoints)
+        game.bank += answerWeight * multiplier(game);
       requireRule(
         Number.isSafeInteger(game.bank),
         "Банк выходит за допустимые пределы.",
         400,
       );
       clearAnswers(game);
-      message = `Открыт ответ «${answer.text}»: ${answer.points} × ${multiplier(game)}.`;
+      if (game.classic?.stage === "play" && game.phase === "playing")
+        game.classic.activePlayerIndex = ((game.classic.activePlayerIndex ?? 1) % 5) + 1;
+      message = addsPoints
+        ? `Открыт ответ «${answer.text}»: ${answerWeight} × ${multiplier(game)}.`
+        : `Открыт ответ «${answer.text}»: перехват без дополнительных очков.`;
       if (
         game.phase === "steal" ||
         board.every((candidate) => game.openedAnswerIds.includes(candidate.id))
@@ -419,12 +591,22 @@ export function applyCommand(
     }
     case "strike": {
       requireLiveRound(game);
+      requireRule(game.classic?.stage !== "final", "Финальные ответы проверяются отдельно.");
       clearAnswers(game);
-      if (game.phase === "steal") {
+      if (game.classic?.stage === "duel" || game.classic?.stage === "tiebreak") {
+        requireRule(game.classic.duel?.awaitingTeamId, "Дождитесь нажатия кнопки одной из команд.");
+        classicDuelAttempt(game, null);
+        message = "Ответ на дуэли не найден.";
+      } else if (game.classic?.stage === "reverse") {
+        classicReverseAttempt(game, null);
+        message = "Ответ в игре наоборот не найден.";
+      } else if (game.phase === "steal") {
         awardBank(game, teamById(game, game.originTeamId).id);
         message = `Перехват не удался. Банк ${game.bank} получает команда «${teamById(game, game.activeTeamId).name}».`;
       } else {
         game.strikes += 1;
+        if (game.classic?.stage === "play")
+          game.classic.activePlayerIndex = ((game.classic.activePlayerIndex ?? 1) % 5) + 1;
         message = `Ошибка ${game.strikes} из 3.`;
         if (game.strikes === 3) {
           const origin = teamById(game, game.activeTeamId);
@@ -444,7 +626,43 @@ export function applyCommand(
         "Следующий раунд доступен после подведения итогов без паузы.",
       );
       if (command.teamId !== undefined) teamById(game, command.teamId);
-      if (game.questionIndex + 1 >= game.questions.length) {
+      if (game.classic && game.questionIndex < 3) {
+        game.questionIndex += 1;
+        if (game.questionIndex < 3) {
+          beginDuel(game);
+          message = `Раунд ${game.questionIndex + 1}: розыгрыш права хода.`;
+        } else {
+          const [first, second] = game.teams;
+          const firstId = first!.score === second!.score
+            ? command.teamId
+            : first!.score < second!.score ? first!.id : second!.id;
+          requireRule(firstId, "При равном счёте выберите первую команду для игры наоборот.", 400);
+          beginRound(game, firstId);
+          game.classic.stage = "reverse";
+          game.classic.activePlayerIndex = null;
+          game.classic.duel = null;
+          game.classic.reverse = { firstTeamId: firstId, attempts: 0, deadlineAt: Date.now() + 20_000, remainingMs: null, awards: [] };
+          message = "Началась игра наоборот.";
+        }
+      } else if (game.classic && game.questionIndex === 3) {
+        const [first, second] = game.teams;
+        if (first!.score === second!.score) {
+          if (game.questions.length === 10) {
+            game.questionIndex = 9;
+            beginDuel(game, true);
+            message = "Ничья. Начался тай-брейк.";
+          } else {
+            game.classic.stage = "tiebreak";
+            game.classic.duel = null;
+            game.phase = "playing";
+            game.activeTeamId = null;
+            message = "Ничья. Проведите дополнительный вопрос и укажите победителя.";
+          }
+        } else {
+          beginClassicFinal(game, first!.score > second!.score ? first!.id : second!.id);
+          message = "Команда определена. Подготовка большого финала.";
+        }
+      } else if (game.questionIndex + 1 >= game.questions.length) {
         endGame(game);
         message = "Все раунды сыграны. Игра завершена.";
       } else {
@@ -456,12 +674,14 @@ export function applyCommand(
     }
     case "award": {
       requireLiveRound(game);
+      requireRule(!game.classic || game.classic.stage === "play", "В этой стадии нельзя вручную присудить банк.");
       awardBank(game, command.teamId);
       message = `Ведущий присудил банк ${game.bank} команде «${teamById(game, command.teamId).name}».`;
       break;
     }
     case "turn": {
       requireLiveRound(game);
+      requireRule(!game.classic || game.classic.stage === "play", "В этой стадии нельзя передать ход вручную.");
       requireRule(
         game.phase === "playing",
         "Во время перехвата нельзя передать ход.",
@@ -475,12 +695,35 @@ export function applyCommand(
       message = `Ход передан команде «${team.name}». Ошибки сброшены, банк сохранён.`;
       break;
     }
+    case "rename-team": {
+      const team = teamById(game, command.teamId);
+      const name = cleanText(command.name, 80, "Название команды");
+      const previousName = team.name;
+      requireRule(name !== previousName, "Название команды не изменилось.", 400);
+      team.name = name;
+      // Rename is a durable setting, not a round decision. Keep earlier undo
+      // snapshots in sync so undoing a score or strike cannot restore an old name.
+      for (const item of game.history) {
+        const savedTeam = item.teams.find((candidate) => candidate.id === team.id);
+        if (savedTeam) savedTeam.name = name;
+      }
+      message = `Команда «${previousName}» переименована в «${name}».`;
+      break;
+    }
     case "pause": {
       requireRule(
         game.phase !== "finished" && !game.paused,
         "Нельзя поставить эту игру на паузу.",
       );
       game.paused = true;
+      if (game.classic?.final?.phase === "answering" && game.classic.final.deadlineAt !== null) {
+        game.classic.final.remainingMs = Math.max(0, game.classic.final.deadlineAt - Date.now());
+        game.classic.final.deadlineAt = null;
+      }
+      if (game.classic?.stage === "reverse" && game.phase === "playing" && game.classic.reverse?.deadlineAt != null) {
+        game.classic.reverse.remainingMs = Math.max(0, game.classic.reverse.deadlineAt - Date.now());
+        game.classic.reverse.deadlineAt = null;
+      }
       message = "Игра поставлена на паузу.";
       break;
     }
@@ -490,12 +733,45 @@ export function applyCommand(
         "Игра не находится на паузе.",
       );
       game.paused = false;
+      if (game.classic?.final?.phase === "answering" && game.classic.final.remainingMs !== null) {
+        game.classic.final.deadlineAt = Date.now() + game.classic.final.remainingMs;
+        game.classic.final.remainingMs = null;
+      }
+      if (game.classic?.stage === "reverse" && game.phase === "playing" && game.classic.reverse?.remainingMs != null) {
+        game.classic.reverse.deadlineAt = Date.now() + game.classic.reverse.remainingMs;
+        game.classic.reverse.remainingMs = null;
+      }
       message = "Игра продолжена.";
       break;
     }
     case "undo": {
       const previous = game.history.pop();
       requireRule(previous, "Нет решений ведущего для отмены.");
+      const currentClassic = game.classic;
+      const restoreReverse = previous.classic?.stage === "reverse" ? previous.classic.reverse : null;
+      const currentReverse = currentClassic?.stage === "reverse" ? currentClassic.reverse : null;
+      if (!previous.paused && restoreReverse?.deadlineAt != null && restoreReverse.remainingMs != null) {
+        let remaining = restoreReverse.remainingMs;
+        if (currentReverse && currentReverse.attempts === restoreReverse.attempts) {
+          const currentRemaining = currentReverse.deadlineAt != null
+            ? Math.max(0, currentReverse.deadlineAt - Date.now()) : currentReverse.remainingMs;
+          if (currentRemaining != null) remaining = Math.min(remaining, currentRemaining);
+        }
+        restoreReverse.deadlineAt = Date.now() + remaining;
+        restoreReverse.remainingMs = null;
+      }
+      const restoreFinal = previous.classic?.final;
+      const currentFinal = currentClassic?.final;
+      if (!previous.paused && restoreFinal?.phase === "answering" && restoreFinal.deadlineAt !== null && restoreFinal.remainingMs !== null) {
+        let remaining = restoreFinal.remainingMs;
+        if (currentFinal && currentFinal.player === restoreFinal.player && currentFinal.phase === "answering") {
+          const currentRemaining = currentFinal.deadlineAt !== null
+            ? Math.max(0, currentFinal.deadlineAt - Date.now()) : currentFinal.remainingMs;
+          if (currentRemaining !== null) remaining = Math.min(remaining, currentRemaining);
+        }
+        restoreFinal.deadlineAt = Date.now() + remaining;
+        restoreFinal.remainingMs = null;
+      }
       const published = game.resultsPublished;
       Object.assign(game, structuredClone(previous));
       // Publication is a separate choice: undoing a score adjustment must
@@ -568,9 +844,109 @@ export function applyCommand(
         : "На доске показан список ответов.";
       break;
     }
+    case "classic-buzz": {
+      requireLiveRound(game);
+      const classic = game.classic;
+      requireRule(classic && (classic.stage === "duel" || classic.stage === "tiebreak") && classic.duel,
+        "Сейчас нет розыгрыша кнопки.");
+      teamById(game, command.teamId);
+      requireRule(classic.duel.firstTeamId === null && classic.duel.awaitingTeamId === null,
+        "Кнопка уже нажата.");
+      classic.duel.firstTeamId = command.teamId;
+      classic.duel.awaitingTeamId = command.teamId;
+      game.activeTeamId = command.teamId;
+      message = `Первой нажала команда «${teamById(game, command.teamId).name}».`;
+      break;
+    }
+    case "classic-tiebreak-winner": {
+      requireLiveRound(game);
+      requireRule(game.classic?.stage === "tiebreak" && game.classic.duel === null,
+        "Ручной выбор доступен только при ничьей без вопроса для тай-брейка.");
+      beginClassicFinal(game, command.teamId);
+      message = `В финал прошла команда «${teamById(game, command.teamId).name}».`;
+      break;
+    }
+    case "classic-final-start": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final?.phase === "ready", "Финалист не готов к старту.");
+      final.phase = "answering";
+      final.attemptId = randomUUID();
+      final.deadlineAt = Date.now() + (final.player === 1 ? 15_000 : 20_000);
+      final.remainingMs = null;
+      message = `Начался этап финалиста ${final.player}.`;
+      break;
+    }
+    case "classic-final-stop": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final?.phase === "answering", "Сейчас таймер финала не идёт.");
+      final.phase = "review";
+      final.deadlineAt = null;
+      final.remainingMs = null;
+      message = `Ответы финалиста ${final.player} готовы к проверке.`;
+      break;
+    }
+    case "classic-final-repeat": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final?.player === 2 &&
+        (final.phase === "answering" || final.phase === "review"),
+        "Сигнал повтора доступен только во время ответа второго финалиста.");
+      message = "Повтор ответа в финале.";
+      break;
+    }
+    case "classic-final-answer": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final && (final.phase === "answering" || final.phase === "review"),
+        "Ответы доступны только во время финала или проверки.");
+      requireRule(final.phase !== "answering" || (final.deadlineAt !== null && Date.now() <= final.deadlineAt),
+        "Время вышло. Остановите таймер и проверьте ответы.");
+      requireRule(Number.isInteger(command.questionIndex) && command.questionIndex >= 0 && command.questionIndex < 5,
+        "В финале пять вопросов.", 400);
+      const text = cleanText(command.text, 200, "Ответ");
+      const question = game.questions[4 + command.questionIndex]!;
+      const index = command.answerId ? question.answers.findIndex((answer) => answer.id === command.answerId) : -1;
+      requireRule(!command.answerId || index >= 0, "Ответ не принадлежит вопросу финала.", 400);
+      if (final.player === 2) {
+        const first = final.entries[0][command.questionIndex];
+        const normalizedText = (s: string) => s.trim().toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/\s+/g, " ");
+        const pass = ["пас", "пропуск"].includes(normalizedText(text));
+        requireRule(!first || pass ||
+          (normalizedText(first.text) !== normalizedText(text) && (!command.answerId || command.answerId !== first.answerId)),
+          "Ответ повторяет ответ первого финалиста. Назовите другой вариант.");
+      }
+      final.entries[final.player - 1]![command.questionIndex] = {
+        text, answerId: command.answerId ?? null,
+        points: index >= 0 ? classicPoints(question.answers)[index]! : 0,
+      };
+      final.score = final.entries.flat().reduce((sum, entry) => sum + (entry?.points ?? 0), 0);
+      message = `Обновлён ответ финалиста ${final.player} на вопрос ${command.questionIndex + 1}.`;
+      break;
+    }
+    case "classic-final-next": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final?.phase === "review", "Сначала остановите таймер и проверьте ответы.");
+      if (final.player === 1) {
+        final.player = 2;
+        final.phase = "ready";
+        message = "Первый финалист закончил. Пригласите второго.";
+      } else {
+        final.phase = "complete";
+        game.phase = "round-result";
+        endGame(game);
+        message = final.score >= 200 ? `Большая игра завершена: ${final.score} очков, суперприз!` : `Большая игра завершена: ${final.score} очков.`;
+      }
+      break;
+    }
     case "suggest":
     case "submit": {
       requireLiveRound(game);
+      requireRule(!game.classic || game.classic.stage === "reverse" ||
+        (game.classic.stage === "play" && game.phase === "steal"),
+        "В классическом раунде игроки отвечают по очереди без совещания.");
       const team = teamById(game, command.teamId);
       requireRule(
         team.id === game.activeTeamId,
@@ -606,6 +982,7 @@ export function applyCommand(
   }
   if (
     command.type !== "undo" &&
+    command.type !== "rename-team" &&
     command.type !== "suggest" &&
     command.type !== "submit"
   ) {
@@ -630,7 +1007,7 @@ export function publicView(game: GameState): PublicGame {
     (item) => item.questionIndex === game.questionIndex,
   );
   const question =
-    game.phase === "lobby" || (game.phase === "finished" && !result)
+    game.phase === "lobby" || game.classic?.stage === "final" || (game.phase === "finished" && !result)
       ? undefined
       : game.questions[game.questionIndex];
   return {
@@ -644,13 +1021,17 @@ export function publicView(game: GameState): PublicGame {
       score: team.score,
     })),
     revision: game.revision,
+    lastAction: game.events.at(-1)?.type === "reveal" ? "reveal"
+      : game.events.at(-1)?.type === "strike" ? "strike"
+      : game.events.at(-1)?.type === "classic-final-repeat" ? "repeat" : null,
+    ...(game.events.at(-1) ? { lastActionEventId: game.events.at(-1)!.id } : {}),
     phase: game.phase,
     paused: game.paused,
     activeTeamId: game.activeTeamId,
     bank: game.bank,
     strikes: game.strikes,
     questionIndex: game.questionIndex,
-    totalRounds: game.questions.length,
+    totalRounds: game.classic ? 5 : game.questions.length,
     multiplier: multiplier(game),
     prompt: question?.prompt ?? "",
     isDemo: question?.isDemo ?? false,
@@ -661,14 +1042,24 @@ export function publicView(game: GameState): PublicGame {
         : null,
     resultsAvailable: game.phase === "finished" && game.resultsPublished,
     statisticsView: game.statisticsView ?? "list",
+    ...(game.classic ? { classic: {
+      stage: game.classic.stage,
+      activePlayerIndex: game.classic.activePlayerIndex ?? null,
+      duel: structuredClone(game.classic.duel),
+      reverse: structuredClone(game.classic.reverse),
+      final: game.classic.final ? (({ teamId, player, phase, deadlineAt, remainingMs, score }) =>
+        ({ teamId, player, phase, deadlineAt, remainingMs, score }))(game.classic.final) : null,
+    } } : {}),
     answers:
       (question ? gameBoardAnswers(game, question) : []).map((answer, index) =>
-        game.openedAnswerIds.includes(answer.id)
+        (game.openedAnswerIds.includes(answer.id) || (game.classic && game.phase === "round-result"))
           ? {
               position: index + 1,
               opened: true,
               text: answer.text,
-              points: answer.points,
+              points: game.classic?.stage === "reverse"
+                ? [15, 30, 60, 120, 180, 240][index]!
+                : game.classic ? classicBoardPoints(question!.answers)[index]! : answer.points,
             }
           : { position: index + 1, opened: false },
       ),
@@ -704,6 +1095,7 @@ function roundStats(game: GameState, result: RoundResult): PublicRoundStats {
     multiplier: result.multiplier,
     winnerTeamId: result.winnerTeamId,
     awardedPoints: result.awardedPoints,
+    ...(result.teamAwards !== undefined ? { teamAwards: structuredClone(result.teamAwards) } : {}),
     strikes: result.strikes,
     completed: result.completed,
     completedAt: result.completedAt,
@@ -717,6 +1109,7 @@ export function gameResults(state: GameState): PublicGameResults {
     game.phase === "finished",
     "Статистика всей игры доступна после завершения.",
   );
+  const final = game.classic?.final;
   return {
     id: game.id,
     title: game.title,
@@ -731,7 +1124,34 @@ export function gameResults(state: GameState): PublicGameResults {
     createdAt: game.createdAt,
     published: game.resultsPublished,
     rounds: game.roundResults.map((result) => roundStats(game, result)),
-    totalRounds: game.questions.length,
+    ...(final?.phase === "complete" ? {
+      classicFinal: {
+        teamId: final.teamId,
+        score: final.score,
+        superPrize: final.score >= 200,
+        questions: game.questions.slice(4, 9).map((question, questionIndex) => {
+          const total = question.answers.reduce((sum, answer) => sum + answer.points, 0);
+          return {
+            questionId: question.id,
+            questionIndex,
+            prompt: question.prompt,
+            source: question.source,
+            surveyDate: question.surveyDate,
+            respondentCount: question.respondentCount,
+            isDemo: question.isDemo,
+            answers: question.answers.map((answer, index) => ({
+              position: index + 1,
+              text: answer.text,
+              points: answer.points,
+              share: total > 0 ? answer.points / total * 100 : 0,
+            })),
+          };
+        }),
+      },
+    } : {}),
+    totalRounds: game.classic ? 5 : game.questions.length,
+    ...(game.classic ? { completedRounds: game.roundResults.filter((round) => round.completed).length +
+      (game.classic.final?.phase === "complete" ? 1 : 0) } : {}),
   };
 }
 

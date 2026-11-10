@@ -9,3 +9,8 @@ playwright-report/
 test-results/
 coverage/
 *.log
+# Impeccable's launcher downloads and verifies its platform engine on demand.
+.agents/skills/impeccable/scripts/bin/
+!.agents/skills/impeccable/scripts/data/
+!.agents/skills/impeccable/scripts/data/font-index.json
+.agents/skills/impeccable/scripts/data/font-index-failures.json

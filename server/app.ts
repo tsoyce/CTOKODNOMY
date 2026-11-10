@@ -104,6 +104,10 @@ const imageUrl = z
       /^https:\/\//.test(v),
     "Используйте загруженное изображение или HTTPS-ссылку",
   );
+const soundUrl = z.string().max(1000).refine(
+  (value) => !value || /^\/media\/[a-f0-9-]+\.(mp3|wav|ogg)$/.test(value),
+  "Выберите загруженный звуковой файл",
+).default("");
 const brandSchema = z.object({
   title: z.string().trim().min(1).max(150),
   description: z.string().max(1000),
@@ -119,6 +123,10 @@ const brandSchema = z.object({
   gameLogoUrl: imageUrl,
   faviconUrl: imageUrl,
   partnerLogoUrls: z.array(imageUrl).max(12),
+  soundCorrectUrl: soundUrl,
+  soundWrongUrl: soundUrl,
+  soundBankUrl: soundUrl,
+  soundRepeatUrl: soundUrl,
 });
 const usernameSchema = z
   .string()
@@ -134,6 +142,7 @@ const normalizeBrand = (brand: Partial<Brand>): Brand => ({
 });
 const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
 const rulesSchema = z.object({
+  mode: z.enum(["standard", "classic"]).optional(),
   multipliers: z.array(z.number().int().min(1).max(100)).min(1).max(20),
   stealAddsPoints: z.boolean(),
 });
@@ -145,11 +154,24 @@ const hostCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("next"), teamId: idSchema.optional() }),
   z.object({ type: z.literal("award"), teamId: idSchema }),
   z.object({ type: z.literal("turn"), teamId: idSchema }),
+  z.object({ type: z.literal("rename-team"), teamId: idSchema, name: z.string().trim().min(1).max(80) }),
   z.object({ type: z.literal("pause") }),
   z.object({ type: z.literal("resume") }),
   z.object({ type: z.literal("undo") }),
   z.object({ type: z.literal("finish") }),
   z.object({ type: z.literal("statistics-view"), view: z.enum(["list", "cloud"]) }),
+  z.object({ type: z.literal("classic-buzz"), teamId: idSchema }),
+  z.object({ type: z.literal("classic-tiebreak-winner"), teamId: idSchema }),
+  z.object({ type: z.literal("classic-final-start") }),
+  z.object({ type: z.literal("classic-final-stop") }),
+  z.object({ type: z.literal("classic-final-repeat") }),
+  z.object({
+    type: z.literal("classic-final-answer"),
+    questionIndex: z.number().int().min(0).max(4),
+    text: z.string().trim().min(1).max(200),
+    answerId: idSchema.nullable().optional(),
+  }),
+  z.object({ type: z.literal("classic-final-next") }),
   z.object({
     type: z.literal("adjust"),
     teamId: idSchema,
@@ -174,6 +196,7 @@ const commandEnvelope = z.object({
 const participantEnvelope = commandEnvelope
   .omit({ command: true })
   .extend({ text: z.string().trim().min(1).max(200) });
+const buzzEnvelope = commandEnvelope.omit({ command: true }).strict();
 const gameId = (request: FastifyRequest) =>
   idSchema.parse((request.params as { id: string }).id);
 const mapQuestion = (value: unknown): Question => {
@@ -619,6 +642,27 @@ export async function buildApp(
     await requireAdmin(request);
     return uploadImage(request);
   });
+  app.post("/api/media/audio", async (request) => {
+    await requireAdmin(request);
+    const file = await request.file();
+    if (!file || file.fieldname !== "file")
+      throw new ApiError(400, "Выберите звуковой файл в поле file");
+    const buffer = await file.toBuffer();
+    if (!buffer.length) throw new ApiError(400, "Звуковой файл пустой");
+    const mp3 = buffer.length >= 4 && (
+      buffer.toString("ascii", 0, 3) === "ID3" ||
+      (buffer[0] === 0xff && (buffer[1]! & 0xe0) === 0xe0)
+    );
+    const wav = buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WAVE";
+    const ogg = buffer.length >= 4 && buffer.toString("ascii", 0, 4) === "OggS";
+    const extension = mp3 ? "mp3" : wav ? "wav" : ogg ? "ogg" : null;
+    const allowedMime = mp3 ? ["audio/mpeg", "audio/mp3"] : wav ? ["audio/wav", "audio/x-wav", "audio/wave"] : ogg ? ["audio/ogg", "application/ogg"] : [];
+    if (!extension || ![...allowedMime, "application/octet-stream"].includes(file.mimetype))
+      throw new ApiError(415, "Загрузите звуковой файл MP3, WAV или OGG.", "MEDIA_TYPE");
+    const name = `${randomUUID()}.${extension}`;
+    await writeFile(path.join(mediaDir, name), buffer, { flag: "wx", mode: 0o640 });
+    return { url: `/media/${name}` };
+  });
   app.post(
     "/api/setup/media",
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
@@ -808,6 +852,8 @@ export async function buildApp(
       .parse(request.body);
     if (new Set(body.questionIds).size !== body.questionIds.length)
       throw new ApiError(400, "Выберите разные вопросы для раундов");
+    if (body.rules?.mode === "classic" && ![9, 10].includes(body.questionIds.length))
+      throw new ApiError(400, "Для классической игры выберите 9 вопросов и, при желании, дополнительный вопрос для ничьей");
     const state = await transaction(pool, async (client) => {
       const questionRows = await client.query(
         "SELECT id,data FROM questions WHERE id=ANY($1::uuid[])",
@@ -1009,7 +1055,7 @@ export async function buildApp(
           role: "player",
         };
         await client.query(
-          "INSERT INTO participants(id,game_id,team_id,name,role) VALUES($1,$2,$3,$4,$5)",
+          "INSERT INTO participants(id,game_id,team_id,name,role,created_at) VALUES($1,$2,$3,$4,$5,clock_timestamp())",
           [
             participant.id,
             participant.gameId,
@@ -1045,14 +1091,13 @@ export async function buildApp(
     requestId: string,
     revision: number,
     command: GameCommand,
-    validate?: (client: Transaction) => Promise<void>,
+    validate?: (client: Transaction, state: GameState, replay: boolean) => Promise<void>,
   ) {
     const inputHash = createHash("sha256")
       .update(JSON.stringify(command))
       .digest("hex");
     const result = await transaction(pool, async (client) => {
       const state = await loadGame(client, id, true);
-      if (validate) await validate(client);
       const previous = await client.query(
         "SELECT actor,input_hash FROM game_commands WHERE game_id=$1 AND request_id=$2",
         [id, requestId],
@@ -1067,8 +1112,10 @@ export async function buildApp(
             "Этот идентификатор уже использован для другого действия",
             "REQUEST_ID",
           );
+        if (validate) await validate(client, state, true);
         return { state, changed: false };
       }
+      if (validate) await validate(client, state, false);
       if (state.revision !== revision)
         throw new ApiError(
           409,
@@ -1126,6 +1173,38 @@ export async function buildApp(
     });
     broadcast(state);
     return hostGame(pool, state);
+  });
+  app.post("/api/games/:id/buzz", async (request) => {
+    const id = gameId(request);
+    const self = await requireParticipant(request, id);
+    const body = buzzEnvelope.parse(request.body);
+    const state = await runCommand(
+      id,
+      `participant:${self.id}`,
+      body.requestId,
+      body.revision,
+      { type: "classic-buzz", teamId: self.teamId },
+      async (client, game, replay) => {
+        // `players` returns the immutable join order. The captain occupies
+        // position 1; other team members fill positions 2–5 in that order.
+        const roster = (await players(client, id)).filter((person) => person.teamId === self.teamId);
+        const participant = roster.find((person) => person.id === self.id);
+        if (!participant)
+          throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+        const playerIndex = game.classic?.duel?.playerIndex ?? 1;
+        const designated = playerIndex === 1
+          ? roster.find((person) => person.role === "captain")
+          : roster.filter((person) => person.role !== "captain")[playerIndex - 2];
+        // The captain may always signal as a fallback if the designated player
+        // cannot use their phone. The game engine separately validates phase.
+        if (!replay && participant.role !== "captain" && designated?.id !== participant.id)
+          throw new ApiError(403, `Кнопка сейчас доступна игроку ${playerIndex} и капитану`, "DUEL_PLAYER_REQUIRED");
+      },
+    );
+    const currentPlayers = await players(pool, id);
+    const currentSelf = currentPlayers.find((p) => p.id === self.id);
+    if (!currentSelf) throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+    return teamView(state, currentSelf, currentPlayers);
   });
   for (const type of ["suggest", "submit"] as const) {
     app.post(`/api/games/:id/${type}`, async (request) => {

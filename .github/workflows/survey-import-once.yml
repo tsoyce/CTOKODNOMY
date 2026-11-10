@@ -1,0 +1,101 @@
+name: Temporary encrypted survey import
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "public-key or import"
+        required: true
+        type: choice
+        options: [public-key, import]
+      server:
+        description: "Verified SSH host"
+        required: false
+        type: string
+      app_root:
+        description: "Existing application root"
+        required: false
+        type: string
+      app_user:
+        description: "Existing application user"
+        required: false
+        type: string
+      port:
+        description: "Existing application port"
+        required: false
+        type: string
+      domain:
+        description: "Existing application domain"
+        required: false
+        type: string
+      node_bin:
+        description: "Existing physical Node.js binary"
+        required: false
+        type: string
+      php_checks:
+        description: "Direct HTTPS PHP health endpoints"
+        required: false
+        type: string
+      known_hosts:
+        description: "Independently verified SSH host-key entry"
+        required: false
+        type: string
+      envelope:
+        description: "SHA-256 of JSON, colon, and base64 age ciphertext of gzip JSON"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brainycp-survey-import
+  cancel-in-progress: false
+
+jobs:
+  survey:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: inputs.mode == 'import'
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Build self-contained import worker from reviewed sources
+        if: inputs.mode == 'import'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          ./node_modules/.bin/esbuild scripts/survey-import-worker.ts --bundle --platform=node --format=esm --outfile=scripts/survey-import-worker.mjs
+          node --check scripts/survey-import-worker.mjs
+      - name: Install verified age client on this runner
+        if: inputs.mode == 'import'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/ctok-age"
+          curl -fsSL --retry 2 --max-time 60 -o "$RUNNER_TEMP/ctok-age/age.tar.gz" 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz'
+          printf '%s  %s\n' 'cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10' "$RUNNER_TEMP/ctok-age/age.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ctok-age/age.tar.gz" -C "$RUNNER_TEMP/ctok-age" age/age
+      - name: Obtain recipient or transfer encrypted survey
+        shell: bash
+        env:
+          SURVEY_MODE: ${{ inputs.mode }}
+          DEPLOY_HOST: ${{ inputs.server }}
+          APP_ROOT: ${{ inputs.app_root }}
+          APP_USER: ${{ inputs.app_user }}
+          APP_PORT: ${{ inputs.port }}
+          APP_DOMAIN: ${{ inputs.domain }}
+          APP_NODE_BIN: ${{ inputs.node_bin }}
+          PHP_HEALTHCHECK_URLS: ${{ inputs.php_checks }}
+          SSH_KNOWN_HOSTS: ${{ inputs.known_hosts || secrets.SSH_KNOWN_HOSTS }}
+          SURVEY_ENVELOPE: ${{ inputs.envelope }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          AGE_BIN: ${{ runner.temp }}/ctok-age/age/age
+        run: bash scripts/survey-import-transport.sh

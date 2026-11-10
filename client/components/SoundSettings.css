@@ -1,0 +1,6 @@
+.sound-settings audio,
+.sound-settings input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 24rem;
+}

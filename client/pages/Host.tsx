@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import QRCode from "qrcode";
 import { gameBoardAnswers } from "../../shared/questionAnswers";
+import { classicBoardPoints, classicPoints } from "../../shared/classicPoints";
 import type {
   HostCommand,
   HostGame,
@@ -111,6 +112,182 @@ function Invitation({ code, teamName }: { code: string; teamName: string }) {
   );
 }
 
+function ClassicFinalPanel({ game, disabled, command }: {
+  game: HostGame;
+  disabled: boolean;
+  command: (next: HostCommand) => Promise<void>;
+}) {
+  const final = game.classic!.final!;
+  const playerIndex = final.player - 1;
+  // Keep unsaved answers in this tab across a reload, never on the public board.
+  // Each server-issued attempt ID gives a replay after undo its own draft.
+  const startEvent = [...game.events].reverse().find((event) => event.type === "classic-final-start" && event.message === `Начался этап финалиста ${final.player}.`);
+  const draftKey = `ctokodnomy:final-draft:${game.id}:${final.player}:${final.attemptId ?? startEvent?.id ?? "legacy"}`;
+  const loadDraft = () => {
+    const fallback = {
+      texts: final.entries[playerIndex].map((entry) => entry?.text ?? ""),
+      matches: final.entries[playerIndex].map((entry) => entry?.answerId ?? ""),
+    };
+    if (final.phase === "ready") return fallback;
+    try {
+      const stored = sessionStorage.getItem(draftKey);
+      if (!stored) return fallback;
+      const draft: unknown = JSON.parse(stored);
+      if (!draft || typeof draft !== "object") return fallback;
+      const { texts, matches } = draft as { texts?: unknown; matches?: unknown };
+      if (!Array.isArray(texts) || !Array.isArray(matches) || texts.length !== 5 || matches.length !== 5 ||
+        !texts.every((item) => typeof item === "string" && item.length <= 200) ||
+        !matches.every((item) => typeof item === "string")) return fallback;
+      return { texts: texts as string[], matches: matches as string[] };
+    } catch {
+      return fallback;
+    }
+  };
+  const [initialDraft] = useState(loadDraft);
+  const [texts, setTexts] = useState(initialDraft.texts);
+  const [matches, setMatches] = useState(initialDraft.matches);
+  const textsRef = useRef(texts);
+  const matchesRef = useRef(matches);
+  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const [draftError, setDraftError] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  function saveDraft(nextTexts: string[], nextMatches: string[]) {
+    try {
+      sessionStorage.setItem(draftKey, JSON.stringify({ texts: nextTexts, matches: nextMatches }));
+      setDraftError(false);
+    } catch {
+      setDraftError(true);
+    }
+  }
+  useEffect(() => {
+    if (final.phase !== "answering" || !final.deadlineAt) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [final.phase, final.deadlineAt]);
+  const remaining = final.deadlineAt === null
+    ? final.remainingMs
+    : Math.max(0, final.deadlineAt - now);
+  const review = final.phase === "review";
+  const canEnterText = final.phase === "answering" && !game.paused && !disabled && final.deadlineAt !== null && final.deadlineAt > now;
+  const team = game.teams.find((item) => item.id === final.teamId);
+  const entries = final.entries[playerIndex];
+  const repeated = texts.map((text, index) => {
+    if (final.player !== 2) return false;
+    const normalize = (value: string) => value.trim().toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/\s+/g, " ");
+    const value = normalize(text ?? "");
+    const first = final.entries[0][index];
+    return !!value && !["пас", "пропуск"].includes(value) && !!first &&
+      (value === normalize(first.text) || (!!matches[index] && matches[index] === first.answerId));
+  });
+  const unsaved = entries.some((entry, index) => entry
+    ? entry.text !== texts[index]?.trim() || (entry.answerId ?? "") !== matches[index]
+    : !!texts[index]?.trim() || !!matches[index]);
+  return (
+    <section className="card host-final" aria-label="Большая игра" data-final-phase={final.phase}>
+      <div className="host-final-toolbar">
+      <div className="host-final-heading">
+        <div>
+          <h2>Большая игра · игрок {final.player}</h2>
+          <p className="muted">{team?.name ?? "Команда"} · {final.score} из 200 очков</p>
+        </div>
+        {remaining !== null && <strong className="host-final-clock" aria-label={`Осталось секунд: ${Math.ceil(remaining / 1000)}`}>{Math.ceil(remaining / 1000)} с</strong>}
+      </div>
+      {final.phase === "ready" && (
+        <div className="host-final-instructions">
+          <p>Задайте пять вопросов. После старта записывайте ответы; затем остановите таймер и проверьте совпадения.</p>
+          <button className="button primary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-start" })}>
+            <Play size={18} /> Начать: {final.player === 1 ? "15" : "20"} секунд
+          </button>
+        </div>
+      )}
+      {final.phase === "answering" && (
+        <div className="host-final-instructions">
+          <p>{game.paused ? "Пауза. Продолжите игру для записи." : remaining !== null && remaining <= 0 ? "Время вышло. Проверьте ответы." : "Записывайте ответы до сигнала."}</p>
+          <button className="button secondary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-stop" })}>
+            <Pause size={18} /> Остановить и проверить
+          </button>
+        </div>
+      )}
+      {draftError && <p className="host-final-repeat" role="alert">Браузер не сохранил черновик. До завершения проверки не обновляйте эту страницу.</p>}
+      {final.player === 2 && (final.phase === "answering" || final.phase === "review") && (
+        <div className="host-final-repeat-control">
+          <p className="form-hint">Если второй игрок повторил ответ первого, подайте сигнал и попросите другой вариант.</p>
+          <button type="button" className="button secondary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-repeat" })}>Сигнал повтора</button>
+        </div>
+      )}
+      </div>
+      {final.phase === "ready" && (
+        <ol className="host-final-preview" aria-label="Вопросы финала">
+          {game.questions.slice(4, 9).map((question) => <li key={question.id}>{question.prompt}</li>)}
+        </ol>
+      )}
+      {review && <p className="form-hint">Для каждого ответа выберите совпавший вариант опроса или оставьте «Нет совпадения». Сохраните заполненные ответы; пустые поля считаются пропуском.</p>}
+      {final.phase !== "ready" && game.questions.slice(4, 9).map((question, index) => {
+        const saved = entries[index];
+        const dirty = saved ? saved.text !== texts[index]?.trim() || (saved.answerId ?? "") !== matches[index] : !!texts[index]?.trim() || !!matches[index];
+        const points = classicPoints(question.answers);
+        return (
+          <form className="host-final-answer" key={question.id} onSubmit={(event) => {
+            event.preventDefault();
+            if (review && dirty) void command({ type: "classic-final-answer", questionIndex: index, text: texts[index]?.trim() ?? "", answerId: matches[index] || null });
+          }}>
+            <h3><span>{index + 1}.</span> {question.prompt}</h3>
+            <label className="field"><span className={review ? undefined : "sr-only"}>Ответ игрока</span>
+              <input ref={(element) => { inputRefs.current[index] = element; }} enterKeyHint="next" maxLength={200} value={texts[index] ?? ""} disabled={!canEnterText} onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing || review) return;
+                event.preventDefault();
+                inputRefs.current[index + 1]?.focus();
+              }} onChange={(event) => {
+                // React's interval updates the display, but the event handler checks
+                // the server deadline again so the last fraction of a second is safe.
+                if (!canEnterText || final.deadlineAt === null || Date.now() >= final.deadlineAt) return;
+                const next = textsRef.current.map((item, i) => i === index ? event.target.value : item);
+                textsRef.current = next;
+                setTexts(next);
+                saveDraft(next, matchesRef.current);
+              }} placeholder="Ответ или пустое поле для пропуска" />
+            </label>
+            {repeated[index] && <div className="host-final-repeat" role="alert">
+              <p>{review || !canEnterText ? "Повторный ответ не засчитывается." : "Этот ответ уже назвал первый игрок. Попросите другой вариант."}</p>
+              {(review || !canEnterText) && <button type="button" className="button secondary small" disabled={disabled || game.paused} onClick={() => {
+                const nextTexts = textsRef.current.map((item, i) => i === index ? "" : item);
+                const nextMatches = matchesRef.current.map((item, i) => i === index ? "" : item);
+                textsRef.current = nextTexts;
+                matchesRef.current = nextMatches;
+                setTexts(nextTexts);
+                setMatches(nextMatches);
+                saveDraft(nextTexts, nextMatches);
+              }}>Засчитать пропуск</button>}
+            </div>}
+            {review && <label className="field">Совпадение в опросе
+              <select value={matches[index] ?? ""} disabled={disabled || game.paused} onChange={(event) => {
+                const next = matchesRef.current.map((item, i) => i === index ? event.target.value : item);
+                matchesRef.current = next;
+                setMatches(next);
+                saveDraft(textsRef.current, next);
+              }}>
+                <option value="">Нет совпадения · 0 очков</option>
+                {question.answers.map((answer, answerIndex) => <option key={answer.id} value={answer.id} disabled={final.player === 2 && answer.id === final.entries[0][index]?.answerId}>{answer.text} · {points[answerIndex]} очков</option>)}
+              </select>
+            </label>}
+            {review && <div className="host-final-answer-actions">
+              <span className="form-hint">{saved && !dirty ? `Сохранено · ${saved.points} очков` : dirty ? "Не сохранено" : "Пропуск"}</span>
+              <button className="button secondary small" disabled={disabled || game.paused || !dirty || repeated[index] || (!!matches[index] && !texts[index]?.trim())}>Сохранить ответ</button>
+            </div>}
+          </form>
+        );
+      })}
+      {review && <div className="host-final-next">
+        {unsaved && <p className="form-hint">Сохраните заполненные ответы перед продолжением.</p>}
+        <button className="button primary" disabled={disabled || game.paused || unsaved} onClick={() => void command({ type: "classic-final-next" })}>
+          {final.player === 1 ? "Следующий игрок" : "Завершить большую игру"} <ArrowRight size={18} />
+        </button>
+      </div>}
+    </section>
+  );
+}
+
 export function HostPage() {
   const { resolveAppearance } = useAppearance();
   const { gameId } = useParams();
@@ -127,6 +304,7 @@ export function HostPage() {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState<HostCommand | null>(null);
   const [shortcutsEnabled, setShortcutsEnabled] = useState(false);
+  const [clockNow, setClockNow] = useState(Date.now);
   const [turnMenuOpen, setTurnMenuOpen] = useState(false);
   const turnMenuRef = useRef<HTMLDivElement>(null);
   const turnMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -136,6 +314,12 @@ export function HostPage() {
   const lastAttempt = useRef<HostAttempt | null>(null);
   const operationInFlight = useRef(false);
   const shortcutAction = useRef<(event: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    if (game?.classic?.stage !== "reverse" || game.paused) return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [game?.classic?.stage, game?.paused]);
   useEffect(() => {
     if (!shortcutsEnabled) return;
     const keydown = (event: KeyboardEvent) => {
@@ -247,6 +431,7 @@ export function HostPage() {
     );
   const question = game.questions[game.questionIndex];
   const currentBoardAnswers = question ? gameBoardAnswers(game, question) : [];
+  const openedCount = currentBoardAnswers.filter((answer) => game.openedAnswerIds.includes(answer.id)).length;
   const boardAnswerIds = new Set(currentBoardAnswers.map((answer) => answer.id));
   const statisticsOnlyAnswers = question?.answers.filter((answer) => !boardAnswerIds.has(answer.id)) ?? [];
   const multiplier =
@@ -255,6 +440,16 @@ export function HostPage() {
     1;
   const roundLive =
     (game.phase === "playing" || game.phase === "steal") && !game.paused;
+  const classic = game.classic;
+  const isClassicFinal = classic?.stage === "final";
+  const isManualTiebreak = classic?.stage === "tiebreak" && !classic.duel;
+  const isDuel = (classic?.stage === "duel" || classic?.stage === "tiebreak") && !!classic.duel;
+  const waitingForBuzz = isDuel && !classic?.duel?.awaitingTeamId;
+  const reverse = classic?.stage === "reverse" ? classic.reverse : null;
+  const reverseRemaining = reverse?.remainingMs != null ? reverse.remainingMs : reverse?.deadlineAt != null ? Math.max(0, reverse.deadlineAt - clockNow) : null;
+  const canDecideAnswer = roundLive && !isClassicFinal && !isManualTiebreak && !waitingForBuzz;
+  const canRevealAnswer = canDecideAnswer && !(reverseRemaining !== null && reverseRemaining <= 0);
+  const canManageBank = roundLive && (!classic || classic.stage === "play");
   const disabled = busy || !connected || !!error;
   const activeTeam = game.teams.find((team) => team.id === game.activeTeamId);
   const displayBrand = resolveAppearance(game.brand);
@@ -266,13 +461,23 @@ export function HostPage() {
     : game.paused
       ? "Игра на паузе. Продолжите её, чтобы принимать ответы."
       : game.phase === "lobby"
-        ? "Выберите первую команду и начните игру. Вопрос появится на общей доске."
+        ? classic ? "Начните игру: команды разыграют право хода." : "Выберите первую команду и начните игру. Вопрос появится на общей доске."
         : game.phase === "round-result"
           ? game.questionIndex + 1 >= game.questions.length
             ? "Последний раунд завершён. Обсудите ответы и перейдите к итогам."
             : "Обсудите все ответы с гостями, затем начните следующий раунд."
           : game.phase === "finished"
             ? "Игра завершена. Проверьте итоги и откройте их для гостей."
+            : isClassicFinal
+              ? "Проведите большую игру: запишите ответы двух игроков и проверьте их по опросу."
+              : isManualTiebreak
+                ? "Счёт равный. Проведите дополнительный вопрос и выберите победившую команду."
+                : waitingForBuzz
+                  ? "Ждём сигнала капитана. При необходимости выберите команду вручную."
+                  : isDuel
+                    ? `${activeTeam?.name ?? "Команда"} отвечает на дуэли. Откройте вариант или отметьте ошибку.`
+                    : classic?.stage === "reverse"
+                      ? `${activeTeam?.name ?? "Команда"} выбирает ответ в игре наоборот.`
             : game.phase === "steal"
               ? `${activeTeam?.name ?? "Команда"} перехватывает банк: откройте совпавший ответ или отметьте неудачу.`
               : game.pendingAnswer
@@ -291,7 +496,7 @@ export function HostPage() {
       askConfirmation({ type: "undo" }, undoButtonRef.current);
       return;
     }
-    if (!roundLive || !/^[1-6]$/.test(event.key)) return;
+    if (!canRevealAnswer || !/^[1-6]$/.test(event.key)) return;
     const answer = currentBoardAnswers[Number(event.key) - 1];
     if (!answer || game.openedAnswerIds.includes(answer.id)) return;
     event.preventDefault();
@@ -444,6 +649,7 @@ export function HostPage() {
       className="host-page"
       style={brandStyle(displayBrand)}
       data-theme={isLightBrand(displayBrand) ? "light" : "dark"}
+      data-final-phase={isClassicFinal ? classic?.final?.phase : undefined}
     >
       <div className="container host-container">
         <header className="host-header">
@@ -483,9 +689,9 @@ export function HostPage() {
           <div className="host-status-bar">
             <div className="host-phase">
               <span className="badge">{game.paused ? "На паузе" : phases[game.phase]}</span>
-              <span>Раунд {game.questionIndex + 1} / {game.questions.length}</span>
+              <span>{classic ? isClassicFinal ? "Большая игра · раунд 5 / 5" : classic.stage === "tiebreak" ? "Тай-брейк" : `Раунд ${Math.min(game.questionIndex + 1, 4)} / 5` : `Раунд ${game.questionIndex + 1} / ${game.questions.length}`}</span>
             </div>
-            <div className="host-turn"><span>Сейчас отвечает</span><strong>{activeTeam?.name ?? "Выберите команду"}</strong></div>
+              <div className="host-turn"><span>Сейчас отвечает</span><strong>{activeTeam?.name ?? "Выберите команду"}</strong>{classic?.stage === "play" && game.phase === "playing" && classic.activePlayerIndex && <small>Игрок {classic.activePlayerIndex}</small>}{isDuel && classic?.duel?.playerIndex && <small>Игрок {classic.duel.playerIndex}</small>}</div>
             <div className="host-bank"><span>Банк <small>×{multiplier}</small></span><strong>{game.bank}</strong></div>
             <div className="host-mistakes"><span>Ошибки</span><Strikes count={game.strikes} /></div>
           </div>
@@ -506,24 +712,26 @@ export function HostPage() {
               </p>
               <h2>
                 {game.phase === "lobby"
-                  ? "Кто отвечает первым?"
-                  : game.questionIndex + 1 >= game.questions.length
+                  ? classic ? "Готовы начать?" : "Кто отвечает первым?"
+                  : !classic && game.questionIndex + 1 >= game.questions.length
                     ? "Пора подвести итоги"
                     : "Готовы к следующему вопросу?"}
               </h2>
               <p className="muted">
                 {game.phase === "lobby"
-                  ? "Выберите команду. Первый вопрос появится на табло после старта."
-                  : game.questionIndex + 1 >= game.questions.length
+                  ? classic ? "После старта капитаны разыграют право первого хода." : "Выберите команду. Первый вопрос появится на табло после старта."
+                  : classic && game.questionIndex === 3
+                    ? "Продолжите игру, чтобы определить финалиста."
+                  : !classic && game.questionIndex + 1 >= game.questions.length
                     ? "Все раунды сыграны. Завершите игру, чтобы открыть страницу результатов."
                     : "Ответы и статистика остаются на табло, пока вы не продолжите игру."}
               </p>
             </div>
             <div className="host-start-actions">
-              {(game.phase === "lobby" ||
+              {(!classic || (game.phase === "round-result" && game.questionIndex === 2 && game.teams[0]?.score === game.teams[1]?.score)) && (game.phase === "lobby" ||
                 game.questionIndex + 1 < game.questions.length) && (
                 <label className="field">
-                  Первой отвечает
+                  {classic ? "При ничьей первой отвечает" : "Первой отвечает"}
                   <select
                     value={firstTeamId}
                     onChange={(event) => setFirstTeamId(event.target.value)}
@@ -544,6 +752,36 @@ export function HostPage() {
           activeTeamId={game.activeTeamId}
           compact
         />
+        {isDuel && !game.paused && (
+          <section className="card host-classic-step" aria-label="Розыгрыш права хода">
+            <div>
+              <p className="eyebrow">{classic?.stage === "tiebreak" ? "Тай-брейк" : "Розыгрыш хода"}</p>
+              <h2>{waitingForBuzz ? "Кто нажал первым?" : `Отвечает ${activeTeam?.name ?? "команда"}`}</h2>
+              <p className="muted">{waitingForBuzz ? "Капитан может нажать кнопку на телефоне. Если это неудобно, выберите команду вручную." : "Выслушайте ответ и откройте совпадающий вариант. Если ответа нет, отметьте ошибку."}</p>
+            </div>
+            {waitingForBuzz && <div className="button-row">
+              {game.teams.map((team) => <button key={team.id} className="button secondary" disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-buzz", teamId: team.id })}>{team.name} нажала первой</button>)}
+            </div>}
+          </section>
+        )}
+        {isManualTiebreak && !game.paused && (
+          <section className="card host-classic-step" aria-label="Тай-брейк">
+            <h2>Счёт равный</h2>
+            <p className="muted">Проведите дополнительный вопрос и укажите, какая команда первой ответила верно.</p>
+            <div className="button-row">{game.teams.map((team) => <button key={team.id} className="button secondary" disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-tiebreak-winner", teamId: team.id })}>{team.name} выходит в финал</button>)}</div>
+          </section>
+        )}
+        {classic?.stage === "reverse" && game.phase === "playing" && (
+          <section className="card host-classic-step" aria-label="Игра наоборот">
+            <div>
+              <p className="eyebrow">Игра наоборот</p>
+              <h2>Отвечает {activeTeam?.name ?? "команда"}</h2>
+              <p className="muted">Команда совещается и называет один ответ. Откройте его или отметьте «Нет ответа».</p>
+            </div>
+            {reverseRemaining !== null && <strong className="host-classic-clock" role="timer" aria-label={`Осталось ${Math.ceil(reverseRemaining / 1000)} секунд`}>{Math.ceil(reverseRemaining / 1000)} с</strong>}
+            {reverseRemaining !== null && reverseRemaining <= 0 && <p className="form-hint">Время вышло. Отметьте «Нет ответа».</p>}
+          </section>
+        )}
         {showStatisticsControls && (
           <section className="card host-statistics-controls" aria-label="Статистика на общем табло">
             <div>
@@ -600,12 +838,13 @@ export function HostPage() {
         )}
         <div className="host-grid">
           <div className="stack host-main" id="host-play">
-            <section className="card host-question">
+            {isClassicFinal && classic?.final ? <ClassicFinalPanel key={`${game.id}-${classic.final.player}-${classic.final.attemptId ?? "ready"}`} game={game} disabled={disabled} command={command} /> : !isManualTiebreak && <section className="card host-question">
               <div className="section-title small">
                 <p className="eyebrow">Вопрос и ответы · Только ведущему</p>
-                {question?.isDemo && (
-                  <span className="badge demo">Демонстрационный</span>
-                )}
+                <div className="host-question-meta">
+                  {question && <span className="host-reveal-progress" role="status">Открыто {openedCount} из {currentBoardAnswers.length}</span>}
+                  {question?.isDemo && <span className="badge demo">Демонстрационный</span>}
+                </div>
               </div>
               <h2>{question?.prompt ?? "Нет вопроса"}</h2>
               {question && (
@@ -629,10 +868,10 @@ export function HostPage() {
                             </details>
                           )}
                         </div>
-                        <span className="answer-points">{answer.points}</span>
+                        <span className="answer-points">{classic?.stage === "reverse" ? [15, 30, 60, 120, 180, 240][index] : classic ? classicBoardPoints(question.answers)[index] : answer.points}</span>
                         <button
                           className={`button ${opened ? "ghost" : "primary"} small`}
-                          disabled={disabled || !roundLive || opened}
+                          disabled={disabled || !canRevealAnswer || opened}
                           onClick={() =>
                             void command({
                               type: "reveal",
@@ -686,8 +925,8 @@ export function HostPage() {
               )}
                 </details>
               )}
-            </section>
-            {!game.pendingAnswer && <p className="host-captain-hint">Ответы можно принимать устно или с телефона капитана. Кнопка ошибки всегда внизу экрана.</p>}
+            </section>}
+            {!game.pendingAnswer && !isClassicFinal && !isManualTiebreak && <p className="host-captain-hint">Ответы можно принимать устно или с телефона капитана. Кнопка ошибки всегда внизу экрана.</p>}
             <details className="card host-ideas">
               <summary>
                 Предложения команд{" "}
@@ -854,12 +1093,15 @@ export function HostPage() {
                     ? "Участники могут войти по приглашению."
                     : "Вход новых участников закрыт."}
                 </p>
+                {classic && <p className="form-hint">В классической игре капитан — №1, остальные занимают места №2–5 по порядку подключения. При смене капитана номера пересчитываются.</p>}
                 <ul className="host-player-list">
                   {game.players
                     .filter((player) => player.teamId === team.id)
-                    .map((player) => (
+                    .map((player, _index, roster) => {
+                      const position = player.role === "captain" ? 1 : roster.filter((member) => member.role !== "captain").findIndex((member) => member.id === player.id) + 2;
+                      return (
                       <li key={player.id}>
-                        <span>{player.name}</span>
+                        <span>{classic && (position <= 5 ? `№${position} · ` : "Вне пятёрки · ")}{player.name}</span>
                         {player.role === "captain" ? (
                           <span className="badge captain">
                             <Crown size={13} /> Капитан
@@ -874,7 +1116,7 @@ export function HostPage() {
                           </button>
                         )}
                       </li>
-                    ))}
+                    ); })}
                 </ul>
               </section>
             ))}
@@ -889,11 +1131,17 @@ export function HostPage() {
                 onClick={() => void command(game.phase === "lobby" ? { type: "start", teamId: firstTeamId } : { type: "next", teamId: firstTeamId })}
               >
                 <Play size={18} />
-                <span>{game.phase === "lobby" ? "Начать игру" : game.questionIndex + 1 >= game.questions.length ? "Завершить по итогам раундов" : "Следующий раунд"}</span>
+                <span>{game.phase === "lobby" ? "Начать игру" : classic && game.questionIndex === 3 ? "Определить финалиста" : !classic && game.questionIndex + 1 >= game.questions.length ? "Завершить по итогам раундов" : "Следующий раунд"}</span>
               </button>
+            ) : game.phase === "finished" ? (
+              <button className="button secondary" disabled>
+                <Trophy size={18} /><span>Игра завершена</span>
+              </button>
+            ) : isClassicFinal || isManualTiebreak ? (
+              <button className="button secondary" disabled><Trophy size={18} /><span>{isClassicFinal ? "Управление финалом выше" : "Выберите победителя выше"}</span></button>
             ) : (
-              <button className="button danger" disabled={disabled || !roundLive} onClick={() => void command({ type: "strike" })}>
-                <X size={18} /><span>{game.phase === "steal" ? "Перехват не удался" : "Отметить ошибку"}</span>
+              <button className="button danger" disabled={disabled || !canDecideAnswer} onClick={() => void command({ type: "strike" })}>
+                <X size={18} /><span>{game.phase === "steal" ? "Перехват не удался" : classic?.stage === "reverse" ? "Нет ответа" : "Отметить ошибку"}</span>
               </button>
             )}
             <button className="button secondary" disabled={disabled || game.phase === "finished"} onClick={() => void command({ type: game.paused ? "resume" : "pause" })}>
@@ -903,7 +1151,7 @@ export function HostPage() {
               <Undo2 size={18} /><span>Отменить последнее</span>
             </button>
             <div className="host-dock-menu" ref={turnMenuRef}>
-              <button ref={turnMenuButtonRef} className={`button secondary ${turnMenuOpen ? "is-active" : ""}`} disabled={disabled || !roundLive} aria-expanded={turnMenuOpen} aria-controls="host-turn-bank-panel" onClick={() => setTurnMenuOpen((open) => !open)}>
+              <button ref={turnMenuButtonRef} className={`button secondary ${turnMenuOpen ? "is-active" : ""}`} disabled={disabled || !canManageBank} aria-expanded={turnMenuOpen} aria-controls="host-turn-bank-panel" onClick={() => setTurnMenuOpen((open) => !open)}>
                 <Users size={18} /><span>Ход и банк</span><ChevronDown size={16} />
               </button>
               {turnMenuOpen && (

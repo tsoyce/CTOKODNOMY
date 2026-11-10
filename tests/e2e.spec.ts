@@ -9,7 +9,7 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import { issueSetupToken, passwordHash } from "../server/db";
+import { issueSetupToken, passwordHash, tokenHash } from "../server/db";
 import { parseQuestionPack } from "../shared/questionImport";
 import {
   defaultBrand,
@@ -17,6 +17,7 @@ import {
   type HostGame,
   type PublicGame,
   type PublicGameResults,
+  type TeamGame,
   type Question,
 } from "../shared/types";
 
@@ -83,10 +84,53 @@ function packFixture(prompt: string, pack = ""): Question {
 // scenarios keep testing the real setup flow. A fixture in this run's isolated
 // schema avoids exhausting setup's production limit of five requests/minute.
 async function seedOrganizer(page: Page) {
-  await pool.query("INSERT INTO admins(id,username,password_hash) VALUES($1,$2,$3)", [randomUUID(), "organizer", await passwordHash(PASSWORD)]);
+  const adminId = randomUUID();
+  const session = randomUUID() + randomUUID();
+  await pool.query("INSERT INTO admins(id,username,password_hash) VALUES($1,$2,$3)", [adminId, "organizer", await passwordHash(PASSWORD)]);
+  await pool.query("INSERT INTO admin_sessions(token_hash,admin_id,expires_at) VALUES($1,$2,now()+interval '1 hour')", [tokenHash(session), adminId]);
   await pool.query("UPDATE app_settings SET initialized=true,brand=$1::jsonb WHERE id=1", [JSON.stringify(defaultBrand)]);
-  expect((await page.request.post("/api/login", { data: { username: "organizer", password: PASSWORD } })).ok()).toBe(true);
+  await page.context().addCookies([{ name: "ctok_admin", value: session, domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "Lax" }]);
 }
+
+test("organizer renames teams without interrupting the live board or losing a score", async ({ page, browser, baseURL }) => {
+  await seedOrganizer(page);
+  const question = packFixture("Что помогает команде?");
+  expect((await page.request.post("/api/questions/import", { data: { format: "ctokodnomy-questions-v1", questions: [question] } })).ok()).toBe(true);
+  const created = await page.request.post("/api/games", { data: {
+    title: "Игра с изменением команд", questionIds: [question.id],
+    teams: [{ name: "Первая", color: "#1646a0" }, { name: "Вторая", color: "#7a3db8" }],
+  } });
+  expect(created.ok()).toBe(true);
+  const game = await created.json() as HostGame;
+  let state = await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
+  state = await hostDecision(page, game.id, { type: "reveal", answerId: question.answers[0]!.id });
+  const originalBank = state.bank;
+  const audience = await browser.newContext({ baseURL });
+  try {
+    const board = await audience.newPage();
+    await board.goto(`/board/${game.id}`);
+    await expect(board.getByText("Первая", { exact: true }).first()).toBeVisible();
+    await page.setViewportSize({ width: 320, height: 844 });
+    await page.goto(`/admin/games/${game.id}`);
+    const names = page.getByRole("region", { name: "Названия команд" });
+    await names.getByRole("button", { name: "Изменить название команды Первая" }).click();
+    const input = names.getByLabel("Новое название команды «Первая»");
+    await input.fill("  ");
+    await expect(names.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+    await input.fill("Исследователи");
+    await names.getByRole("button", { name: "Сохранить" }).click();
+    await expect(page.getByRole("status")).toContainText("Название команды изменено");
+    await expect(board.getByText("Исследователи", { exact: true }).first()).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    const renamed = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    expect(renamed.teams[0]!.joinCode).toBe(game.teams[0]!.joinCode);
+    expect(renamed.bank).toBe(originalBank);
+    await page.reload();
+    await expect(names.getByText("Исследователи", { exact: true })).toBeVisible();
+  } finally {
+    await audience.close();
+  }
+});
 
 test("organizer names an imported pack, moves questions in bulk and creates a stable game before safely deleting library questions", async ({ page }) => {
   const pageErrors: string[] = [];
@@ -179,6 +223,7 @@ test("organizer names an imported pack, moves questions in bulk and creates a st
   expect((await library()).every((question) => question.pack === "Вечер знакомств")).toBe(true);
 
   await page.goto("/admin/games/new");
+  await page.getByRole("combobox", { name: "Формат игры", exact: true }).selectOption("standard");
   await page.getByLabel("Название игры", { exact: true }).fill("Игра из одного набора");
   const pickerPack = page.getByLabel("Набор вопросов", { exact: true });
   const namedOption = pickerPack.locator("option").filter({ hasText: "Вечер знакомств" });
@@ -193,6 +238,13 @@ test("organizer names an imported pack, moves questions in bulk and creates a st
   await expect(page.getByLabel("Название игры", { exact: true })).toBeVisible();
   expect(gamePosts).toEqual([]);
   await page.locator(".selected-question").first().getByLabel("Очки", { exact: true }).selectOption("2");
+  await page.getByRole("button", { name: "Убрать раунд 3", exact: true }).click();
+  await page.locator(".selected-question").first().getByRole("button", { name: "Заменить вопрос", exact: true }).click();
+  await page.getByLabel("Вопрос для раунда 1", { exact: true }).selectOption(questions[2]!.id);
+  await expect(page.locator(".selected-question").first()).toContainText(questions[2]!.prompt);
+  await expect(page.locator(".selected-question").first().getByLabel("Очки", { exact: true })).toHaveValue("2");
+  await page.locator(".selected-question").first().getByRole("button", { name: "Заменить вопрос", exact: true }).click();
+  await page.getByLabel("Вопрос для раунда 1", { exact: true }).selectOption(questions[0]!.id);
   await page.getByRole("button", { name: "Добавить набор к выбранным", exact: true }).click();
   await expect(page.locator(".selected-question")).toHaveCount(3);
   await expect(page.locator(".selected-question").first().getByLabel("Очки", { exact: true })).toHaveValue("2");
@@ -250,6 +302,42 @@ test("organizer names an imported pack, moves questions in bulk and creates a st
   expect(pageErrors).toEqual([]);
 });
 
+test("classic game assigns a different library question to each round and final slot", async ({ page }) => {
+  await seedOrganizer(page);
+  const questions = Array.from({ length: 10 }, (_, index) => packFixture(`Классика: вопрос ${index + 1}`, "Классический набор"));
+  expect((await page.request.post("/api/questions/import", { data: {
+    format: "ctokodnomy-questions-v1", questions,
+  } })).ok()).toBe(true);
+  const libraryResponse = await page.request.get("/api/questions");
+  expect(libraryResponse.ok()).toBe(true);
+  const ordered = await libraryResponse.json() as Question[];
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/admin/games/new");
+  await expect(page.getByRole("combobox", { name: "Формат игры", exact: true })).toHaveValue("classic");
+  await page.getByRole("button", { name: "Создать игру", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Выберите вопросы");
+  await page.getByLabel("Набор вопросов", { exact: true }).selectOption("pack:Классический набор");
+  await page.getByRole("button", { name: "Заполнить из набора", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Обязательных выбрано" })).toContainText("9 / 9");
+  const roundTwo = page.getByLabel("Раунд 2 · двойная игра ×2", { exact: true });
+  const tiebreak = page.getByLabel("Тай-брейк · дополнительный вопрос", { exact: true });
+  await expect(roundTwo.locator(`option[value="${ordered[9]!.id}"]`)).toHaveAttribute("disabled", "");
+  await tiebreak.selectOption("");
+  await roundTwo.selectOption(ordered[9]!.id);
+  await tiebreak.selectOption(ordered[1]!.id);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  const creating = page.waitForResponse((response) => response.url().endsWith("/api/games") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Создать игру", exact: true }).click();
+  const response = await creating;
+  expect(response.ok()).toBe(true);
+  const game = await response.json() as HostGame;
+  expect(game.questions.map((question) => question.id)).toEqual([
+    ordered[0]!.id, ordered[9]!.id, ...ordered.slice(2, 9).map((question) => question.id), ordered[1]!.id,
+  ]);
+  expect(game.rules.multipliers).toEqual([1, 2, 3, 1, 1, 1, 1, 1, 1, 1]);
+  expect(game.rules.mode).toBe("classic");
+});
+
 test("a game pack larger than twenty rounds never leaves a partial selection", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -260,6 +348,7 @@ test("a game pack larger than twenty rounds never leaves a partial selection", a
     format: "ctokodnomy-questions-v1", questions: [first, ...oversized],
   } })).ok()).toBe(true);
   await page.goto("/admin/games/new");
+  await page.getByRole("combobox", { name: "Формат игры", exact: true }).selectOption("standard");
   await page.locator(".question-option").filter({ hasText: first.prompt }).locator('input[type="checkbox"]').check();
   await page.locator(".selected-question").getByLabel("Очки", { exact: true }).selectOption("3");
   const pickerPack = page.getByLabel("Набор вопросов", { exact: true });
@@ -331,6 +420,7 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   const shortcuts = page.getByRole("navigation", { name: "Быстрые действия", exact: true });
   await shortcuts.getByRole("link", { name: "Новая игра", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/games\/new$/);
+  await page.getByRole("combobox", { name: "Формат игры", exact: true }).selectOption("standard");
   const gameTitle = page.getByLabel("Название игры", { exact: true });
   const teamsCard = page.locator("details").filter({ has: gameTitle });
   const teamsHeader = teamsCard.locator(":scope > summary");
@@ -447,7 +537,7 @@ test("organizer folds cards with the keyboard, keeps form values and reaches eve
   await brandingCard.locator(":scope > summary").press("Enter");
   await expect(hero).toHaveValue("Текст остаётся после сворачивания");
   await page.getByRole("button", { name: "Сохранить оформление", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Оформление сохранено");
+  await expect(page.getByRole("status")).toContainText("Оформление и звуки сохранены");
   expect((await (await page.request.get("/api/settings")).json()).heroTitle).toBe("Текст остаётся после сворачивания");
   await shortcuts.getByRole("link", { name: "Импорт вопросов", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/questions\/import$/);
@@ -1338,7 +1428,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
     ).toBeEnabled();
     await page.getByRole("button", { name: "Сохранить оформление" }).click();
     await expect(
-      page.getByRole("status").filter({ hasText: "Оформление сохранено" }),
+      page.getByRole("status").filter({ hasText: "Оформление и звуки сохранены" }),
     ).toBeVisible();
     await expect(page.locator('link[rel="icon"]')).toHaveAttribute(
       "href",
@@ -1427,6 +1517,7 @@ test("organizer installs and brands the event; independent phones collaborate wh
     );
 
     await page.goto("/admin/games/new");
+    await page.getByRole("combobox", { name: "Формат игры", exact: true }).selectOption("standard");
     await page
       .getByLabel("Название игры", { exact: true })
       .fill("Праздник · репетиция");
@@ -2338,4 +2429,233 @@ test("independent phones group private team ideas, search authors and send only 
     }
     expect(pageErrors).toEqual([]);
   } finally { await Promise.all(contexts.map((context) => context.close())); }
+});
+
+test("organizer uploads, previews and restores custom game sounds", async ({ page }) => {
+  await seedOrganizer(page);
+  await page.goto("/admin/settings");
+  const section = page.getByRole("region", { name: "Звуки игры" });
+  await expect(section).toBeVisible();
+  const samples = 800;
+  const wav = Buffer.alloc(44 + samples * 2);
+  wav.write("RIFF", 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(samples * 2, 40);
+  await section.getByLabel("Загрузить звук: Правильный ответ").setInputFiles({ name: "signal.wav", mimeType: "audio/wav", buffer: wav });
+  const player = section.getByLabel("Прослушать: Правильный ответ");
+  await expect(player).toBeVisible();
+  await expect(player).toHaveAttribute("src", /^\/media\/.+\.wav$/);
+  await page.getByRole("button", { name: "Сохранить оформление" }).click();
+  await expect(page.getByRole("status")).toContainText("сохранены");
+  expect((await (await page.request.get("/api/settings")).json()).soundCorrectUrl).toMatch(/^\/media\/.+\.wav$/);
+  await page.reload();
+  await expect(section.getByLabel("Прослушать: Правильный ответ")).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await section.scrollIntoViewIfNeeded();
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.screenshot({ path: "test-results/sound-settings-mobile.png", fullPage: true });
+  await section.getByRole("button", { name: "Вернуть стандартный" }).click();
+  await page.getByRole("button", { name: "Сохранить оформление" }).click();
+  await expect.poll(async () => (await (await page.request.get("/api/settings")).json()).soundCorrectUrl).toBe("");
+});
+
+test("published classic results show the tiebreak finalist as the only winner", async ({ page }) => {
+  const id = randomUUID();
+  await page.route(`**/api/games/${id}/results`, (route) => route.fulfill({ json: {
+    id, title: "Ничья и тай-брейк", brand: defaultBrand, revision: 1,
+    createdAt: new Date().toISOString(), published: true,
+    teams: [
+      { id: "a", name: "Первая", color: "#1646a0", score: 100 },
+      { id: "b", name: "Победитель тай-брейка", color: "#b22424", score: 100 },
+    ],
+    rounds: [], totalRounds: 5, completedRounds: 5,
+    classicFinal: { teamId: "b", score: 325, superPrize: true, questions: [] },
+  } }));
+  await page.goto(`/results/${id}`);
+  await expect(page.getByRole("heading", { name: "Есть победитель!" })).toBeVisible();
+  await expect(page.locator(".results-team-winner")).toHaveCount(1);
+  await expect(page.locator(".results-team-winner")).toContainText("Победитель тай-брейка");
+  await expect(page.getByRole("region", { name: "Большая игра" })).toContainText("325 очков · цель 200");
+});
+
+test("classic host console handles a duel and the two-player final on a phone", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await seedOrganizer(page);
+  const questions = Array.from({ length: 9 }, (_, index) => packFixture(`Вопрос классической игры ${index + 1}`, "Классика"));
+  expect((await page.request.post("/api/questions/import", {
+    data: { format: "ctokodnomy-questions-v1", questions },
+  })).ok()).toBe(true);
+  const created = await page.request.post("/api/games", { data: {
+    title: "Классическая игра",
+    questionIds: questions.map((question) => question.id),
+    teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
+    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true },
+  } });
+  expect(created.ok()).toBe(true);
+  const game = await created.json() as HostGame;
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/host/${game.id}`);
+  await page.getByRole("button", { name: "Начать игру", exact: true }).click();
+  const duel = page.getByRole("region", { name: "Розыгрыш права хода", exact: true });
+  await expect(duel).toBeVisible();
+  await duel.getByRole("button", { name: "Исследователи нажала первой", exact: true }).click();
+  await page.locator(".host-answer").first().getByRole("button", { name: "Открыть", exact: true }).click();
+  await expect(page.locator(".host-answer").first().getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
+  const dock = page.getByRole("region", { name: "Быстрые действия ведущего", exact: true });
+  await dock.getByRole("button", { name: "Отметить ошибку", exact: true }).click();
+  await expect.poll(async () => ((await (await page.request.get(`/api/games/${game.id}/host`)).json()) as HostGame).strikes).toBe(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await mkdir(path.resolve("test-results"), { recursive: true });
+  await page.screenshot({ path: "test-results/classic-host-mobile.png" });
+
+  // Exercise the rest of the first three rounds through the same API as the
+  // host controls, then inspect the final interaction on the phone.
+  await hostDecision(page, game.id, { type: "strike" });
+  await hostDecision(page, game.id, { type: "strike" });
+  await hostDecision(page, game.id, { type: "strike" });
+  for (let index = 1; index < 3; index++) {
+    await hostDecision(page, game.id, { type: "next" });
+    await hostDecision(page, game.id, { type: "classic-buzz", teamId: game.teams[0]!.id });
+    await hostDecision(page, game.id, { type: "reveal", answerId: questions[index]!.answers[0]!.id });
+    for (let strike = 0; strike < 4; strike++) await hostDecision(page, game.id, { type: "strike" });
+  }
+  await hostDecision(page, game.id, { type: "next" });
+  await expect(page.getByRole("region", { name: "Игра наоборот", exact: true })).toBeVisible();
+  await hostDecision(page, game.id, { type: "strike" });
+  await hostDecision(page, game.id, { type: "strike" });
+  await hostDecision(page, game.id, { type: "next" });
+
+  const final = page.getByRole("region", { name: "Большая игра", exact: true });
+  await expect(final).toBeVisible();
+  await expect(final.getByRole("list", { name: "Вопросы финала" }).locator("li")).toHaveCount(5);
+  await final.getByRole("button", { name: "Начать: 15 секунд", exact: true }).click();
+  let first = final.locator("form.host-final-answer").first();
+  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[0]!.text);
+  await first.getByLabel("Ответ игрока", { exact: true }).press("Enter");
+  await expect(final.locator("form.host-final-answer").nth(1).getByLabel("Ответ игрока", { exact: true })).toBeFocused();
+  await page.screenshot({ path: "test-results/classic-final-answering-mobile.png" });
+  await final.getByRole("button", { name: "Остановить и проверить", exact: true }).click();
+  await first.getByRole("combobox", { name: "Совпадение в опросе", exact: true }).selectOption(questions[4]!.answers[0]!.id);
+  await first.getByRole("button", { name: "Сохранить ответ", exact: true }).click();
+  await final.getByRole("button", { name: "Следующий игрок", exact: true }).click();
+  await final.getByRole("button", { name: "Начать: 20 секунд", exact: true }).click();
+  first = final.locator("form.host-final-answer").first();
+  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[0]!.text);
+  await expect(first.getByRole("alert")).toContainText("уже назвал первый игрок");
+  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[1]!.text);
+  await final.getByRole("button", { name: "Остановить и проверить", exact: true }).click();
+  await first.getByRole("combobox", { name: "Совпадение в опросе", exact: true }).selectOption(questions[4]!.answers[1]!.id);
+  await first.getByRole("button", { name: "Сохранить ответ", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: "test-results/classic-final-mobile.png" });
+  await final.getByRole("button", { name: "Завершить большую игру", exact: true }).click();
+  await expect.poll(async () => ((await (await page.request.get(`/api/games/${game.id}/host`)).json()) as HostGame).phase).toBe("finished");
+  expect(pageErrors).toEqual([]);
+});
+
+test("classic board and captain phone follow each stage without leaking final answers", async ({ browser, page, baseURL }) => {
+  await seedOrganizer(page);
+  const questions = Array.from({ length: 9 }, (_, index) => ({
+    ...sixAnswerFixture(),
+    prompt: `Вопрос классической игры ${index + 1}`,
+    answers: Array.from({ length: 6 }, (_, answerIndex) => ({
+      id: randomUUID(),
+      text: `Ответ ${index + 1}-${answerIndex + 1}`,
+      points: 6 - answerIndex,
+      aliases: [],
+    })),
+  }));
+  expect((await page.request.post("/api/questions/import", { data: {
+    format: "ctokodnomy-questions-v1", questions,
+  } })).ok()).toBe(true);
+  const created = await page.request.post("/api/games", { data: {
+    title: "Проверка классики", questionIds: questions.map((question) => question.id),
+    teams: [{ name: "Первая", color: "#1646a0" }, { name: "Вторая", color: "#8146c3" }],
+    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true },
+  } });
+  expect(created.ok()).toBe(true);
+  const game = await created.json() as HostGame;
+  const guest = await browser.newContext({ baseURL, viewport: { width: 1280, height: 720 } });
+  const mobile = await browser.newContext({ baseURL, viewport: { width: 320, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    expect((await mobile.request.post("/api/join", { data: { code: game.teams[0]!.joinCode, name: "Капитан" } })).ok()).toBe(true);
+    const participant = await (await mobile.request.get(`/api/games/${game.id}/team`)).json() as TeamGame;
+    expect((await page.request.post(`/api/games/${game.id}/captain`, { data: { participantId: participant.self.id } })).ok()).toBe(true);
+    const board = await guest.newPage();
+    const phone = await mobile.newPage();
+    await board.goto(`/board/${game.id}`);
+    await phone.goto(`/team/${game.id}`);
+    await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
+    await expect(board.getByText("Раунд 1 / 5", { exact: true })).toBeVisible();
+    const buzz = phone.getByRole("button", { name: "Мы готовы отвечать" });
+    await expect(buzz).toBeVisible();
+    await expectReadablePhoneControl(buzz);
+    await buzz.click();
+    await expect(board.getByText("Отвечает команда «Первая»")).toBeVisible();
+    await hostDecision(page, game.id, { type: "reveal", answerId: questions[0]!.answers[0]!.id });
+    await expect(phone.getByText(/отвечает игрок 2/i)).toBeVisible();
+    await expect(phone.getByLabel("Ваше предложение", { exact: true })).toHaveCount(0);
+    for (let round = 0; round < 3; round++) {
+      if (round > 0) {
+        await hostDecision(page, game.id, { type: "classic-buzz", teamId: game.teams[0]!.id });
+        await hostDecision(page, game.id, { type: "reveal", answerId: questions[round]!.answers[0]!.id });
+      }
+      for (let strike = 0; strike < 4; strike++) await hostDecision(page, game.id, { type: "strike" });
+      await hostDecision(page, game.id, { type: "next", teamId: game.teams[1]!.id });
+    }
+    await expect(board.getByText("Игра наоборот", { exact: true })).toBeVisible();
+    await expect(board.getByRole("timer")).toBeVisible();
+    await mkdir(path.resolve("test-results"), { recursive: true });
+    await board.screenshot({ path: "test-results/classic-reverse-board.png" });
+    await phone.screenshot({ path: "test-results/classic-reverse-phone.png", fullPage: true });
+    expect(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await hostDecision(page, game.id, { type: "strike" });
+    await hostDecision(page, game.id, { type: "strike" });
+    await hostDecision(page, game.id, { type: "next" });
+    await expect(board.getByRole("heading", { name: "Большая игра" })).toBeVisible();
+    await hostDecision(page, game.id, { type: "classic-final-start" });
+    await expect(board.getByRole("timer")).toBeVisible();
+    await hostDecision(page, game.id, { type: "classic-final-answer", questionIndex: 0,
+      text: questions[4]!.answers[0]!.text, answerId: questions[4]!.answers[0]!.id });
+    const publicState = await (await guest.request.get(`/api/games/${game.id}/public`)).json() as PublicGame;
+    for (const hidden of [questions[4]!.prompt, questions[4]!.answers[0]!.text]) {
+      expect(JSON.stringify(publicState)).not.toContain(hidden);
+      await expect(board.locator("body")).not.toContainText(hidden);
+      await expect(phone.locator("body")).not.toContainText(hidden);
+    }
+    await board.screenshot({ path: "test-results/classic-final-board.png" });
+    await hostDecision(page, game.id, { type: "classic-final-stop" });
+    await hostDecision(page, game.id, { type: "classic-final-next" });
+    await expect(board.getByText("Игрок 2 из 2")).toBeVisible();
+    await hostDecision(page, game.id, { type: "classic-final-start" });
+    await hostDecision(page, game.id, { type: "classic-final-stop" });
+    await hostDecision(page, game.id, { type: "classic-final-next" });
+    await expect(board.getByRole("heading", { name: "Игра завершена" })).toBeVisible();
+    await expect(board.getByText(/Большая игра:.*из 200 очков/)).toBeVisible();
+    const finished = await (await page.request.get(`/api/games/${game.id}/host`)).json() as HostGame;
+    expect((await guest.request.get(`/api/games/${game.id}/results`)).status()).toBe(404);
+    expect((await page.request.post(`/api/games/${game.id}/results/publication`, {
+      data: { published: true, revision: finished.revision },
+    })).ok()).toBe(true);
+    const results = await guest.newPage();
+    await results.goto(`/results/${game.id}`);
+    const finalResults = results.getByRole("region", { name: "Большая игра", exact: true });
+    await expect(finalResults).toContainText("очков · цель 200");
+    const firstFinalQuestion = finalResults.locator(".results-final-question").first();
+    await expect(finalResults.locator(".results-final-question")).toHaveCount(5);
+    await firstFinalQuestion.locator("summary").click();
+    await expect(firstFinalQuestion).toContainText(questions[4]!.answers[0]!.text);
+    await firstFinalQuestion.getByRole("button", { name: "Облако ответов" }).click();
+    await expect(firstFinalQuestion.getByRole("list", { name: "Облако всех ответов опроса" }).getByRole("listitem")).toHaveCount(6);
+    await results.screenshot({ path: "test-results/classic-results-desktop.png", fullPage: true });
+    await results.setViewportSize({ width: 320, height: 844 });
+    expect(await results.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await finalResults.scrollIntoViewIfNeeded();
+    await results.screenshot({ path: "test-results/classic-results-mobile.png" });
+  } finally {
+    await Promise.all([guest.close(), mobile.close()]);
+  }
 });

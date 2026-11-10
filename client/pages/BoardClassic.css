@@ -1,0 +1,96 @@
+/* Classic game stages: readable from the audience and on a projector. */
+.board-page .classic-round-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  min-height: 64px;
+  padding: 12px 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: clamp(1.05rem, 1.65vw, 1.6rem);
+  font-weight: 700;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.board-page .classic-round-timer {
+  color: var(--text);
+  font-size: 1.25em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.board-page .classic-final-board,
+.board-page .classic-tiebreak-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: min(65vh, 540px);
+  max-width: 900px;
+  margin: 0 auto;
+  text-align: center;
+}
+.board-page.phase-playing .board-content:has(.classic-final-board) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.board-page .classic-final-board h1,
+.board-page .classic-tiebreak-wait h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(2.1rem, 5vw, 4.5rem);
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+.board-page .classic-final-team,
+.board-page .classic-final-player,
+.board-page .classic-final-goal,
+.board-page .classic-tiebreak-wait p {
+  margin: 0;
+  max-width: 100%;
+  color: var(--text);
+  font-size: clamp(1.1rem, 2vw, 1.8rem);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.board-page .classic-final-status {
+  color: var(--text);
+  font-size: clamp(1.15rem, 2vw, 1.7rem);
+  font-weight: 700;
+}
+.board-page .classic-final-clock {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  min-width: 200px;
+  padding: 12px 26px;
+  border: 2px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.board-page .classic-final-clock span {
+  font-size: clamp(4rem, 10vw, 7rem);
+  font-weight: 800;
+  line-height: 1;
+}
+.board-page .classic-final-clock small { font-size: 1.1rem; }
+.board-page .classic-final-result { font-size: clamp(1.2rem, 2vw, 2rem); }
+.board-page .classic-tiebreak-wait .team-scores { width: 100%; }
+.board-page[data-projector="true"] :is(.classic-round-status, .classic-final-clock) {
+  background: #fff;
+  border-color: #111827;
+  color: #111827;
+}
+@media (max-width: 680px) {
+  .board-page .classic-round-status { min-height: 52px; padding: 10px 12px; }
+  .board-page .classic-final-board,
+  .board-page .classic-tiebreak-wait { min-height: 50vh; gap: 12px; }
+}

@@ -44,6 +44,7 @@ import QRCode from "qrcode";
 import { ApiError, api, useMe, useSite } from "../lib";
 import { ErrorMessage, Loading } from "../components/Common";
 import { BrandEditor, BrandPreview } from "../components/Branding";
+import { SoundSettings } from "../components/SoundSettings";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SkipLink } from "../components/AppNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -493,6 +494,8 @@ export function NewGamePage() {
     { name: "Команда 2", color: "#edff7a" },
   ]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [gameMode, setGameMode] = useState<"standard" | "classic">("classic");
+  const [modeError, setModeError] = useState("");
   const [multiplierById, setMultiplierById] = useState<Record<string, number>>({});
   const [stealAddsPoints, setStealAddsPoints] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -501,13 +504,18 @@ export function NewGamePage() {
     setFormError("");
     setSelected(ids);
     setMultiplierById((current) => Object.fromEntries(
-      ids.map((id) => [id, current[id] || 1]),
+      ids.filter(Boolean).map((id) => [id, current[id] || 1]),
     ));
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
     setFormError("");
-    if (!selected.length) {
+    if (gameMode === "classic" && (selected.length < 9 || selected.slice(0, 9).some((id) => !id))) {
+      setFormError("Выберите вопросы для всех четырёх раундов и пяти вопросов финала. Тай-брейк необязателен.");
+      return;
+    }
+    const selectedQuestions = selected.filter(Boolean);
+    if (!selectedQuestions.length) {
       setFormError("Выберите хотя бы один вопрос для игры.");
       return;
     }
@@ -525,11 +533,14 @@ export function NewGamePage() {
         "/games",
         json("POST", {
           title: title.trim(),
-          questionIds: selected,
+          questionIds: selectedQuestions,
           teams: teams.map((team) => ({ ...team, name: team.name.trim() })),
           rules: {
-            multipliers: selected.map((id) => multiplierById[id] || 1),
-            stealAddsPoints,
+            multipliers: gameMode === "classic"
+              ? selectedQuestions.map((_, index) => index < 3 ? index + 1 : 1)
+              : selectedQuestions.map((id) => multiplierById[id] || 1),
+            stealAddsPoints: gameMode === "classic" ? true : stealAddsPoints,
+            ...(gameMode === "classic" ? { mode: "classic" } : {}),
           },
         }),
       );
@@ -571,6 +582,28 @@ export function NewGamePage() {
               placeholder="Например, Наш праздник · финал"
             />
           </label>
+          <label className="field">
+            Формат игры
+            <select
+              value={gameMode}
+              onChange={(event) => {
+                const nextMode = event.target.value as "standard" | "classic";
+                if (nextMode === "classic" && selected.filter(Boolean).length > 10) {
+                  setModeError("В классической игре не больше 10 вопросов. Сначала уберите лишние вопросы, чтобы сохранить ваш выбор.");
+                  return;
+                }
+                setModeError("");
+                setGameMode(nextMode);
+                changeSelection(nextMode === "classic"
+                  ? Array.from({ length: 10 }, (_, index) => selected.filter(Boolean)[index] || "")
+                  : selected.filter(Boolean));
+              }}
+            >
+              <option value="standard">Свободная игра</option>
+              <option value="classic">Классическая игра · 4 раунда и финал</option>
+            </select>
+          </label>
+          {modeError && <ErrorMessage message={modeError} />}
           <div className="form-grid">
             {teams.map((team, index) => (
               <div className="team-editor" key={index}>
@@ -626,13 +659,14 @@ export function NewGamePage() {
               <h2>
                 <span className="step-number">02</span> Вопросы и раунды
               </h2>
-              <span className="badge">Выбрано: {selected.length}</span>
+              <span className="badge">Выбрано: {selected.filter(Boolean).length}</span>
             </div>
           }
         >
           <p className="muted">
-            Порядок справа определяет раунды. Изменения в библиотеке после
-            создания партии не повлияют на эти вопросы.
+            {gameMode === "classic"
+              ? "Выберите вопрос из библиотеки для каждой части игры. После создания партии изменения в библиотеке на неё не повлияют."
+              : "Каждый выбранный вопрос — отдельный раунд. В списке раундов можно заменить вопрос, изменить порядок и множитель очков. После создания партии изменения в библиотеке на неё не повлияют."}
           </p>
           {!questions?.length ? (
             <EmptyState
@@ -655,6 +689,7 @@ export function NewGamePage() {
               questions={questions}
               selected={selected}
               multiplierById={multiplierById}
+              mode={gameMode}
               onSelectionChange={changeSelection}
               onMultiplierChange={(id, multiplier) => setMultiplierById((current) => ({ ...current, [id]: multiplier }))}
             />
@@ -668,7 +703,9 @@ export function NewGamePage() {
             </h2>
           }
         >
-          <label className="check-field">
+          {gameMode === "classic" ? (
+            <p className="muted">В классической игре очки открытого ответа добавляются к банку при успешном перехвате.</p>
+          ) : <label className="check-field">
             <input
               type="checkbox"
               checked={stealAddsPoints}
@@ -681,7 +718,7 @@ export function NewGamePage() {
                 соперниками.
               </small>
             </span>
-          </label>
+          </label>}
         </CollapsibleCard>
         {formError && <ErrorMessage message={formError} />}
         <div className="form-footer">
@@ -700,6 +737,43 @@ export function NewGamePage() {
         </div>
       </form>
     </>
+  );
+}
+
+function TeamNameEditor({ team, busy, onRename }: {
+  team: HostGame["teams"][number];
+  busy: boolean;
+  onRename: (teamId: string, name: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(team.name);
+  const trimmed = name.trim();
+  return (
+    <div className="team-rename-row">
+      {editing ? (
+        <form className="team-rename-form" onSubmit={(event) => {
+          event.preventDefault();
+          if (!trimmed || trimmed === team.name || busy) return;
+          void onRename(team.id, trimmed).then((saved) => {
+            if (saved) setEditing(false);
+          });
+        }}>
+          <label className="field">
+            Новое название команды «{team.name}»
+            <input value={name} onChange={(event) => setName(event.target.value)} maxLength={80} required autoFocus />
+          </label>
+          <div className="actions">
+            <button type="submit" className="button button-primary" disabled={busy || !trimmed || trimmed === team.name}>Сохранить</button>
+            <button type="button" className="button button-ghost" disabled={busy} onClick={() => setEditing(false)}>Отмена</button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <strong><span className="team-dot" style={{ background: team.color }} /> {team.name}</strong>
+          <button type="button" className="button button-secondary" disabled={busy} aria-label={`Изменить название команды ${team.name}`} onClick={() => { setName(team.name); setEditing(true); }}>Изменить</button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -942,7 +1016,7 @@ export function GameSettingsPage() {
     }
   };
   const command = async (hostCommand: HostCommand) => {
-    if (!game) return;
+    if (!game || busy) return false;
     setBusy(true);
     setNotice("");
     try {
@@ -957,9 +1031,12 @@ export function GameSettingsPage() {
         ),
       );
       setError("");
+      if (hostCommand.type === "rename-team") setNotice("Название команды изменено на всех экранах.");
+      return true;
     } catch (err) {
       await refresh();
       setError(messageOf(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1035,6 +1112,13 @@ export function GameSettingsPage() {
           {notice}
         </p>
       )}
+      <section className="card team-rename-section" aria-labelledby="team-rename-heading">
+        <h2 id="team-rename-heading">Названия команд</h2>
+        <p className="muted">Изменения сразу увидят ведущий, игроки и гости. Счёт и приглашения сохранятся.</p>
+        {game.teams.map((team) => (
+          <TeamNameEditor key={team.id} team={team} busy={busy} onRename={(teamId, name) => command({ type: "rename-team", teamId, name })} />
+        ))}
+      </section>
       {game.phase === "finished" && (
         <CollapsibleCard
           className="card form-section results-publication"
@@ -1784,7 +1868,7 @@ export function SettingsPage() {
       setBrand(await api<Brand>("/settings", json("PUT", brand)));
       await refresh();
       setNotice(
-        "Оформление сохранено. Новые игры получат эти настройки, а текущие сохранят свой снимок.",
+        "Оформление и звуки сохранены. Новые игры получат оформление, а звуки можно обновить на открытом табло.",
       );
     } catch (err) {
       setActionError(messageOf(err));
@@ -1814,6 +1898,12 @@ export function SettingsPage() {
           uploadImage={uploadImage}
           disabled={busy || uploading}
         />
+        <SoundSettings
+          brand={brand}
+          onChange={(next) => { setBrand(next); setNotice(""); }}
+          disabled={busy || uploading}
+          onUploading={setUploading}
+        />
         <div className="branding-preview">
           <BrandPreview brand={brand} />
         </div>
@@ -1841,7 +1931,7 @@ export function SettingsPage() {
               {busy
                 ? "Сохраняем…"
                 : uploading
-                  ? "Загружаем изображение…"
+                  ? "Загружаем файл…"
                   : "Сохранить оформление"}
             </button>
           </div>

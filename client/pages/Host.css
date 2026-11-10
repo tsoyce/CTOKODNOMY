@@ -91,6 +91,62 @@ html:has(.host-page) {
 .host-cockpit .strike { width: 24px; height: 24px; }
 .host-next-step { margin: 0; padding: 7px 16px; border-top: 1px solid var(--border); color: var(--muted); background: var(--surface-soft); font-size: .75rem; line-height: 1.4; }
 .host-container > .team-scores { margin-block: 12px; gap: 12px; }
+.host-classic-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin-bottom: 12px;
+  padding: 16px;
+  border-color: var(--border-strong);
+}
+.host-classic-step h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.host-classic-step .muted { margin: 0; font-size: .8rem; }
+.host-classic-step .button-row { gap: 8px; }
+.host-classic-step .button { min-height: 44px; }
+.host-classic-clock, .host-final-clock { font-size: 1.6rem; font-variant-numeric: tabular-nums; color: var(--primary-ink); }
+.host-final-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.host-final-heading h2 { margin-bottom: 4px; }
+.host-final-heading p { margin-bottom: 0; }
+.host-final-instructions { display: grid; gap: 10px; margin-top: 16px; }
+.host-final-instructions p { margin: 0; }
+.host-final-instructions .button { justify-self: start; min-height: 44px; }
+.host-final-preview { display: grid; gap: 8px; margin: 16px 0 0; padding-left: 1.4em; font-size: .9rem; line-height: 1.4; }
+.host-final-preview li { padding-left: .2em; }
+.host-final-repeat-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.host-final-repeat-control p { margin: 0; }
+.host-final-repeat-control .button { min-height: 44px; }
+.host-final-answer { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.host-final-answer h3 { margin: 0; font-size: .95rem; line-height: 1.4; }
+.host-final-answer h3 span { color: var(--primary-ink); }
+.host-final-answer .field { margin: 0; }
+.host-final-answer-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.host-final-answer-actions .button { min-height: 44px; }
+.host-final-repeat { margin: 0; color: var(--danger); font-weight: 650; font-size: .8rem; }
+.host-final-next { display: grid; gap: 8px; margin-top: 16px; }
+.host-final-next .button { justify-self: start; min-height: 44px; }
+.host-page[data-final-phase="answering"] { --host-dock-clearance: calc(90px + env(safe-area-inset-bottom, 0px)); }
+.host-page[data-final-phase="answering"] .host-cockpit,
+.host-page[data-final-phase="answering"] .host-container > .team-scores,
+.host-page[data-final-phase="answering"] .host-dock-actions > button:first-child,
+.host-page[data-final-phase="answering"] .host-dock-menu,
+.host-page[data-final-phase="answering"] .host-dock-status:not(.has-error) { display: none; }
+.host-page[data-final-phase="answering"] .host-dock-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.host-final[data-final-phase="answering"] .host-final-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 21;
+  margin: -8px -8px 0;
+  padding: 8px;
+  background: var(--surface-raised);
+}
+.host-final[data-final-phase="answering"] .host-final-instructions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.host-final[data-final-phase="answering"] .host-final-instructions p { font-size: .75rem; line-height: 1.3; }
+.host-final[data-final-phase="answering"] .host-final-repeat-control p { display: none; }
+.host-final[data-final-phase="answering"] .host-final-answer { gap: 4px; margin-top: 6px; padding: 5px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.host-final[data-final-phase="answering"] .host-final-answer h3 { font-size: .83rem; line-height: 1.25; }
+.host-final[data-final-phase="answering"] .host-final-answer input { min-height: 44px; scroll-margin-block: 150px var(--host-dock-clearance); }
 .host-page .team-scores.compact .team-score { padding: 10px 16px; border-radius: 12px; }
 .host-page .team-scores.compact .team-score > strong { font-size: 1.6rem; }
 .host-page .team-scores.compact .team-score-name { font-size: .86rem; }
@@ -100,6 +156,8 @@ html:has(.host-page) {
 .host-grid .card { border-radius: 14px; padding: 16px; }
 .host-page .host-question h2 { margin: 0 0 12px; font-size: clamp(1.1rem, 1.7vw, 1.4rem); }
 .host-question .section-title.small { margin-bottom: 8px; }
+.host-question-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 10px; }
+.host-reveal-progress { color: var(--muted); font-size: .75rem; font-weight: 650; white-space: nowrap; }
 .host-page .host-answer-list { gap: 8px; }
 .host-page .host-answer {
   display: grid;
@@ -194,15 +252,15 @@ html:has(.host-page) {
   .host-controls .host-journal { grid-column: 1 / -1; }
 }
 @media (max-width: 650px) {
-  .host-page { --host-dock-clearance: calc(234px + env(safe-area-inset-bottom, 0px)); }
-  html:has(.host-page) { scroll-padding-block: 145px calc(234px + env(safe-area-inset-bottom, 0px)); }
+  .host-page { --host-dock-clearance: calc(170px + env(safe-area-inset-bottom, 0px)); }
+  html:has(.host-page) { scroll-padding-block: 145px calc(170px + env(safe-area-inset-bottom, 0px)); }
   .host-page .host-container { width: calc(100% - 28px); }
   .host-page .host-header { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px 0 12px; }
   .host-breadcrumbs { margin-bottom: 4px; gap: 4px 12px; }
   .host-breadcrumbs .text-link { min-height: 44px; font-size: .7rem; }
   .host-page .host-header-actions { max-width: none; justify-content: space-between; gap: 6px 10px; }
   .host-page .host-header-actions .connection { flex-basis: 100%; order: 2; justify-content: flex-start; }
-  .host-section-nav { position: fixed; z-index: 35; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 5px 8px calc(5px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border-strong); border-bottom: 0; background: var(--surface-raised); }
+  .host-section-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
   .host-section-nav a { min-height: 52px; flex-direction: column; gap: 4px; padding: 5px 4px; font-size: .67rem; }
   .host-cockpit { top: 0; border-radius: 12px; }
   .host-cockpit .host-status-bar { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 12px; padding: 10px 12px; font-size: .65rem; }
@@ -230,12 +288,12 @@ html:has(.host-page) {
   .host-page .host-answer strong { font-size: .85rem; }
   .host-statistics-controls { padding: 16px; gap: 12px; }
   .host-statistics-controls .button-row { display: grid; grid-template-columns: 1fr; width: 100%; }
-  .host-action-dock { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); width: calc(100% - 24px); padding: 8px 9px 6px; border-radius: 17px; }
+  .host-action-dock { bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: calc(100% - 24px); padding: 8px 9px 6px; border-radius: 17px; }
   .host-dock-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .host-dock-actions > .button, .host-dock-menu > .button { min-height: 46px; padding: 8px 7px; gap: 6px; font-size: .7rem; }
   .host-dock-actions .button svg { width: 16px; height: 16px; }
   .host-dock-status { min-height: 28px; margin-top: 5px; padding-inline: 2px; font-size: .64rem; line-height: 14px; }
-  .host-turn-bank-panel { padding: 10px; width: 100%; max-height: calc(100dvh - 290px); }
+  .host-turn-bank-panel { padding: 10px; width: 100%; max-height: calc(100dvh - 215px); }
   .host-turn-bank-panel .host-team-actions { padding: 10px; }
   .host-turn-bank-panel .host-team-actions .button { font-size: .7rem; padding: 8px 6px; }
 }

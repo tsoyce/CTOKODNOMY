@@ -133,3 +133,24 @@
     margin-left: auto;
   }
 }
+.team-duel {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+.team-duel > p { margin: 0; }
+.team-duel > .button { min-height: 48px; width: 100%; }
+.team-page .team-classic-progress {
+  margin: 12px 0 0;
+  color: var(--text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.team-page .classic-round-timer {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

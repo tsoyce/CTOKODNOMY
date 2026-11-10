@@ -2,6 +2,62 @@
   margin-top: 22px;
   min-width: 0;
 }
+.admin-content .classic-pack-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px 14px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-content .classic-pack-picker .field {
+  margin: 0;
+  min-width: 0;
+}
+.admin-content .classic-pack-picker .button {
+  min-height: 44px;
+}
+.admin-content .classic-pack-picker p {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: .8rem;
+  line-height: 1.5;
+}
+.admin-content .classic-rounds-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+.admin-content .classic-rounds-heading h3 {
+  margin: 0;
+}
+.admin-content .classic-rounds-heading + p {
+  margin: 8px 0 16px;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+.admin-content .classic-rounds-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.admin-content .classic-round-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: .85rem;
+  font-weight: 600;
+}
+.admin-content .classic-round-field select,
+.admin-content .classic-pack-picker select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 1rem;
+}
 .admin-content .question-pack-picker {
   display: grid;
   gap: 16px;
@@ -95,6 +151,37 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.admin-content .round-replace-button,
+.admin-content .round-replace-cancel {
+  display: block;
+  min-height: 44px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary-ink);
+  font: inherit;
+  font-size: .8rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.admin-content .round-question-replacement {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: .8rem;
+  font-weight: 600;
+}
+.admin-content .round-question-replacement select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 1rem;
+}
+.admin-content .round-question-replacement .round-replace-cancel {
+  justify-self: start;
+}
 .admin-content .question-picker-workspace .reorder-actions .icon-button {
   width: 36px;
   height: 36px;
@@ -109,6 +196,10 @@
   }
 }
 @media (max-width: 480px) {
+  .admin-content .classic-rounds-list,
+  .admin-content .classic-pack-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .admin-content .question-pack-picker {
     padding: 15px;
   }
