@@ -420,3 +420,32 @@ html:has(.host-page) {
   .host-final-score strong { font-size: 1.6rem; }
   .host-final-timer .button { flex: 1 1 auto; }
 }
+
+/* Polish: consistent collapsible side cards, spacing, and honest strike boxes. */
+.host-page .host-start-panel, .host-page .host-results-panel { margin-top: 12px; margin-bottom: 12px; }
+.host-page :is(.host-round-controls, .adjustment-panel, .host-journal) > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  cursor: pointer;
+  font-weight: 650;
+  font-size: .88rem;
+  list-style: none;
+}
+.host-page :is(.host-round-controls, .adjustment-panel, .host-journal) > summary::-webkit-details-marker { display: none; }
+.host-page :is(.host-round-controls, .adjustment-panel, .host-journal) > summary::after {
+  content: "+";
+  margin-left: auto;
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1;
+}
+.host-page :is(.host-round-controls, .adjustment-panel, .host-journal)[open] > summary::after { content: "−"; }
+.host-page .team-scores.compact .team-score-name { flex-wrap: nowrap; }
+.host-page .team-scores.compact .team-score-name > small { width: auto; padding-left: 0; }
+@media (max-width: 650px) {
+  .host-page .host-controls { grid-template-columns: minmax(0, 1fr); }
+  .host-page .team-scores.compact .team-score { flex-wrap: wrap; row-gap: 4px; }
+  .host-page .team-scores.compact .team-score-name { flex-wrap: wrap; }
+}

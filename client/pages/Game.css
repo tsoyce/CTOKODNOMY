@@ -2647,3 +2647,69 @@
     font-size: 0.74rem;
   }
 }
+/* Quick team rename: a pencil next to the name, an inline field when editing. */
+.team-name-edit {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.team-name-edit:hover:not(:disabled) { background: var(--surface-soft); color: var(--primary-ink); }
+.team-name-edit:disabled { opacity: .4; cursor: not-allowed; }
+.team-name-form { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.team-name-form input {
+  flex: 1 1 8ch;
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: max(1rem, 16px);
+  font-weight: 600;
+}
+.team-name-form button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.team-name-form .team-name-save { border-color: transparent; background: var(--primary); color: var(--primary-text); }
+.team-name-form button:disabled { opacity: .5; cursor: not-allowed; }
+.team-score:has(.team-name-form) { flex-wrap: wrap; }
+.team-score:has(.team-name-form) .team-score-name { flex: 1 1 100%; }
+/* An unused strike is an empty box: a grey cross read as an error already made. */
+.app .strike:not(.used) > svg { opacity: 0; }
+.app .strike.used > svg { animation: strike-pop .3s ease-out 1; }
+@keyframes strike-pop { 0% { transform: scale(1.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .app .strike.used > svg { animation: none; } }
+
+/* The final screen must show both teams on a projector without scrolling. */
+@media (min-width: 900px) {
+  .board-page .board-finale { max-width: 1100px; padding: 8px 0; }
+  .board-page .finale-icon { width: 64px; height: 64px; border-radius: 18px; margin-bottom: 12px; }
+  .board-page .finale-icon svg { width: 34px; height: 34px; }
+  .board-page .board-finale h1 { margin-bottom: 8px; font-size: clamp(2.2rem, 4vw, 3.6rem); }
+  .board-page .board-finale > p { margin-block: 8px; }
+  .board-page .final-standings { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: none; margin: 20px auto; }
+  .board-page .final-team { padding: 20px 24px; }
+}

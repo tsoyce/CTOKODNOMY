@@ -2496,7 +2496,7 @@ test("classic host console handles a duel and the two-player final on a phone", 
     title: "Классическая игра",
     questionIds: questions.map((question) => question.id),
     teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
-    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true },
+    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true, finalTarget: 150, finalSeconds: [30, 25] },
   } });
   expect(created.ok()).toBe(true);
   const game = await created.json() as HostGame;
@@ -2505,6 +2505,11 @@ test("classic host console handles a duel and the two-player final on a phone", 
   await page.getByRole("button", { name: "Начать игру", exact: true }).click();
   const duel = page.getByRole("region", { name: "Розыгрыш права хода", exact: true });
   await expect(duel).toBeVisible();
+  // The pencil next to a score renames the team without leaving the console.
+  await page.getByRole("button", { name: "Переименовать команду Аналитики", exact: true }).click();
+  await page.getByLabel("Новое название команды Аналитики", { exact: true }).fill("Статистики");
+  await page.getByLabel("Новое название команды Аналитики", { exact: true }).press("Enter");
+  await expect(page.getByRole("button", { name: "Переименовать команду Статистики", exact: true })).toBeVisible();
   await duel.getByRole("button", { name: "Исследователи нажала первой", exact: true }).click();
   await page.locator(".host-answer").first().getByRole("button", { name: "Открыть", exact: true }).click();
   await expect(page.locator(".host-answer").first().getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
@@ -2535,7 +2540,8 @@ test("classic host console handles a duel and the two-player final on a phone", 
   const final = page.getByRole("region", { name: "Большая игра", exact: true });
   await expect(final).toBeVisible();
   await expect(final.locator(".host-final-question")).toHaveCount(5);
-  await final.getByRole("button", { name: "Запустить таймер · 15 с", exact: true }).click();
+  await expect(final.getByLabel("Набрано 0 из 150 очков")).toBeVisible();
+  await final.getByRole("button", { name: "Запустить таймер · 30 с", exact: true }).click();
   // The host only taps what the finalist said; nothing is typed.
   let first = final.getByRole("group", { name: "Вопрос 1: ответ игрока", exact: true });
   await first.getByRole("button", { name: new RegExp(questions[4]!.answers[0]!.text) }).click();
@@ -2546,7 +2552,7 @@ test("classic host console handles a duel and the two-player final on a phone", 
   await page.screenshot({ path: "test-results/classic-final-answering-mobile.png" });
   await final.getByRole("button", { name: "Остановить таймер", exact: true }).click();
   await final.getByRole("button", { name: "Следующий игрок", exact: true }).click();
-  await final.getByRole("button", { name: "Запустить таймер · 20 с", exact: true }).click();
+  await final.getByRole("button", { name: "Запустить таймер · 25 с", exact: true }).click();
   first = final.getByRole("group", { name: "Вопрос 1: ответ игрока", exact: true });
   // The first finalist's answer cannot be chosen again: tapping it signals a repeat.
   await first.getByRole("button", { name: new RegExp(questions[4]!.answers[0]!.text) }).click();
@@ -2592,6 +2598,15 @@ test("classic board and captain phone follow each stage without leaking final an
     const phone = await mobile.newPage();
     await board.goto(`/board/${game.id}`);
     await phone.goto(`/team/${game.id}`);
+    // The captain renames their own team from the phone; every screen follows.
+    await phone.getByRole("button", { name: "Переименовать команду Первая", exact: true }).click();
+    await phone.getByLabel("Новое название команды Первая", { exact: true }).fill("Социологи");
+    await phone.getByRole("button", { name: "Сохранить название", exact: true }).click();
+    await expect(board.getByText("Социологи", { exact: true }).first()).toBeVisible();
+    await phone.getByRole("button", { name: "Переименовать команду Социологи", exact: true }).click();
+    await phone.getByLabel("Новое название команды Социологи", { exact: true }).fill("Первая");
+    await phone.getByLabel("Новое название команды Социологи", { exact: true }).press("Enter");
+    await expect(board.getByText("Первая", { exact: true }).first()).toBeVisible();
     await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
     await expect(board.getByText("Раунд 1 / 5", { exact: true })).toBeVisible();
     const buzz = phone.getByRole("button", { name: "Красная кнопка: ответить первыми" });

@@ -159,8 +159,9 @@ describe("Классические правила", () => {
     game = play(game, { type: "resume" });
     expect(game.classic?.reverse?.deadlineAt).toBe(Date.now() + 15_000);
     vi.advanceTimersByTime(15_001);
-    expect(() => play(game, { type: "reveal", answerId: "q4-0" })).toThrow(/Время команды вышло/);
-    game = play(game, { type: "strike" });
+    // The timer is only a signal: the host may still accept an answer after it.
+    game = play(game, { type: "reveal", answerId: "q4-0" });
+    expect(game.teams[0]!.score).toBe(15);
     expect(game.activeTeamId).toBe("b");
     expect(game.classic?.reverse?.deadlineAt).toBe(Date.now() + 20_000);
     game = play(game, { type: "reveal", answerId: "q4-1" });
@@ -288,6 +289,29 @@ describe("Классические правила", () => {
       { type: "classic-final-pick", questionIndex: 1, answerId: "q6-0" }, { type: "classic-final-next" });
     expect(game.phase).toBe("finished");
     expect(gameResults(game).classicFinal).toMatchObject({ score: 100, target: 100, superPrize: true });
+
+    // The organizer sets the target and the timers; 0 switches each of them off.
+    game = play(atReverseResult({ finalTarget: 0, finalSeconds: [40, 0] }), { type: "next" });
+    expect(game.classic?.final?.target).toBe(0);
+    expect(publicView(game).classic?.final).toMatchObject({ target: 0, duration: 40 });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+    game = play(game, { type: "classic-final-start" });
+    expect(game.classic?.final?.deadlineAt).toBe(Date.now() + 40_000);
+    vi.advanceTimersByTime(90_000);
+    for (let index = 0; index < 5; index++)
+      game = play(game, { type: "classic-final-pick", questionIndex: index, answerId: `q${index + 5}-0` });
+    game = play(game, { type: "classic-final-next" });
+    expect(() => play(game, { type: "classic-final-start" })).toThrow(/отключён/);
+    game = play(game, { type: "classic-final-next" });
+    expect(publicView(game).lastAction).toBe("finish");
+    expect(gameResults(game).classicFinal).toMatchObject({ score: 250, target: 0, superPrize: false });
+    vi.useRealTimers();
+    const untimed = classic();
+    untimed.rules.reverseSeconds = 0;
+    untimed.questionIndex = 2;
+    untimed.phase = "round-result";
+    expect(play(untimed, { type: "next", teamId: "a" }).classic?.reverse?.deadlineAt).toBeNull();
 
     // Two finalists configured, but the host stops after the first one.
     game = play(atReverseResult(), { type: "next" }, { type: "classic-final-pick", questionIndex: 0, answerId: "q5-0" },

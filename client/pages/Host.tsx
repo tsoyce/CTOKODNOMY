@@ -134,8 +134,8 @@ function ClassicFinalPanel({ game, disabled, command, askConfirmation }: {
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [final.phase, final.deadlineAt]);
-  const duration = final.player === 1 ? 15 : 20;
-  const remaining = final.phase === "ready" ? duration * 1000
+  const duration = game.rules.finalSeconds?.[final.player - 1] ?? (final.player === 1 ? 15 : 20);
+  const remaining = duration === 0 ? null : final.phase === "ready" ? duration * 1000
     : final.phase !== "answering" ? null
     : final.deadlineAt === null ? final.remainingMs : Math.max(0, final.deadlineAt - now);
   const timeUp = final.phase === "answering" && remaining !== null && remaining <= 0;
@@ -152,8 +152,8 @@ function ClassicFinalPanel({ game, disabled, command, askConfirmation }: {
             <p className="eyebrow">Большая игра{players === 2 ? ` · игрок ${final.player} из 2` : ""}</p>
             <h2>{team?.name ?? "Команда"}</h2>
           </div>
-          <div className="host-final-score" aria-label={`Набрано ${final.score} из ${target} очков`}>
-            <strong>{final.score}</strong><span>из {target}</span>
+          <div className="host-final-score" aria-label={target > 0 ? `Набрано ${final.score} из ${target} очков` : `Набрано очков: ${final.score}`}>
+            <strong>{final.score}</strong><span>{target > 0 ? `из ${target}` : "очков"}</span>
           </div>
         </div>
         <div className="host-final-timer">
@@ -162,21 +162,21 @@ function ClassicFinalPanel({ game, disabled, command, askConfirmation }: {
               {Math.ceil(remaining / 1000)} с
             </strong>
           )}
-          {final.phase === "ready" && (
+          {final.phase === "ready" && duration > 0 && (
             <button className="button primary" disabled={locked} onClick={() => void command({ type: "classic-final-start" })}>
               <Play size={18} /> Запустить таймер · {duration} с
             </button>
           )}
           {final.phase === "answering" && (
             <button className="button secondary" disabled={locked} onClick={() => void command({ type: "classic-final-stop" })}>
-              <Pause size={18} /> {timeUp ? "Время вышло · стоп" : "Остановить таймер"}
+              <Pause size={18} /> {timeUp ? "Время вышло · убрать таймер" : "Остановить таймер"}
             </button>
           )}
           {final.phase === "review" && <span className="badge">Таймер остановлен</span>}
           <span className="host-final-progress" role="status">Отмечено {marked} из 5</span>
         </div>
         <p className="form-hint">
-          Нажмите ответ, который назвал игрок, — он сразу появится на табло с очками. Если такого ответа нет в опросе, нажмите «Нет в опросе».
+          Нажмите ответ, который назвал игрок, — он сразу появится на табло с очками. Если такого ответа нет в опросе, нажмите «Нет в опросе». Отмечать можно и после сигнала таймера.
           {final.player === 2 ? " Ответы первого игрока скрыты на табло, пока идёт таймер второго; нажатие на занятый ответ подаёт сигнал повтора." : ""}
         </p>
       </div>
@@ -424,7 +424,8 @@ export function HostPage() {
   const reverse = classic?.stage === "reverse" ? classic.reverse : null;
   const reverseRemaining = reverse?.remainingMs != null ? reverse.remainingMs : reverse?.deadlineAt != null ? Math.max(0, reverse.deadlineAt - clockNow) : null;
   const canDecideAnswer = roundLive && !isClassicFinal && !isManualTiebreak && !waitingForBuzz;
-  const canRevealAnswer = canDecideAnswer && !(reverseRemaining !== null && reverseRemaining <= 0);
+  // A finished countdown never locks the host out: it is only a signal.
+  const canRevealAnswer = canDecideAnswer;
   const canManageBank = roundLive && (!classic || classic.stage === "play");
   const disabled = busy || !connected || !!error;
   const activeTeam = game.teams.find((team) => team.id === game.activeTeamId);
@@ -740,6 +741,8 @@ export function HostPage() {
           teams={game.teams}
           activeTeamId={game.activeTeamId}
           compact
+          onRename={(teamId, name) => command({ type: "rename-team", teamId, name })}
+          renameDisabled={disabled}
         />
         {isDuel && !game.paused && (
           <section className="card host-classic-step" aria-label="Розыгрыш права хода">
@@ -771,7 +774,7 @@ export function HostPage() {
               <p className="muted">Команда совещается и называет один ответ. Откройте его или отметьте «Нет ответа».</p>
             </div>
             {reverseRemaining !== null && <strong className="host-classic-clock" role="timer" aria-label={`Осталось ${Math.ceil(reverseRemaining / 1000)} секунд`}>{Math.ceil(reverseRemaining / 1000)} с</strong>}
-            {reverseRemaining !== null && reverseRemaining <= 0 && <p className="form-hint">Время вышло. Отметьте «Нет ответа».</p>}
+            {reverseRemaining !== null && reverseRemaining <= 0 && <p className="form-hint">Время вышло. Примите ответ, если команда успела, или отметьте «Нет ответа».</p>}
           </section>
         )}
         {showStatisticsControls && (

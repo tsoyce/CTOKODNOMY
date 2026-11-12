@@ -152,6 +152,9 @@ const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
 const rulesSchema = z.object({
   mode: z.enum(["standard", "classic"]).optional(),
   finalPlayers: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  finalTarget: z.number().int().min(0).max(10_000).optional(),
+  finalSeconds: z.tuple([z.number().int().min(0).max(600), z.number().int().min(0).max(600)]).optional(),
+  reverseSeconds: z.number().int().min(0).max(600).optional(),
   multipliers: z.array(z.number().int().min(1).max(100)).min(1).max(20),
   stealAddsPoints: z.boolean(),
 });
@@ -1196,12 +1199,52 @@ export async function buildApp(
       body.requestId,
       body.revision,
       { type: "classic-buzz", teamId: self.teamId },
-      async (client) => {
-        // Any member of the team may press the red button: at a live event the
-        // phone in the player's hand matters more than the join order.
+      async (client, game, replay) => {
+        // `players` returns the immutable join order. The captain occupies
+        // position 1; other team members fill positions 2–5 in that order.
         const roster = (await players(client, id)).filter((person) => person.teamId === self.teamId);
-        if (!roster.some((person) => person.id === self.id))
+        const participant = roster.find((person) => person.id === self.id);
+        if (!participant)
           throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+        const playerIndex = game.classic?.duel?.playerIndex ?? 1;
+        const designated = playerIndex === 1
+          ? roster.find((person) => person.role === "captain")
+          : roster.filter((person) => person.role !== "captain")[playerIndex - 2];
+        // The captain may always signal as a fallback if the designated player
+        // cannot use their phone. The game engine separately validates phase.
+        if (!replay && participant.role !== "captain" && designated?.id !== participant.id)
+          throw new ApiError(403, `Кнопка сейчас доступна игроку ${playerIndex} и капитану`, "DUEL_PLAYER_REQUIRED");
+      },
+    );
+    const currentPlayers = await players(pool, id);
+    const currentSelf = currentPlayers.find((p) => p.id === self.id);
+    if (!currentSelf) throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+    return teamView(state, currentSelf, currentPlayers);
+  });
+  // The captain may rename their own team from the phone; the team is always
+  // taken from the session, never from the request.
+  app.post("/api/games/:id/team-name", async (request) => {
+    const id = gameId(request);
+    const self = await requireParticipant(request, id);
+    const body = commandEnvelope.omit({ command: true })
+      .extend({ name: z.string().trim().min(1).max(80) }).strict().parse(request.body);
+    const state = await runCommand(
+      id,
+      `participant:${self.id}`,
+      body.requestId,
+      body.revision,
+      { type: "rename-team", teamId: self.teamId, name: body.name },
+      async (client, game, replay) => {
+        const participant = await client.query(
+          "SELECT role FROM participants WHERE id=$1 AND game_id=$2",
+          [self.id, id],
+        );
+        if (!participant.rowCount)
+          throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+        if (participant.rows[0]?.role !== "captain")
+          throw new ApiError(403, "Название команды меняет капитан", "CAPTAIN_REQUIRED");
+        if (!replay && game.phase === "finished")
+          throw new ApiError(409, "Игра уже завершена", "GAME_RULE");
       },
     );
     const currentPlayers = await players(pool, id);

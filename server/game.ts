@@ -125,7 +125,16 @@ export function createGame(input: CreateGameInput): GameState {
     stealAddsPoints: classicMode ? true : (input.rules?.stealAddsPoints ?? true),
     ...(input.rules?.mode ? { mode: input.rules.mode } : {}),
     ...(classicMode && finalPlayers !== 2 ? { finalPlayers } : {}),
+    ...(classicMode && input.rules?.finalTarget !== undefined ? { finalTarget: input.rules.finalTarget } : {}),
+    ...(classicMode && input.rules?.finalSeconds ? { finalSeconds: [...input.rules.finalSeconds] as [number, number] } : {}),
+    ...(classicMode && input.rules?.reverseSeconds !== undefined ? { reverseSeconds: input.rules.reverseSeconds } : {}),
   };
+  const seconds = (value: number) => Number.isSafeInteger(value) && value >= 0 && value <= 600;
+  requireRule(rules.finalTarget === undefined || (Number.isSafeInteger(rules.finalTarget) && rules.finalTarget >= 0 && rules.finalTarget <= 10_000),
+    "Цель финала — целое число от 0 до 10000.", 400);
+  requireRule((!rules.finalSeconds || (rules.finalSeconds.length === 2 && rules.finalSeconds.every(seconds))) &&
+    (rules.reverseSeconds === undefined || seconds(rules.reverseSeconds)),
+    "Таймер задаётся в секундах от 0 до 600.", 400);
   requireRule(
     rules.multipliers.length > 0 &&
       rules.multipliers.every(
@@ -412,7 +421,7 @@ function beginClassicFinal(game: GameState, teamId: string): void {
   classic.final = {
     teamId, player: 1, phase: "ready", deadlineAt: null, remainingMs: null,
     entries: [Array(5).fill(null), Array(5).fill(null)], score: 0,
-    players, target: players * 100,
+    players, target: game.rules.finalTarget ?? players * 100,
   };
   game.questionIndex = 4;
   game.phase = "playing";
@@ -422,6 +431,16 @@ function beginClassicFinal(game: GameState, teamId: string): void {
   game.bank = 0;
   game.strikes = 0;
   clearAnswers(game);
+}
+
+/** Seconds for the given finalist; 0 means the organizer switched the timer off. */
+export function finalSeconds(rules: Rules, player: 1 | 2): number {
+  return rules.finalSeconds?.[player - 1] ?? (player === 1 ? 15 : 20);
+}
+
+function reverseDeadline(game: GameState): number | null {
+  const seconds = game.rules.reverseSeconds ?? 20;
+  return seconds > 0 ? Date.now() + seconds * 1000 : null;
 }
 
 function otherTeamId(game: GameState, teamId: string): string {
@@ -491,7 +510,7 @@ function classicReverseAttempt(game: GameState, answerPosition: number | null): 
   clearAnswers(game);
   if (reverse.attempts === 1) {
     game.activeTeamId = otherTeamId(game, team.id);
-    reverse.deadlineAt = Date.now() + 20_000;
+    reverse.deadlineAt = reverseDeadline(game);
     reverse.remainingMs = null;
   }
   else {
@@ -573,8 +592,7 @@ export function applyCommand(
         break;
       }
       if (game.classic?.stage === "reverse") {
-        requireRule(game.classic.reverse?.deadlineAt == null || Date.now() <= game.classic.reverse.deadlineAt,
-          "Время команды вышло. Отметьте ошибку, чтобы продолжить.");
+        // The timer is a signal for the hall: the host still decides after it runs out.
         game.openedAnswerIds.push(answer.id);
         classicReverseAttempt(game, position);
         message = "Ответ в игре наоборот открыт.";
@@ -660,7 +678,7 @@ export function applyCommand(
           game.classic.stage = "reverse";
           game.classic.activePlayerIndex = null;
           game.classic.duel = null;
-          game.classic.reverse = { firstTeamId: firstId, attempts: 0, deadlineAt: Date.now() + 20_000, remainingMs: null, awards: [] };
+          game.classic.reverse = { firstTeamId: firstId, attempts: 0, deadlineAt: reverseDeadline(game), remainingMs: null, awards: [] };
           message = "Началась игра наоборот.";
         }
       } else if (game.classic && game.questionIndex === 3 && game.rules.finalPlayers !== 0) {
@@ -720,6 +738,9 @@ export function applyCommand(
       const name = cleanText(command.name, 80, "Название команды");
       const previousName = team.name;
       requireRule(name !== previousName, "Название команды не изменилось.", 400);
+      requireRule(!game.teams.some((other) => other.id !== team.id &&
+        other.name.trim().toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru")),
+        "У другой команды уже такое название.", 400);
       team.name = name;
       // Rename is a durable setting, not a round decision. Keep earlier undo
       // snapshots in sync so undoing a score or strike cannot restore an old name.
@@ -892,9 +913,11 @@ export function applyCommand(
       requireLiveRound(game);
       const final = game.classic?.final;
       requireRule(game.classic?.stage === "final" && final?.phase === "ready", "Финалист не готов к старту.");
+      const duration = finalSeconds(game.rules, final.player);
+      requireRule(duration > 0, "Таймер финала отключён в настройках игры.");
       final.phase = "answering";
       final.attemptId = randomUUID();
-      final.deadlineAt = Date.now() + (final.player === 1 ? 15_000 : 20_000);
+      final.deadlineAt = Date.now() + duration * 1000;
       final.remainingMs = null;
       cue = "timer";
       message = `Таймер финалиста ${final.player} запущен.`;
@@ -978,11 +1001,12 @@ export function applyCommand(
         message = "Первый финалист закончил. Пригласите второго.";
       } else {
         const target = final.target ?? 200;
+        const prize = target > 0 && final.score >= target;
         final.phase = "complete";
         game.phase = "round-result";
         endGame(game);
-        cue = final.score >= target ? "prize" : "finish";
-        message = final.score >= target ? `Большая игра завершена: ${final.score} очков, суперприз!` : `Большая игра завершена: ${final.score} очков.`;
+        cue = prize ? "prize" : "finish";
+        message = prize ? `Большая игра завершена: ${final.score} очков, суперприз!` : `Большая игра завершена: ${final.score} очков.`;
       }
       break;
     }
@@ -1106,7 +1130,7 @@ export function publicView(game: GameState): PublicGame {
       activePlayerIndex: game.classic.activePlayerIndex ?? null,
       duel: structuredClone(game.classic.duel),
       reverse: structuredClone(game.classic.reverse),
-      final: game.classic.final ? publicFinal(game.classic.final) : null,
+      final: game.classic.final ? publicFinal(game.classic.final, game.rules) : null,
     } } : {}),
     answers:
       (question ? gameBoardAnswers(game, question) : []).map((answer, index) =>
@@ -1129,7 +1153,7 @@ function classicRounds(game: GameState): number | null {
 }
 
 /** The audience sees marked answers; the first finalist's stay masked while the second plays. */
-function publicFinal(final: NonNullable<ClassicState["final"]>): NonNullable<NonNullable<PublicGame["classic"]>["final"]> {
+function publicFinal(final: NonNullable<ClassicState["final"]>, rules: Rules): NonNullable<NonNullable<PublicGame["classic"]>["final"]> {
   const { teamId, player, phase, deadlineAt, remainingMs, score } = final;
   const maskFirst = player === 2 && (phase === "ready" || phase === "answering");
   const cell = (entry: ClassicFinalEntry | null | undefined, hidden: boolean): PublicFinalCell | null =>
@@ -1138,6 +1162,7 @@ function publicFinal(final: NonNullable<ClassicState["final"]>): NonNullable<Non
     teamId, player, phase, deadlineAt, remainingMs, score,
     players: final.players ?? 2,
     target: final.target ?? 200,
+    duration: finalSeconds(rules, final.player),
     rows: Array.from({ length: 5 }, (_, index) => [
       cell(final.entries[0][index], maskFirst),
       cell(final.entries[1][index], false),
@@ -1208,7 +1233,7 @@ export function gameResults(state: GameState): PublicGameResults {
         teamId: final.teamId,
         score: final.score,
         target: final.target ?? 200,
-        superPrize: final.score >= (final.target ?? 200),
+        superPrize: (final.target ?? 200) > 0 && final.score >= (final.target ?? 200),
         questions: game.questions.slice(4, 9).map((question, questionIndex) => {
           const total = question.answers.reduce((sum, answer) => sum + answer.points, 0);
           return {

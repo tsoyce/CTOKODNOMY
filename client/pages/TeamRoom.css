@@ -219,3 +219,12 @@
 .team-page.is-duel .team-identity h1 { font-size: 1.25rem; margin-bottom: 2px; }
 .team-page.is-duel .team-question { font-size: 1.1rem; }
 .team-page.is-duel .team-duel { margin-top: 8px; padding: 12px; scroll-margin-top: 8px; }
+/* Phone: keep the room navigation on one line so the game starts higher. */
+@media (max-width: 560px) {
+  .team-page .team-room-nav { flex-wrap: nowrap; gap: 2px; margin-bottom: 14px; padding-bottom: 10px; }
+  .team-page .team-room-nav > a, .team-page .team-room-nav > span { flex: 1 1 auto; padding-inline: 6px; white-space: nowrap; }
+  .team-page .team-room-nav svg:last-child:not(:first-child) { display: none; }
+  .team-page .team-identity h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+}
+.buzzer:disabled { opacity: 1; }
+.buzzer.is-locked, .buzzer.is-lost { filter: saturate(.7); }

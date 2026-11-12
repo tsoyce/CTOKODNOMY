@@ -278,6 +278,12 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     }, adminCookie);
     expect(noFinal.statusCode, noFinal.body).toBe(200);
     expect(noFinal.json().rules.finalPlayers).toBe(0);
+    const tuned = await call("POST", "/games", {
+      ...payload, questionIds: payload.questionIds.slice(0, 9),
+      rules: { ...payload.rules, finalTarget: 0, finalSeconds: [30, 0], reverseSeconds: 45 },
+    }, adminCookie);
+    expect(tuned.statusCode, tuned.body).toBe(200);
+    expect(tuned.json().rules).toMatchObject({ finalTarget: 0, finalSeconds: [30, 0], reverseSeconds: 45 });
     let game = classic!;
     const first = await join(game.teams[0]!.joinCode, "Первый капитан");
     const second = await join(game.teams[1]!.joinCode, "Второй капитан");
@@ -290,12 +296,24 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       expect(assigned.statusCode).toBe(200);
       game = assigned.json<HostGame>();
     }
+    // Only the captain renames the team from a phone, and only their own team.
+    const renameUrl = `/games/${game.id}/team-name`;
+    const rename = (name: string, cookie: string, revision = game.revision) =>
+      call("POST", renameUrl, { name, requestId: randomUUID(), revision }, cookie);
+    expect((await rename("Чужое имя", ordinary.cookie)).statusCode).toBe(403);
+    expect((await rename("Вторая команда", first.cookie)).statusCode).toBe(400);
+    const renamed = await rename("Социологи", first.cookie);
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect(renamed.json().teams[0].name).toBe("Социологи");
+    expect(renamed.json().teams[1].name).toBe("Вторая команда");
+    game = (await call("GET", `/games/${game.id}/host`, undefined, adminCookie)).json<HostGame>();
     game = await hostCommand(game, adminCookie, {
       type: "start", teamId: game.teams[0]!.id,
     });
     const url = `/games/${game.id}/buzz`;
     const request = { requestId: randomUUID(), revision: game.revision };
     expect((await call("POST", url, request)).statusCode).toBe(403);
+    expect((await call("POST", url, request, ordinary.cookie)).statusCode).toBe(403);
     expect((await call("POST", url, { ...request, teamId: game.teams[1]!.id }, first.cookie)).statusCode).toBe(400);
     const secondRequest = { requestId: randomUUID(), revision: game.revision };
     const competing = await Promise.all([
@@ -311,7 +329,8 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       winningIndex === 0 ? first.cookie : second.cookie);
     expect(replay.statusCode).toBe(200);
     // After both teams miss the opening duel, the next players answer in turn.
-    // Any member of a team may press the red button, whatever their position.
+    // The second round opens the buzzer for player 2; player 3 must be denied,
+    // while the captain may still signal as a fallback.
     game = host.json<HostGame>();
     game = await hostCommand(game, adminCookie, { type: "strike" });
     game = await hostCommand(game, adminCookie, { type: "strike" });
@@ -321,6 +340,7 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     expect(game.phase).toBe("round-result");
     game = await hostCommand(game, adminCookie, { type: "next" });
     expect(game.classic?.duel?.playerIndex).toBe(2);
+    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie)).statusCode).toBe(403);
     const playerRequest = { requestId: randomUUID(), revision: game.revision };
     expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
     game = (await call("GET", `/games/${game.id}/host`, undefined, adminCookie)).json<HostGame>();
@@ -331,6 +351,7 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     // A retransmission of an accepted request stays idempotent even after the
     // current player changes; the original signal is not processed again.
     expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
+    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, ordinary.cookie)).statusCode).toBe(403);
     const [playerSignal, captainSignal] = await Promise.all([
       call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie),
       call("POST", url, { requestId: randomUUID(), revision: game.revision }, first.cookie),

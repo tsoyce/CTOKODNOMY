@@ -106,6 +106,12 @@ export interface Rules {
   mode?: "standard" | "classic";
   /** Classic big final: two players, one player, or no final. Absent means two. */
   finalPlayers?: 0 | 1 | 2;
+  /** Points for the super prize; 0 plays the final without a target. Absent: 100 per finalist. */
+  finalTarget?: number;
+  /** Seconds for the first and the second finalist; 0 switches the timer off. Absent: 15 and 20. */
+  finalSeconds?: [number, number];
+  /** Seconds per team in the reverse round; 0 switches the timer off. Absent: 20. */
+  reverseSeconds?: number;
 }
 export interface ClassicFinalEntry {
   text: string;
@@ -143,7 +149,7 @@ export interface ClassicState {
     score: number;
     /** Number of finalists; absent in games saved before the setting existed. */
     players?: 1 | 2;
-    /** Points needed for the super prize; absent means 200. */
+    /** Points needed for the super prize; 0 means no target, absent means 200. */
     target?: number;
   } | null;
 }
@@ -270,7 +276,10 @@ export interface PublicGame {
     reverse: ClassicState["reverse"];
     final: (Pick<NonNullable<ClassicState["final"]>, "teamId" | "player" | "phase" | "deadlineAt" | "remainingMs" | "score"> & {
       players: 1 | 2;
+      /** 0 when the final is played without a target. */
       target: number;
+      /** Seconds on the current finalist's timer; 0 when the timer is off. */
+      duration: number;
       /** Five rows of the finalists' answers as the host marks them. */
       rows: Array<[PublicFinalCell | null, PublicFinalCell | null]>;
     }) | null;
