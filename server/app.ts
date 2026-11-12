@@ -127,6 +127,14 @@ const brandSchema = z.object({
   soundWrongUrl: soundUrl,
   soundBankUrl: soundUrl,
   soundRepeatUrl: soundUrl,
+  soundStartUrl: soundUrl,
+  soundRoundUrl: soundUrl,
+  soundBuzzUrl: soundUrl,
+  soundStealUrl: soundUrl,
+  soundTimerUrl: soundUrl,
+  soundTimeUpUrl: soundUrl,
+  soundFinishUrl: soundUrl,
+  soundPrizeUrl: soundUrl,
 });
 const usernameSchema = z
   .string()
@@ -143,6 +151,7 @@ const normalizeBrand = (brand: Partial<Brand>): Brand => ({
 const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
 const rulesSchema = z.object({
   mode: z.enum(["standard", "classic"]).optional(),
+  finalPlayers: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
   multipliers: z.array(z.number().int().min(1).max(100)).min(1).max(20),
   stealAddsPoints: z.boolean(),
 });
@@ -166,12 +175,13 @@ const hostCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("classic-final-stop") }),
   z.object({ type: z.literal("classic-final-repeat") }),
   z.object({
-    type: z.literal("classic-final-answer"),
+    type: z.literal("classic-final-pick"),
     questionIndex: z.number().int().min(0).max(4),
-    text: z.string().trim().min(1).max(200),
-    answerId: idSchema.nullable().optional(),
+    answerId: idSchema.nullable(),
   }),
-  z.object({ type: z.literal("classic-final-next") }),
+  z.object({ type: z.literal("classic-final-clear"), questionIndex: z.number().int().min(0).max(4) }),
+  z.object({ type: z.literal("classic-final-next"), complete: z.boolean().optional() }),
+  z.object({ type: z.literal("classic-final-skip") }),
   z.object({
     type: z.literal("adjust"),
     teamId: idSchema,
@@ -852,7 +862,9 @@ export async function buildApp(
       .parse(request.body);
     if (new Set(body.questionIds).size !== body.questionIds.length)
       throw new ApiError(400, "Выберите разные вопросы для раундов");
-    if (body.rules?.mode === "classic" && ![9, 10].includes(body.questionIds.length))
+    if (body.rules?.mode === "classic" && body.rules.finalPlayers === 0 && body.questionIds.length !== 4)
+      throw new ApiError(400, "Для классической игры без финала выберите 4 вопроса");
+    if (body.rules?.mode === "classic" && body.rules.finalPlayers !== 0 && ![9, 10].includes(body.questionIds.length))
       throw new ApiError(400, "Для классической игры выберите 9 вопросов и, при желании, дополнительный вопрос для ничьей");
     const state = await transaction(pool, async (client) => {
       const questionRows = await client.query(
@@ -1184,21 +1196,12 @@ export async function buildApp(
       body.requestId,
       body.revision,
       { type: "classic-buzz", teamId: self.teamId },
-      async (client, game, replay) => {
-        // `players` returns the immutable join order. The captain occupies
-        // position 1; other team members fill positions 2–5 in that order.
+      async (client) => {
+        // Any member of the team may press the red button: at a live event the
+        // phone in the player's hand matters more than the join order.
         const roster = (await players(client, id)).filter((person) => person.teamId === self.teamId);
-        const participant = roster.find((person) => person.id === self.id);
-        if (!participant)
+        if (!roster.some((person) => person.id === self.id))
           throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
-        const playerIndex = game.classic?.duel?.playerIndex ?? 1;
-        const designated = playerIndex === 1
-          ? roster.find((person) => person.role === "captain")
-          : roster.filter((person) => person.role !== "captain")[playerIndex - 2];
-        // The captain may always signal as a fallback if the designated player
-        // cannot use their phone. The game engine separately validates phase.
-        if (!replay && participant.role !== "captain" && designated?.id !== participant.id)
-          throw new ApiError(403, `Кнопка сейчас доступна игроку ${playerIndex} и капитану`, "DUEL_PLAYER_REQUIRED");
       },
     );
     const currentPlayers = await players(pool, id);

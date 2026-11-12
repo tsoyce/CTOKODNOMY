@@ -15,6 +15,8 @@ interface QuestionPickerProps {
   onSelectionChange: (ids: string[]) => void;
   onMultiplierChange: (id: string, multiplier: number) => void;
   mode?: "standard" | "classic";
+  /** Classic game without the big final needs only the four ordinary rounds. */
+  classicFinal?: boolean;
 }
 
 const CLASSIC_SLOTS = [
@@ -37,6 +39,7 @@ export function QuestionPicker({
   onSelectionChange,
   onMultiplierChange,
   mode = "standard",
+  classicFinal = true,
 }: QuestionPickerProps) {
   const [search, setSearch] = useState("");
   const [packName, setPackName] = useState<string | null>(null);
@@ -80,6 +83,8 @@ export function QuestionPicker({
     setReplacingId(null);
   };
   if (mode === "classic") {
+    const visibleSlots = classicFinal ? CLASSIC_SLOTS : CLASSIC_SLOTS.slice(0, 4);
+    const required = classicFinal ? 9 : 4;
     const slots = CLASSIC_SLOTS.map((_, index) => selected[index] || "");
     const chosen = new Set(slots.filter(Boolean));
     return (
@@ -123,11 +128,11 @@ export function QuestionPicker({
         {error && <ErrorMessage message={error} />}
         <div className="classic-rounds-heading">
           <h3>Вопросы по раундам</h3>
-          <span className="muted" role="status">Обязательных выбрано: {slots.slice(0, 9).filter(Boolean).length} / 9</span>
+          <span className="muted" role="status">Обязательных выбрано: {slots.slice(0, required).filter(Boolean).length} / {required}</span>
         </div>
-        <p className="muted">Выберите разные вопросы для каждого раунда. Десятый вопрос пригодится при равном счёте и необязателен.</p>
+        <p className="muted">{classicFinal ? "Выберите разные вопросы для каждого раунда. Десятый вопрос пригодится при равном счёте и необязателен." : "Выберите разные вопросы для четырёх раундов. Большой финал отключён, поэтому вопросы для него не нужны."}</p>
         <div className="classic-rounds-list">
-          {CLASSIC_SLOTS.map((label, index) => (
+          {visibleSlots.map((label, index) => (
             <label className="classic-round-field" key={label}>
               <span>{label}{index === 9 ? " · необязательно" : ""}</span>
               <select

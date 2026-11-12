@@ -8,17 +8,20 @@ import {
 import { classicBoardPoints, classicPoints } from "../shared/classicPoints";
 import type {
   Brand,
+  ClassicFinalEntry,
   ClassicState,
   GameCommand,
   GameSnapshot,
   GameState,
   Participant,
   PublicGame,
+  PublicFinalCell,
   PublicGameResults,
   PublicRoundStats,
   Question,
   RoundResult,
   Rules,
+  SoundCue,
   Team,
   TeamGame,
 } from "../shared/types";
@@ -105,8 +108,14 @@ export function createGame(input: CreateGameInput): GameState {
     }
   }
   const classicMode = input.rules?.mode === "classic";
+  const finalPlayers = classicMode ? (input.rules?.finalPlayers ?? 2) : undefined;
   if (classicMode) {
-    requireRule(input.questions.length === 9 || input.questions.length === 10,
+    requireRule(finalPlayers === 0 || finalPlayers === 1 || finalPlayers === 2,
+      "Финал проводится с одним или двумя игроками либо отключается.", 400);
+    if (finalPlayers === 0)
+      requireRule(input.questions.length === 4,
+        "Для классической игры без финала выберите 4 вопроса.", 400);
+    else requireRule(input.questions.length === 9 || input.questions.length === 10,
       "Для классической игры выберите 9 вопросов и при желании десятый для тай-брейка.", 400);
     requireRule(new Set(input.questions.map((question) => question.id)).size === input.questions.length,
       "Вопросы классической игры должны быть разными.", 400);
@@ -115,6 +124,7 @@ export function createGame(input: CreateGameInput): GameState {
     multipliers: classicMode ? [1, 2, 3, 1, 1, 1, 1, 1, 1, 1] : [...(input.rules?.multipliers ?? [1, 2, 3])],
     stealAddsPoints: classicMode ? true : (input.rules?.stealAddsPoints ?? true),
     ...(input.rules?.mode ? { mode: input.rules.mode } : {}),
+    ...(classicMode && finalPlayers !== 2 ? { finalPlayers } : {}),
   };
   requireRule(
     rules.multipliers.length > 0 &&
@@ -398,9 +408,11 @@ function beginClassicFinal(game: GameState, teamId: string): void {
   classic.activePlayerIndex = null;
   classic.duel = null;
   classic.reverse = null;
+  const players = game.rules.finalPlayers === 1 ? 1 : 2;
   classic.final = {
     teamId, player: 1, phase: "ready", deadlineAt: null, remainingMs: null,
     entries: [Array(5).fill(null), Array(5).fill(null)], score: 0,
+    players, target: players * 100,
   };
   game.questionIndex = 4;
   game.phase = "playing";
@@ -509,6 +521,7 @@ export function applyCommand(
   const normalized = normalizeGameState(state);
   const game = structuredClone(normalized);
   let message: string;
+  let cue: SoundCue | undefined;
   switch (command.type) {
     case "start": {
       requireRule(
@@ -519,13 +532,16 @@ export function applyCommand(
       if (game.classic) {
         beginDuel(game);
         message = "Игра началась. Команды разыгрывают право хода.";
+        cue = "start";
       } else {
         beginRound(game, command.teamId);
         message = `Игра началась. Отвечает команда «${teamById(game, command.teamId).name}».`;
+        cue = "start";
       }
       break;
     }
     case "reveal": {
+      cue = "reveal";
       requireLiveRound(game);
       requireRule(game.classic?.stage !== "final", "Финальные ответы проверяются отдельно.");
       const question = game.questions[game.questionIndex]!;
@@ -590,6 +606,7 @@ export function applyCommand(
       break;
     }
     case "strike": {
+      cue = "strike";
       requireLiveRound(game);
       requireRule(game.classic?.stage !== "final", "Финальные ответы проверяются отдельно.");
       clearAnswers(game);
@@ -615,6 +632,7 @@ export function applyCommand(
             (team) => team.id !== origin.id,
           )!.id;
           game.phase = "steal";
+          cue = "steal";
           message += ` Попытка перехвата у команды «${teamById(game, game.activeTeamId).name}».`;
         }
       }
@@ -626,6 +644,7 @@ export function applyCommand(
         "Следующий раунд доступен после подведения итогов без паузы.",
       );
       if (command.teamId !== undefined) teamById(game, command.teamId);
+      cue = "round";
       if (game.classic && game.questionIndex < 3) {
         game.questionIndex += 1;
         if (game.questionIndex < 3) {
@@ -644,7 +663,7 @@ export function applyCommand(
           game.classic.reverse = { firstTeamId: firstId, attempts: 0, deadlineAt: Date.now() + 20_000, remainingMs: null, awards: [] };
           message = "Началась игра наоборот.";
         }
-      } else if (game.classic && game.questionIndex === 3) {
+      } else if (game.classic && game.questionIndex === 3 && game.rules.finalPlayers !== 0) {
         const [first, second] = game.teams;
         if (first!.score === second!.score) {
           if (game.questions.length === 10) {
@@ -664,6 +683,7 @@ export function applyCommand(
         }
       } else if (game.questionIndex + 1 >= game.questions.length) {
         endGame(game);
+        cue = "finish";
         message = "Все раунды сыграны. Игра завершена.";
       } else {
         game.questionIndex += 1;
@@ -783,6 +803,7 @@ export function applyCommand(
     case "finish": {
       requireRule(game.phase !== "finished", "Игра уже завершена.");
       endGame(game);
+      cue = "finish";
       message =
         "Ведущий завершил игру. Незачисленный банк не добавлен к общему счёту.";
       break;
@@ -855,6 +876,7 @@ export function applyCommand(
       classic.duel.firstTeamId = command.teamId;
       classic.duel.awaitingTeamId = command.teamId;
       game.activeTeamId = command.teamId;
+      cue = "buzz";
       message = `Первой нажала команда «${teamById(game, command.teamId).name}».`;
       break;
     }
@@ -874,7 +896,8 @@ export function applyCommand(
       final.attemptId = randomUUID();
       final.deadlineAt = Date.now() + (final.player === 1 ? 15_000 : 20_000);
       final.remainingMs = null;
-      message = `Начался этап финалиста ${final.player}.`;
+      cue = "timer";
+      message = `Таймер финалиста ${final.player} запущен.`;
       break;
     }
     case "classic-final-stop": {
@@ -884,61 +907,95 @@ export function applyCommand(
       final.phase = "review";
       final.deadlineAt = null;
       final.remainingMs = null;
-      message = `Ответы финалиста ${final.player} готовы к проверке.`;
+      message = `Таймер финалиста ${final.player} остановлен.`;
       break;
     }
     case "classic-final-repeat": {
       requireLiveRound(game);
       const final = game.classic?.final;
-      requireRule(game.classic?.stage === "final" && final?.player === 2 &&
-        (final.phase === "answering" || final.phase === "review"),
+      requireRule(game.classic?.stage === "final" && final?.player === 2 && final.phase !== "complete",
         "Сигнал повтора доступен только во время ответа второго финалиста.");
+      cue = "repeat";
       message = "Повтор ответа в финале.";
       break;
     }
-    case "classic-final-answer": {
+    case "classic-final-pick": {
       requireLiveRound(game);
       const final = game.classic?.final;
-      requireRule(game.classic?.stage === "final" && final && (final.phase === "answering" || final.phase === "review"),
-        "Ответы доступны только во время финала или проверки.");
-      requireRule(final.phase !== "answering" || (final.deadlineAt !== null && Date.now() <= final.deadlineAt),
-        "Время вышло. Остановите таймер и проверьте ответы.");
+      requireRule(game.classic?.stage === "final" && final && final.phase !== "complete",
+        "Ответы отмечаются только во время большой игры.");
       requireRule(Number.isInteger(command.questionIndex) && command.questionIndex >= 0 && command.questionIndex < 5,
         "В финале пять вопросов.", 400);
-      const text = cleanText(command.text, 200, "Ответ");
       const question = game.questions[4 + command.questionIndex]!;
       const index = command.answerId ? question.answers.findIndex((answer) => answer.id === command.answerId) : -1;
       requireRule(!command.answerId || index >= 0, "Ответ не принадлежит вопросу финала.", 400);
-      if (final.player === 2) {
-        const first = final.entries[0][command.questionIndex];
-        const normalizedText = (s: string) => s.trim().toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/\s+/g, " ");
-        const pass = ["пас", "пропуск"].includes(normalizedText(text));
-        requireRule(!first || pass ||
-          (normalizedText(first.text) !== normalizedText(text) && (!command.answerId || command.answerId !== first.answerId)),
-          "Ответ повторяет ответ первого финалиста. Назовите другой вариант.");
+      if (final.player === 2 && index >= 0)
+        requireRule(final.entries[0][command.questionIndex]?.answerId !== command.answerId,
+          "Этот ответ уже назвал первый финалист. Попросите другой вариант.");
+      // The time is over: marking answers after the signal closes the timer, so
+      // the board may show both finalists' answers again.
+      if (final.phase === "answering" && final.deadlineAt !== null && Date.now() > final.deadlineAt) {
+        final.phase = "review";
+        final.deadlineAt = null;
+        final.remainingMs = null;
       }
+      const points = index >= 0 ? classicPoints(question.answers)[index]! : 0;
       final.entries[final.player - 1]![command.questionIndex] = {
-        text, answerId: command.answerId ?? null,
-        points: index >= 0 ? classicPoints(question.answers)[index]! : 0,
+        text: index >= 0 ? question.answers[index]!.text : "Нет в опросе",
+        answerId: index >= 0 ? command.answerId : null,
+        points,
       };
       final.score = final.entries.flat().reduce((sum, entry) => sum + (entry?.points ?? 0), 0);
-      message = `Обновлён ответ финалиста ${final.player} на вопрос ${command.questionIndex + 1}.`;
+      cue = points > 0 ? "reveal" : "strike";
+      message = index >= 0
+        ? `Финалист ${final.player}, вопрос ${command.questionIndex + 1}: «${question.answers[index]!.text}» — ${points}.`
+        : `Финалист ${final.player}, вопрос ${command.questionIndex + 1}: ответа нет в опросе.`;
+      break;
+    }
+    case "classic-final-clear": {
+      requireLiveRound(game);
+      const final = game.classic?.final;
+      requireRule(game.classic?.stage === "final" && final && final.phase !== "complete",
+        "Ответы отмечаются только во время большой игры.");
+      requireRule(Number.isInteger(command.questionIndex) && command.questionIndex >= 0 && command.questionIndex < 5,
+        "В финале пять вопросов.", 400);
+      requireRule(final.entries[final.player - 1]![command.questionIndex], "Этот ответ ещё не отмечен.");
+      final.entries[final.player - 1]![command.questionIndex] = null;
+      final.score = final.entries.flat().reduce((sum, entry) => sum + (entry?.points ?? 0), 0);
+      message = `Финалист ${final.player}, вопрос ${command.questionIndex + 1}: отметка снята.`;
       break;
     }
     case "classic-final-next": {
       requireLiveRound(game);
       const final = game.classic?.final;
-      requireRule(game.classic?.stage === "final" && final?.phase === "review", "Сначала остановите таймер и проверьте ответы.");
-      if (final.player === 1) {
+      requireRule(game.classic?.stage === "final" && final && final.phase !== "complete",
+        "Большая игра сейчас не идёт.");
+      final.deadlineAt = null;
+      final.remainingMs = null;
+      if (final.player === 1 && (final.players ?? 2) === 2 && !command.complete) {
         final.player = 2;
         final.phase = "ready";
         message = "Первый финалист закончил. Пригласите второго.";
       } else {
+        const target = final.target ?? 200;
         final.phase = "complete";
         game.phase = "round-result";
         endGame(game);
-        message = final.score >= 200 ? `Большая игра завершена: ${final.score} очков, суперприз!` : `Большая игра завершена: ${final.score} очков.`;
+        cue = final.score >= target ? "prize" : "finish";
+        message = final.score >= target ? `Большая игра завершена: ${final.score} очков, суперприз!` : `Большая игра завершена: ${final.score} очков.`;
       }
+      break;
+    }
+    case "classic-final-skip": {
+      requireRule(!game.paused, "Игра на паузе. Сначала продолжите её.");
+      const stage = game.classic?.stage;
+      requireRule(game.classic && game.phase !== "finished" && (
+        (stage === "final" && game.classic.final?.phase !== "complete") || stage === "tiebreak" ||
+        (stage === "reverse" && game.phase === "round-result")),
+        "Пропустить финал можно после игры наоборот.");
+      endGame(game);
+      cue = "finish";
+      message = "Ведущий завершил игру без большого финала.";
       break;
     }
     case "suggest":
@@ -994,6 +1051,7 @@ export function applyCommand(
     id: randomUUID(),
     type: command.type,
     message,
+    ...(cue ? { cue } : {}),
     createdAt: new Date().toISOString(),
   });
   game.events = game.events.slice(-EVENT_LIMIT);
@@ -1021,9 +1079,10 @@ export function publicView(game: GameState): PublicGame {
       score: team.score,
     })),
     revision: game.revision,
-    lastAction: game.events.at(-1)?.type === "reveal" ? "reveal"
-      : game.events.at(-1)?.type === "strike" ? "strike"
-      : game.events.at(-1)?.type === "classic-final-repeat" ? "repeat" : null,
+    lastAction: game.events.at(-1)?.cue
+      ?? (game.events.at(-1)?.type === "reveal" ? "reveal"
+        : game.events.at(-1)?.type === "strike" ? "strike"
+        : game.events.at(-1)?.type === "classic-final-repeat" ? "repeat" : null),
     ...(game.events.at(-1) ? { lastActionEventId: game.events.at(-1)!.id } : {}),
     phase: game.phase,
     paused: game.paused,
@@ -1031,7 +1090,7 @@ export function publicView(game: GameState): PublicGame {
     bank: game.bank,
     strikes: game.strikes,
     questionIndex: game.questionIndex,
-    totalRounds: game.classic ? 5 : game.questions.length,
+    totalRounds: classicRounds(game) ?? game.questions.length,
     multiplier: multiplier(game),
     prompt: question?.prompt ?? "",
     isDemo: question?.isDemo ?? false,
@@ -1047,8 +1106,7 @@ export function publicView(game: GameState): PublicGame {
       activePlayerIndex: game.classic.activePlayerIndex ?? null,
       duel: structuredClone(game.classic.duel),
       reverse: structuredClone(game.classic.reverse),
-      final: game.classic.final ? (({ teamId, player, phase, deadlineAt, remainingMs, score }) =>
-        ({ teamId, player, phase, deadlineAt, remainingMs, score }))(game.classic.final) : null,
+      final: game.classic.final ? publicFinal(game.classic.final) : null,
     } } : {}),
     answers:
       (question ? gameBoardAnswers(game, question) : []).map((answer, index) =>
@@ -1063,6 +1121,27 @@ export function publicView(game: GameState): PublicGame {
             }
           : { position: index + 1, opened: false },
       ),
+  };
+}
+
+function classicRounds(game: GameState): number | null {
+  return game.classic ? (game.rules.finalPlayers === 0 ? 4 : 5) : null;
+}
+
+/** The audience sees marked answers; the first finalist's stay masked while the second plays. */
+function publicFinal(final: NonNullable<ClassicState["final"]>): NonNullable<NonNullable<PublicGame["classic"]>["final"]> {
+  const { teamId, player, phase, deadlineAt, remainingMs, score } = final;
+  const maskFirst = player === 2 && (phase === "ready" || phase === "answering");
+  const cell = (entry: ClassicFinalEntry | null | undefined, hidden: boolean): PublicFinalCell | null =>
+    !entry ? null : hidden ? { hidden: true } : { text: entry.text, points: entry.points };
+  return {
+    teamId, player, phase, deadlineAt, remainingMs, score,
+    players: final.players ?? 2,
+    target: final.target ?? 200,
+    rows: Array.from({ length: 5 }, (_, index) => [
+      cell(final.entries[0][index], maskFirst),
+      cell(final.entries[1][index], false),
+    ] as [PublicFinalCell | null, PublicFinalCell | null]),
   };
 }
 
@@ -1128,7 +1207,8 @@ export function gameResults(state: GameState): PublicGameResults {
       classicFinal: {
         teamId: final.teamId,
         score: final.score,
-        superPrize: final.score >= 200,
+        target: final.target ?? 200,
+        superPrize: final.score >= (final.target ?? 200),
         questions: game.questions.slice(4, 9).map((question, questionIndex) => {
           const total = question.answers.reduce((sum, answer) => sum + answer.points, 0);
           return {
@@ -1149,7 +1229,7 @@ export function gameResults(state: GameState): PublicGameResults {
         }),
       },
     } : {}),
-    totalRounds: game.classic ? 5 : game.questions.length,
+    totalRounds: classicRounds(game) ?? game.questions.length,
     ...(game.classic ? { completedRounds: game.roundResults.filter((round) => round.completed).length +
       (game.classic.final?.phase === "complete" ? 1 : 0) } : {}),
   };

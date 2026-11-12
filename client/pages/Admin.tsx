@@ -495,6 +495,7 @@ export function NewGamePage() {
   ]);
   const [selected, setSelected] = useState<string[]>([]);
   const [gameMode, setGameMode] = useState<"standard" | "classic">("classic");
+  const [finalPlayers, setFinalPlayers] = useState<0 | 1 | 2>(2);
   const [modeError, setModeError] = useState("");
   const [multiplierById, setMultiplierById] = useState<Record<string, number>>({});
   const [stealAddsPoints, setStealAddsPoints] = useState(true);
@@ -510,11 +511,16 @@ export function NewGamePage() {
   const save = async (event: FormEvent) => {
     event.preventDefault();
     setFormError("");
-    if (gameMode === "classic" && (selected.length < 9 || selected.slice(0, 9).some((id) => !id))) {
+    const noFinal = gameMode === "classic" && finalPlayers === 0;
+    if (noFinal && selected.slice(0, 4).filter(Boolean).length < 4) {
+      setFormError("Выберите вопросы для всех четырёх раундов.");
+      return;
+    }
+    if (gameMode === "classic" && !noFinal && (selected.length < 9 || selected.slice(0, 9).some((id) => !id))) {
       setFormError("Выберите вопросы для всех четырёх раундов и пяти вопросов финала. Тай-брейк необязателен.");
       return;
     }
-    const selectedQuestions = selected.filter(Boolean);
+    const selectedQuestions = (noFinal ? selected.slice(0, 4) : selected).filter(Boolean);
     if (!selectedQuestions.length) {
       setFormError("Выберите хотя бы один вопрос для игры.");
       return;
@@ -540,7 +546,7 @@ export function NewGamePage() {
               ? selectedQuestions.map((_, index) => index < 3 ? index + 1 : 1)
               : selectedQuestions.map((id) => multiplierById[id] || 1),
             stealAddsPoints: gameMode === "classic" ? true : stealAddsPoints,
-            ...(gameMode === "classic" ? { mode: "classic" } : {}),
+            ...(gameMode === "classic" ? { mode: "classic", finalPlayers } : {}),
           },
         }),
       );
@@ -603,6 +609,17 @@ export function NewGamePage() {
               <option value="classic">Классическая игра · 4 раунда и финал</option>
             </select>
           </label>
+          {gameMode === "classic" && (
+            <label className="field">
+              Большая игра (финал)
+              <select value={finalPlayers} onChange={(event) => setFinalPlayers(Number(event.target.value) as 0 | 1 | 2)}>
+                <option value={2}>Два игрока · цель 200 очков</option>
+                <option value={1}>Один игрок · один тур, цель 100 очков</option>
+                <option value={0}>Без финала · победитель по счёту раундов</option>
+              </select>
+              <small className="muted">Финал можно пропустить или закончить на первом игроке и прямо во время игры — с пульта ведущего.</small>
+            </label>
+          )}
           {modeError && <ErrorMessage message={modeError} />}
           <div className="form-grid">
             {teams.map((team, index) => (
@@ -659,7 +676,7 @@ export function NewGamePage() {
               <h2>
                 <span className="step-number">02</span> Вопросы и раунды
               </h2>
-              <span className="badge">Выбрано: {selected.filter(Boolean).length}</span>
+              <span className="badge">Выбрано: {(gameMode === "classic" && finalPlayers === 0 ? selected.slice(0, 4) : selected).filter(Boolean).length}</span>
             </div>
           }
         >
@@ -690,6 +707,7 @@ export function NewGamePage() {
               selected={selected}
               multiplierById={multiplierById}
               mode={gameMode}
+              classicFinal={finalPlayers !== 0}
               onSelectionChange={changeSelection}
               onMultiplierChange={(id, multiplier) => setMultiplierById((current) => ({ ...current, [id]: multiplier }))}
             />

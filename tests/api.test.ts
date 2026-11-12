@@ -270,6 +270,14 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       if (count === 9) classic = created.json<HostGame>();
     }
     expect(classic).toBeDefined();
+    // Without the big final only the four ordinary rounds are needed.
+    const noFinalRules = { ...payload.rules, finalPlayers: 0 };
+    expect((await call("POST", "/games", { ...payload, rules: noFinalRules }, adminCookie)).statusCode).toBe(400);
+    const noFinal = await call("POST", "/games", {
+      ...payload, rules: noFinalRules, questionIds: payload.questionIds.slice(0, 4),
+    }, adminCookie);
+    expect(noFinal.statusCode, noFinal.body).toBe(200);
+    expect(noFinal.json().rules.finalPlayers).toBe(0);
     let game = classic!;
     const first = await join(game.teams[0]!.joinCode, "Первый капитан");
     const second = await join(game.teams[1]!.joinCode, "Второй капитан");
@@ -288,7 +296,6 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     const url = `/games/${game.id}/buzz`;
     const request = { requestId: randomUUID(), revision: game.revision };
     expect((await call("POST", url, request)).statusCode).toBe(403);
-    expect((await call("POST", url, request, ordinary.cookie)).statusCode).toBe(403);
     expect((await call("POST", url, { ...request, teamId: game.teams[1]!.id }, first.cookie)).statusCode).toBe(400);
     const secondRequest = { requestId: randomUUID(), revision: game.revision };
     const competing = await Promise.all([
@@ -304,8 +311,7 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       winningIndex === 0 ? first.cookie : second.cookie);
     expect(replay.statusCode).toBe(200);
     // After both teams miss the opening duel, the next players answer in turn.
-    // The second round opens the buzzer for player 2; player 3 must be denied,
-    // while the captain may still signal as a fallback.
+    // Any member of a team may press the red button, whatever their position.
     game = host.json<HostGame>();
     game = await hostCommand(game, adminCookie, { type: "strike" });
     game = await hostCommand(game, adminCookie, { type: "strike" });
@@ -315,7 +321,6 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     expect(game.phase).toBe("round-result");
     game = await hostCommand(game, adminCookie, { type: "next" });
     expect(game.classic?.duel?.playerIndex).toBe(2);
-    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie)).statusCode).toBe(403);
     const playerRequest = { requestId: randomUUID(), revision: game.revision };
     expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
     game = (await call("GET", `/games/${game.id}/host`, undefined, adminCookie)).json<HostGame>();
@@ -326,7 +331,6 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
     // A retransmission of an accepted request stays idempotent even after the
     // current player changes; the original signal is not processed again.
     expect((await call("POST", url, playerRequest, ordinary.cookie)).statusCode).toBe(200);
-    expect((await call("POST", url, { requestId: randomUUID(), revision: game.revision }, ordinary.cookie)).statusCode).toBe(403);
     const [playerSignal, captainSignal] = await Promise.all([
       call("POST", url, { requestId: randomUUID(), revision: game.revision }, third.cookie),
       call("POST", url, { requestId: randomUUID(), revision: game.revision }, first.cookie),

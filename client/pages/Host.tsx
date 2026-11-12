@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
 } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -112,178 +113,149 @@ function Invitation({ code, teamName }: { code: string; teamName: string }) {
   );
 }
 
-function ClassicFinalPanel({ game, disabled, command }: {
+/** How many survey answers are offered before the host opens the full list. */
+const FINAL_VISIBLE_ANSWERS = 8;
+
+function ClassicFinalPanel({ game, disabled, command, askConfirmation }: {
   game: HostGame;
   disabled: boolean;
   command: (next: HostCommand) => Promise<void>;
+  askConfirmation: (next: HostCommand, trigger?: HTMLElement | null) => void;
 }) {
   const final = game.classic!.final!;
+  const players = final.players ?? 2;
+  const target = final.target ?? 200;
   const playerIndex = final.player - 1;
-  // Keep unsaved answers in this tab across a reload, never on the public board.
-  // Each server-issued attempt ID gives a replay after undo its own draft.
-  const startEvent = [...game.events].reverse().find((event) => event.type === "classic-final-start" && event.message === `Начался этап финалиста ${final.player}.`);
-  const draftKey = `ctokodnomy:final-draft:${game.id}:${final.player}:${final.attemptId ?? startEvent?.id ?? "legacy"}`;
-  const loadDraft = () => {
-    const fallback = {
-      texts: final.entries[playerIndex].map((entry) => entry?.text ?? ""),
-      matches: final.entries[playerIndex].map((entry) => entry?.answerId ?? ""),
-    };
-    if (final.phase === "ready") return fallback;
-    try {
-      const stored = sessionStorage.getItem(draftKey);
-      if (!stored) return fallback;
-      const draft: unknown = JSON.parse(stored);
-      if (!draft || typeof draft !== "object") return fallback;
-      const { texts, matches } = draft as { texts?: unknown; matches?: unknown };
-      if (!Array.isArray(texts) || !Array.isArray(matches) || texts.length !== 5 || matches.length !== 5 ||
-        !texts.every((item) => typeof item === "string" && item.length <= 200) ||
-        !matches.every((item) => typeof item === "string")) return fallback;
-      return { texts: texts as string[], matches: matches as string[] };
-    } catch {
-      return fallback;
-    }
-  };
-  const [initialDraft] = useState(loadDraft);
-  const [texts, setTexts] = useState(initialDraft.texts);
-  const [matches, setMatches] = useState(initialDraft.matches);
-  const textsRef = useRef(texts);
-  const matchesRef = useRef(matches);
-  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
-  const [draftError, setDraftError] = useState(false);
   const [now, setNow] = useState(Date.now);
-  function saveDraft(nextTexts: string[], nextMatches: string[]) {
-    try {
-      sessionStorage.setItem(draftKey, JSON.stringify({ texts: nextTexts, matches: nextMatches }));
-      setDraftError(false);
-    } catch {
-      setDraftError(true);
-    }
-  }
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   useEffect(() => {
     if (final.phase !== "answering" || !final.deadlineAt) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [final.phase, final.deadlineAt]);
-  const remaining = final.deadlineAt === null
-    ? final.remainingMs
-    : Math.max(0, final.deadlineAt - now);
-  const review = final.phase === "review";
-  const canEnterText = final.phase === "answering" && !game.paused && !disabled && final.deadlineAt !== null && final.deadlineAt > now;
+  const duration = final.player === 1 ? 15 : 20;
+  const remaining = final.phase === "ready" ? duration * 1000
+    : final.phase !== "answering" ? null
+    : final.deadlineAt === null ? final.remainingMs : Math.max(0, final.deadlineAt - now);
+  const timeUp = final.phase === "answering" && remaining !== null && remaining <= 0;
   const team = game.teams.find((item) => item.id === final.teamId);
-  const entries = final.entries[playerIndex];
-  const repeated = texts.map((text, index) => {
-    if (final.player !== 2) return false;
-    const normalize = (value: string) => value.trim().toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/\s+/g, " ");
-    const value = normalize(text ?? "");
-    const first = final.entries[0][index];
-    return !!value && !["пас", "пропуск"].includes(value) && !!first &&
-      (value === normalize(first.text) || (!!matches[index] && matches[index] === first.answerId));
-  });
-  const unsaved = entries.some((entry, index) => entry
-    ? entry.text !== texts[index]?.trim() || (entry.answerId ?? "") !== matches[index]
-    : !!texts[index]?.trim() || !!matches[index]);
+  const entries = final.entries[playerIndex]!;
+  const marked = entries.filter(Boolean).length;
+  const locked = disabled || game.paused;
+  const lastPlayer = final.player === players;
   return (
     <section className="card host-final" aria-label="Большая игра" data-final-phase={final.phase}>
       <div className="host-final-toolbar">
-      <div className="host-final-heading">
-        <div>
-          <h2>Большая игра · игрок {final.player}</h2>
-          <p className="muted">{team?.name ?? "Команда"} · {final.score} из 200 очков</p>
+        <div className="host-final-heading">
+          <div>
+            <p className="eyebrow">Большая игра{players === 2 ? ` · игрок ${final.player} из 2` : ""}</p>
+            <h2>{team?.name ?? "Команда"}</h2>
+          </div>
+          <div className="host-final-score" aria-label={`Набрано ${final.score} из ${target} очков`}>
+            <strong>{final.score}</strong><span>из {target}</span>
+          </div>
         </div>
-        {remaining !== null && <strong className="host-final-clock" aria-label={`Осталось секунд: ${Math.ceil(remaining / 1000)}`}>{Math.ceil(remaining / 1000)} с</strong>}
+        <div className="host-final-timer">
+          {remaining !== null && (
+            <strong className={`host-final-clock ${timeUp ? "is-over" : ""}`} role="timer" aria-label={`Осталось секунд: ${Math.ceil(remaining / 1000)}`}>
+              {Math.ceil(remaining / 1000)} с
+            </strong>
+          )}
+          {final.phase === "ready" && (
+            <button className="button primary" disabled={locked} onClick={() => void command({ type: "classic-final-start" })}>
+              <Play size={18} /> Запустить таймер · {duration} с
+            </button>
+          )}
+          {final.phase === "answering" && (
+            <button className="button secondary" disabled={locked} onClick={() => void command({ type: "classic-final-stop" })}>
+              <Pause size={18} /> {timeUp ? "Время вышло · стоп" : "Остановить таймер"}
+            </button>
+          )}
+          {final.phase === "review" && <span className="badge">Таймер остановлен</span>}
+          <span className="host-final-progress" role="status">Отмечено {marked} из 5</span>
+        </div>
+        <p className="form-hint">
+          Нажмите ответ, который назвал игрок, — он сразу появится на табло с очками. Если такого ответа нет в опросе, нажмите «Нет в опросе».
+          {final.player === 2 ? " Ответы первого игрока скрыты на табло, пока идёт таймер второго; нажатие на занятый ответ подаёт сигнал повтора." : ""}
+        </p>
       </div>
-      {final.phase === "ready" && (
-        <div className="host-final-instructions">
-          <p>Задайте пять вопросов. После старта записывайте ответы; затем остановите таймер и проверьте совпадения.</p>
-          <button className="button primary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-start" })}>
-            <Play size={18} /> Начать: {final.player === 1 ? "15" : "20"} секунд
-          </button>
-        </div>
-      )}
-      {final.phase === "answering" && (
-        <div className="host-final-instructions">
-          <p>{game.paused ? "Пауза. Продолжите игру для записи." : remaining !== null && remaining <= 0 ? "Время вышло. Проверьте ответы." : "Записывайте ответы до сигнала."}</p>
-          <button className="button secondary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-stop" })}>
-            <Pause size={18} /> Остановить и проверить
-          </button>
-        </div>
-      )}
-      {draftError && <p className="host-final-repeat" role="alert">Браузер не сохранил черновик. До завершения проверки не обновляйте эту страницу.</p>}
-      {final.player === 2 && (final.phase === "answering" || final.phase === "review") && (
-        <div className="host-final-repeat-control">
-          <p className="form-hint">Если второй игрок повторил ответ первого, подайте сигнал и попросите другой вариант.</p>
-          <button type="button" className="button secondary" disabled={disabled || game.paused} onClick={() => void command({ type: "classic-final-repeat" })}>Сигнал повтора</button>
-        </div>
-      )}
-      </div>
-      {final.phase === "ready" && (
-        <ol className="host-final-preview" aria-label="Вопросы финала">
-          {game.questions.slice(4, 9).map((question) => <li key={question.id}>{question.prompt}</li>)}
-        </ol>
-      )}
-      {review && <p className="form-hint">Для каждого ответа выберите совпавший вариант опроса или оставьте «Нет совпадения». Сохраните заполненные ответы; пустые поля считаются пропуском.</p>}
-      {final.phase !== "ready" && game.questions.slice(4, 9).map((question, index) => {
-        const saved = entries[index];
-        const dirty = saved ? saved.text !== texts[index]?.trim() || (saved.answerId ?? "") !== matches[index] : !!texts[index]?.trim() || !!matches[index];
-        const points = classicPoints(question.answers);
-        return (
-          <form className="host-final-answer" key={question.id} onSubmit={(event) => {
-            event.preventDefault();
-            if (review && dirty) void command({ type: "classic-final-answer", questionIndex: index, text: texts[index]?.trim() ?? "", answerId: matches[index] || null });
-          }}>
-            <h3><span>{index + 1}.</span> {question.prompt}</h3>
-            <label className="field"><span className={review ? undefined : "sr-only"}>Ответ игрока</span>
-              <input ref={(element) => { inputRefs.current[index] = element; }} enterKeyHint="next" maxLength={200} value={texts[index] ?? ""} disabled={!canEnterText} onKeyDown={(event) => {
-                if (event.key !== "Enter" || event.nativeEvent.isComposing || review) return;
-                event.preventDefault();
-                inputRefs.current[index + 1]?.focus();
-              }} onChange={(event) => {
-                // React's interval updates the display, but the event handler checks
-                // the server deadline again so the last fraction of a second is safe.
-                if (!canEnterText || final.deadlineAt === null || Date.now() >= final.deadlineAt) return;
-                const next = textsRef.current.map((item, i) => i === index ? event.target.value : item);
-                textsRef.current = next;
-                setTexts(next);
-                saveDraft(next, matchesRef.current);
-              }} placeholder="Ответ или пустое поле для пропуска" />
-            </label>
-            {repeated[index] && <div className="host-final-repeat" role="alert">
-              <p>{review || !canEnterText ? "Повторный ответ не засчитывается." : "Этот ответ уже назвал первый игрок. Попросите другой вариант."}</p>
-              {(review || !canEnterText) && <button type="button" className="button secondary small" disabled={disabled || game.paused} onClick={() => {
-                const nextTexts = textsRef.current.map((item, i) => i === index ? "" : item);
-                const nextMatches = matchesRef.current.map((item, i) => i === index ? "" : item);
-                textsRef.current = nextTexts;
-                matchesRef.current = nextMatches;
-                setTexts(nextTexts);
-                setMatches(nextMatches);
-                saveDraft(nextTexts, nextMatches);
-              }}>Засчитать пропуск</button>}
-            </div>}
-            {review && <label className="field">Совпадение в опросе
-              <select value={matches[index] ?? ""} disabled={disabled || game.paused} onChange={(event) => {
-                const next = matchesRef.current.map((item, i) => i === index ? event.target.value : item);
-                matchesRef.current = next;
-                setMatches(next);
-                saveDraft(textsRef.current, next);
-              }}>
-                <option value="">Нет совпадения · 0 очков</option>
-                {question.answers.map((answer, answerIndex) => <option key={answer.id} value={answer.id} disabled={final.player === 2 && answer.id === final.entries[0][index]?.answerId}>{answer.text} · {points[answerIndex]} очков</option>)}
-              </select>
-            </label>}
-            {review && <div className="host-final-answer-actions">
-              <span className="form-hint">{saved && !dirty ? `Сохранено · ${saved.points} очков` : dirty ? "Не сохранено" : "Пропуск"}</span>
-              <button className="button secondary small" disabled={disabled || game.paused || !dirty || repeated[index] || (!!matches[index] && !texts[index]?.trim())}>Сохранить ответ</button>
-            </div>}
-          </form>
-        );
-      })}
-      {review && <div className="host-final-next">
-        {unsaved && <p className="form-hint">Сохраните заполненные ответы перед продолжением.</p>}
-        <button className="button primary" disabled={disabled || game.paused || unsaved} onClick={() => void command({ type: "classic-final-next" })}>
-          {final.player === 1 ? "Следующий игрок" : "Завершить большую игру"} <ArrowRight size={18} />
+      <ol className="host-final-questions">
+        {game.questions.slice(4, 9).map((question, index) => {
+          const entry = entries[index];
+          const first = final.player === 2 ? final.entries[0][index] : null;
+          const points = classicPoints(question.answers);
+          const showAll = expanded[index] || question.answers.length <= FINAL_VISIBLE_ANSWERS ||
+            question.answers.findIndex((answer) => answer.id === entry?.answerId) >= FINAL_VISIBLE_ANSWERS;
+          const visible = showAll ? question.answers : question.answers.slice(0, FINAL_VISIBLE_ANSWERS);
+          return (
+            <li className={`host-final-question ${entry ? "is-marked" : ""}`} key={question.id}>
+              <div className="host-final-question-heading">
+                <h3><span>{index + 1}</span>{question.prompt}</h3>
+                {entry
+                  ? <span className={`host-final-result ${entry.points > 0 ? "is-hit" : "is-miss"}`}>{entry.points > 0 ? `+${entry.points}` : "0"}</span>
+                  : <span className="host-final-result">—</span>}
+              </div>
+              {first && <p className="host-final-first">Первый игрок: <strong>{first.text}</strong> · {first.points}</p>}
+              <div className="host-final-options" role="group" aria-label={`Вопрос ${index + 1}: ответ игрока`}>
+                {visible.map((answer) => {
+                  const answerIndex = question.answers.indexOf(answer);
+                  const selected = entry?.answerId === answer.id;
+                  const taken = !!first && first.answerId === answer.id;
+                  return (
+                    <button
+                      type="button"
+                      key={answer.id}
+                      className={`host-final-option ${selected ? "is-selected" : ""} ${taken ? "is-taken" : ""}`}
+                      aria-pressed={selected}
+                      disabled={locked}
+                      title={taken ? "Этот ответ назвал первый игрок: нажмите для сигнала повтора" : undefined}
+                      onClick={() => void command(taken
+                        ? { type: "classic-final-repeat" }
+                        : selected
+                          ? { type: "classic-final-clear", questionIndex: index }
+                          : { type: "classic-final-pick", questionIndex: index, answerId: answer.id })}
+                    >
+                      <span>{answer.text}</span>
+                      <strong>{taken ? "повтор" : points[answerIndex]}</strong>
+                    </button>
+                  );
+                })}
+                {!showAll && (
+                  <button type="button" className="host-final-option is-more" onClick={() => setExpanded((current) => ({ ...current, [index]: true }))}>
+                    <span>Ещё ответы · {question.answers.length - FINAL_VISIBLE_ANSWERS}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`host-final-option is-none ${entry && !entry.answerId ? "is-selected" : ""}`}
+                  aria-pressed={!!entry && !entry.answerId}
+                  disabled={locked}
+                  onClick={() => void command(entry && !entry.answerId
+                    ? { type: "classic-final-clear", questionIndex: index }
+                    : { type: "classic-final-pick", questionIndex: index, answerId: null })}
+                >
+                  <span><X size={15} /> Нет в опросе</span>
+                  <strong>0</strong>
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="host-final-next">
+        <button className="button primary" disabled={locked} onClick={() => void command({ type: "classic-final-next" })}>
+          {lastPlayer ? "Завершить большую игру" : "Следующий игрок"} <ArrowRight size={18} />
         </button>
-      </div>}
+        {!lastPlayer && (
+          <button className="button secondary" disabled={locked} onClick={(event) => askConfirmation({ type: "classic-final-next", complete: true }, event.currentTarget)}>
+            Закончить на первом игроке
+          </button>
+        )}
+        <button className="button ghost danger-text" disabled={locked} onClick={(event) => askConfirmation({ type: "classic-final-skip" }, event.currentTarget)}>
+          <Flag size={17} /> Пропустить финал
+        </button>
+      </div>
     </section>
   );
 }
@@ -442,6 +414,10 @@ export function HostPage() {
     (game.phase === "playing" || game.phase === "steal") && !game.paused;
   const classic = game.classic;
   const isClassicFinal = classic?.stage === "final";
+  const hasFinal = !!classic && game.rules.finalPlayers !== 0;
+  /** The reverse round is over and the big final (or a tie-break) comes next. */
+  const beforeFinal = hasFinal && game.phase === "round-result" && game.questionIndex === 3;
+  const lastRound = !beforeFinal && game.questionIndex + 1 >= game.questions.length;
   const isManualTiebreak = classic?.stage === "tiebreak" && !classic.duel;
   const isDuel = (classic?.stage === "duel" || classic?.stage === "tiebreak") && !!classic.duel;
   const waitingForBuzz = isDuel && !classic?.duel?.awaitingTeamId;
@@ -463,17 +439,19 @@ export function HostPage() {
       : game.phase === "lobby"
         ? classic ? "Начните игру: команды разыграют право хода." : "Выберите первую команду и начните игру. Вопрос появится на общей доске."
         : game.phase === "round-result"
-          ? game.questionIndex + 1 >= game.questions.length
+          ? beforeFinal
+            ? "Игра наоборот сыграна. Переходите к большой игре или завершите без неё."
+            : lastRound
             ? "Последний раунд завершён. Обсудите ответы и перейдите к итогам."
             : "Обсудите все ответы с гостями, затем начните следующий раунд."
           : game.phase === "finished"
             ? "Игра завершена. Проверьте итоги и откройте их для гостей."
             : isClassicFinal
-              ? "Проведите большую игру: запишите ответы двух игроков и проверьте их по опросу."
+              ? "Большая игра: запустите таймер и нажимайте ответы, которые называет игрок."
               : isManualTiebreak
                 ? "Счёт равный. Проведите дополнительный вопрос и выберите победившую команду."
                 : waitingForBuzz
-                  ? "Ждём сигнала капитана. При необходимости выберите команду вручную."
+                  ? "Ждём красную кнопку от команд. При необходимости выберите команду вручную."
                   : isDuel
                     ? `${activeTeam?.name ?? "Команда"} отвечает на дуэли. Откройте вариант или отметьте ошибку.`
                     : classic?.stage === "reverse"
@@ -643,7 +621,11 @@ export function HostPage() {
           ? `Присудить банк команде «${game.teams.find((team) => team.id === confirmation.teamId)?.name}» и завершить раунд?`
           : confirmation?.type === "turn"
             ? `Передать ход команде «${game.teams.find((team) => team.id === confirmation.teamId)?.name}»? Ошибки сбросятся, банк сохранится.`
-            : "";
+            : confirmation?.type === "classic-final-skip"
+              ? "Завершить игру без большого финала? Победитель определится по счёту раундов."
+              : confirmation?.type === "classic-final-next"
+                ? "Закончить большую игру на первом игроке? Второй игрок отвечать не будет."
+                : "";
   return (
     <main
       className="host-page"
@@ -689,7 +671,7 @@ export function HostPage() {
           <div className="host-status-bar">
             <div className="host-phase">
               <span className="badge">{game.paused ? "На паузе" : phases[game.phase]}</span>
-              <span>{classic ? isClassicFinal ? "Большая игра · раунд 5 / 5" : classic.stage === "tiebreak" ? "Тай-брейк" : `Раунд ${Math.min(game.questionIndex + 1, 4)} / 5` : `Раунд ${game.questionIndex + 1} / ${game.questions.length}`}</span>
+              <span>{classic ? isClassicFinal ? "Большая игра · раунд 5 / 5" : classic.stage === "tiebreak" ? "Тай-брейк" : `Раунд ${Math.min(game.questionIndex + 1, 4)} / ${hasFinal ? 5 : 4}` : `Раунд ${game.questionIndex + 1} / ${game.questions.length}`}</span>
             </div>
               <div className="host-turn"><span>Сейчас отвечает</span><strong>{activeTeam?.name ?? "Выберите команду"}</strong>{classic?.stage === "play" && game.phase === "playing" && classic.activePlayerIndex && <small>Игрок {classic.activePlayerIndex}</small>}{isDuel && classic?.duel?.playerIndex && <small>Игрок {classic.duel.playerIndex}</small>}</div>
             <div className="host-bank"><span>Банк <small>×{multiplier}</small></span><strong>{game.bank}</strong></div>
@@ -713,16 +695,18 @@ export function HostPage() {
               <h2>
                 {game.phase === "lobby"
                   ? classic ? "Готовы начать?" : "Кто отвечает первым?"
-                  : !classic && game.questionIndex + 1 >= game.questions.length
+                  : beforeFinal
+                    ? "Впереди большая игра"
+                  : lastRound
                     ? "Пора подвести итоги"
                     : "Готовы к следующему вопросу?"}
               </h2>
               <p className="muted">
                 {game.phase === "lobby"
                   ? classic ? "После старта капитаны разыграют право первого хода." : "Выберите команду. Первый вопрос появится на табло после старта."
-                  : classic && game.questionIndex === 3
-                    ? "Продолжите игру, чтобы определить финалиста."
-                  : !classic && game.questionIndex + 1 >= game.questions.length
+                  : beforeFinal
+                    ? "Продолжите игру, чтобы определить финалиста, или завершите её без большого финала."
+                  : lastRound
                     ? "Все раунды сыграны. Завершите игру, чтобы открыть страницу результатов."
                     : "Ответы и статистика остаются на табло, пока вы не продолжите игру."}
               </p>
@@ -744,6 +728,11 @@ export function HostPage() {
                   </select>
                 </label>
               )}
+              {beforeFinal && (
+                <button className="button ghost" disabled={disabled || game.paused} onClick={(event) => askConfirmation({ type: "classic-final-skip" }, event.currentTarget)}>
+                  <Flag size={17} /> Завершить без финала
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -757,10 +746,10 @@ export function HostPage() {
             <div>
               <p className="eyebrow">{classic?.stage === "tiebreak" ? "Тай-брейк" : "Розыгрыш хода"}</p>
               <h2>{waitingForBuzz ? "Кто нажал первым?" : `Отвечает ${activeTeam?.name ?? "команда"}`}</h2>
-              <p className="muted">{waitingForBuzz ? "Капитан может нажать кнопку на телефоне. Если это неудобно, выберите команду вручную." : "Выслушайте ответ и откройте совпадающий вариант. Если ответа нет, отметьте ошибку."}</p>
+              <p className="muted">{waitingForBuzz ? "Игроки жмут красную кнопку на телефонах — первая команда определится сама. Без телефонов отметьте команду вручную." : "Выслушайте ответ и откройте совпадающий вариант. Если ответа нет, отметьте ошибку."}</p>
             </div>
-            {waitingForBuzz && <div className="button-row">
-              {game.teams.map((team) => <button key={team.id} className="button secondary" disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-buzz", teamId: team.id })}>{team.name} нажала первой</button>)}
+            {waitingForBuzz && <div className="host-buzz-row">
+              {game.teams.map((team) => <button key={team.id} className="host-buzz-button" style={{ "--team-color": team.color } as CSSProperties} disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-buzz", teamId: team.id })}><span className="host-buzz-dot" aria-hidden="true" />{team.name} нажала первой</button>)}
             </div>}
           </section>
         )}
@@ -768,7 +757,10 @@ export function HostPage() {
           <section className="card host-classic-step" aria-label="Тай-брейк">
             <h2>Счёт равный</h2>
             <p className="muted">Проведите дополнительный вопрос и укажите, какая команда первой ответила верно.</p>
-            <div className="button-row">{game.teams.map((team) => <button key={team.id} className="button secondary" disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-tiebreak-winner", teamId: team.id })}>{team.name} выходит в финал</button>)}</div>
+            <div className="button-row">
+              {game.teams.map((team) => <button key={team.id} className="button secondary" disabled={disabled || !roundLive} onClick={() => void command({ type: "classic-tiebreak-winner", teamId: team.id })}>{team.name} выходит в финал</button>)}
+              <button className="button ghost" disabled={disabled || !roundLive} onClick={(event) => askConfirmation({ type: "classic-final-skip" }, event.currentTarget)}><Flag size={17} /> Завершить без финала</button>
+            </div>
           </section>
         )}
         {classic?.stage === "reverse" && game.phase === "playing" && (
@@ -838,7 +830,7 @@ export function HostPage() {
         )}
         <div className="host-grid">
           <div className="stack host-main" id="host-play">
-            {isClassicFinal && classic?.final ? <ClassicFinalPanel key={`${game.id}-${classic.final.player}-${classic.final.attemptId ?? "ready"}`} game={game} disabled={disabled} command={command} /> : !isManualTiebreak && <section className="card host-question">
+            {isClassicFinal && classic?.final ? <ClassicFinalPanel key={`${game.id}-${classic.final.player}`} game={game} disabled={disabled} command={command} askConfirmation={askConfirmation} /> : !isManualTiebreak && <section className="card host-question">
               <div className="section-title small">
                 <p className="eyebrow">Вопрос и ответы · Только ведущему</p>
                 <div className="host-question-meta">
@@ -1131,7 +1123,7 @@ export function HostPage() {
                 onClick={() => void command(game.phase === "lobby" ? { type: "start", teamId: firstTeamId } : { type: "next", teamId: firstTeamId })}
               >
                 <Play size={18} />
-                <span>{game.phase === "lobby" ? "Начать игру" : classic && game.questionIndex === 3 ? "Определить финалиста" : !classic && game.questionIndex + 1 >= game.questions.length ? "Завершить по итогам раундов" : "Следующий раунд"}</span>
+                <span>{game.phase === "lobby" ? "Начать игру" : beforeFinal ? "К большой игре" : lastRound ? "Завершить по итогам раундов" : "Следующий раунд"}</span>
               </button>
             ) : game.phase === "finished" ? (
               <button className="button secondary" disabled>
