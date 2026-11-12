@@ -270,6 +270,20 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       if (count === 9) classic = created.json<HostGame>();
     }
     expect(classic).toBeDefined();
+    // Without the big final only the four ordinary rounds are needed.
+    const noFinalRules = { ...payload.rules, finalPlayers: 0 };
+    expect((await call("POST", "/games", { ...payload, rules: noFinalRules }, adminCookie)).statusCode).toBe(400);
+    const noFinal = await call("POST", "/games", {
+      ...payload, rules: noFinalRules, questionIds: payload.questionIds.slice(0, 4),
+    }, adminCookie);
+    expect(noFinal.statusCode, noFinal.body).toBe(200);
+    expect(noFinal.json().rules.finalPlayers).toBe(0);
+    const tuned = await call("POST", "/games", {
+      ...payload, questionIds: payload.questionIds.slice(0, 9),
+      rules: { ...payload.rules, finalTarget: 0, finalSeconds: [30, 0], reverseSeconds: 45 },
+    }, adminCookie);
+    expect(tuned.statusCode, tuned.body).toBe(200);
+    expect(tuned.json().rules).toMatchObject({ finalTarget: 0, finalSeconds: [30, 0], reverseSeconds: 45 });
     let game = classic!;
     const first = await join(game.teams[0]!.joinCode, "Первый капитан");
     const second = await join(game.teams[1]!.joinCode, "Второй капитан");
@@ -282,6 +296,17 @@ describe("real PostgreSQL API: installation, access boundaries and durable gamep
       expect(assigned.statusCode).toBe(200);
       game = assigned.json<HostGame>();
     }
+    // Only the captain renames the team from a phone, and only their own team.
+    const renameUrl = `/games/${game.id}/team-name`;
+    const rename = (name: string, cookie: string, revision = game.revision) =>
+      call("POST", renameUrl, { name, requestId: randomUUID(), revision }, cookie);
+    expect((await rename("Чужое имя", ordinary.cookie)).statusCode).toBe(403);
+    expect((await rename("Вторая команда", first.cookie)).statusCode).toBe(400);
+    const renamed = await rename("Социологи", first.cookie);
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect(renamed.json().teams[0].name).toBe("Социологи");
+    expect(renamed.json().teams[1].name).toBe("Вторая команда");
+    game = (await call("GET", `/games/${game.id}/host`, undefined, adminCookie)).json<HostGame>();
     game = await hostCommand(game, adminCookie, {
       type: "start", teamId: game.teams[0]!.id,
     });

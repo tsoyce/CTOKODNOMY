@@ -183,8 +183,7 @@ describe("classic game across the actual API and persisted state", () => {
     }
     await command({ type: "classic-final-start" });
     for (let i = 0; i < 5; i++) await command({
-      type: "classic-final-answer", questionIndex: i,
-      text: questions[4 + i]!.answers[0]!.text, answerId: questions[4 + i]!.answers[0]!.id,
+      type: "classic-final-pick", questionIndex: i, answerId: questions[4 + i]!.answers[0]!.id,
     });
     await command({ type: "classic-final-stop" });
     expect(state.classic?.final?.score).toBe(200);
@@ -192,21 +191,24 @@ describe("classic game across the actual API and persisted state", () => {
     expect(state.classic?.final?.player).toBe(2);
     await command({ type: "classic-final-start" });
     const repeated = await request("POST", `/games/${state.id}/commands`, {
-      command: { type: "classic-final-answer", questionIndex: 0,
-        text: questions[4]!.answers[0]!.text, answerId: questions[4]!.answers[0]!.id },
+      command: { type: "classic-final-pick", questionIndex: 0, answerId: questions[4]!.answers[0]!.id },
       requestId: randomUUID(), revision: state.revision,
     }, admin);
     expect(repeated.statusCode).toBeGreaterThanOrEqual(400);
+    // The first finalist's answers stay masked on the board while the second plays.
+    audience = await publicGame();
+    expect(audience.body).not.toContain(questions[4]!.answers[0]!.text);
     for (let i = 0; i < 5; i++) await command({
-      type: "classic-final-answer", questionIndex: i,
-      text: questions[4 + i]!.answers[1]!.text, answerId: questions[4 + i]!.answers[1]!.id,
+      type: "classic-final-pick", questionIndex: i, answerId: questions[4 + i]!.answers[1]!.id,
     });
     await command({ type: "classic-final-stop" });
     await command({ type: "classic-final-next" });
     expect(state.phase).toBe("finished");
     expect(state.classic?.final?.score).toBe(325);
     audience = await publicGame();
-    expect(audience.body).not.toContain(questions[4]!.answers[0]!.text);
+    // Only the answers the finalists gave are shown; the rest of the survey is not.
+    expect(audience.body).toContain(questions[4]!.answers[0]!.text);
+    expect(audience.body).not.toContain(questions[4]!.answers[2]!.text);
     const unpublished = await request("GET", `/games/${state.id}/results`);
     expect(unpublished.statusCode).toBeGreaterThanOrEqual(400);
     const preview = await request("GET", `/games/${state.id}/results`, undefined, admin);
@@ -303,15 +305,11 @@ describe("classic game across the actual API and persisted state", () => {
         "UPDATE games SET state=jsonb_set(state, '{classic,final,deadlineAt}', to_jsonb($2::bigint)) WHERE id=$1",
         [state.id, Date.now() - 1000],
       );
-      const expired = await request("POST", `/games/${state.id}/commands`, {
-        command: { type: "classic-final-answer", questionIndex: 0,
-          text: questions[4]!.answers[0]!.text, answerId: questions[4]!.answers[0]!.id },
-        requestId: randomUUID(), revision: state.revision,
-      }, admin);
-      expect(expired.statusCode).toBeGreaterThanOrEqual(400);
-      expect(expired.body).toContain("Время вышло");
-      await command({ type: "classic-final-stop" });
+      // Answers may be marked after the signal; doing so closes the timer.
+      await command({ type: "classic-final-pick", questionIndex: 0, answerId: questions[4]!.answers[0]!.id });
       expect(state.classic?.final?.phase).toBe("review");
+      expect(state.classic?.final?.deadlineAt).toBeNull();
+      expect(state.classic?.final?.score).toBeGreaterThan(0);
     }
   });
 });

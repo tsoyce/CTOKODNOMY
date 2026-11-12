@@ -142,8 +142,66 @@
   border-radius: 12px;
   background: var(--surface-soft);
 }
+.team-duel { justify-items: center; text-align: center; }
 .team-duel > p { margin: 0; }
-.team-duel > .button { min-height: 48px; width: 100%; }
+.team-duel-title { font-size: 1.1rem; line-height: 1.3; overflow-wrap: anywhere; }
+/* The red button. Size and contrast come first: it is pressed in a hurry. */
+.buzzer {
+  --buzzer-color: #e02d1f;
+  --buzzer-shade: #8f150c;
+  position: relative;
+  width: min(72vw, 260px);
+  aspect-ratio: 1;
+  margin: 10px 0 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, #3a3d46 0 62%, #1d1f25 63% 100%);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .35);
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.buzzer-cap {
+  position: absolute;
+  inset: 9%;
+  display: grid;
+  place-items: center;
+  padding: 12%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, color-mix(in srgb, var(--buzzer-color) 70%, #fff) 0, var(--buzzer-color) 45%, var(--buzzer-shade) 100%);
+  box-shadow: 0 12px 0 var(--buzzer-shade), 0 18px 18px rgba(0, 0, 0, .4), inset 0 3px 6px rgba(255, 255, 255, .35);
+  color: #fff;
+  font-size: clamp(1.3rem, 7vw, 2rem);
+  font-weight: 800;
+  line-height: 1.1;
+  text-shadow: 0 2px 3px rgba(0, 0, 0, .45);
+  transform: translateY(-8px);
+  transition: transform .06s ease-out, box-shadow .06s ease-out;
+}
+.buzzer.is-open .buzzer-cap { animation: buzzer-glow 1.3s ease-in-out infinite; }
+.buzzer.is-open:active .buzzer-cap,
+.buzzer.is-sending .buzzer-cap,
+.buzzer.is-won .buzzer-cap,
+.buzzer.is-lost .buzzer-cap {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 var(--buzzer-shade), 0 4px 8px rgba(0, 0, 0, .4), inset 0 3px 6px rgba(255, 255, 255, .25);
+  animation: none;
+}
+.buzzer:focus-visible { outline: 4px solid var(--primary-ink); outline-offset: 4px; }
+.buzzer:disabled { cursor: default; }
+.buzzer.is-won { --buzzer-color: #12a150; --buzzer-shade: #0a5c2e; }
+.buzzer.is-won .buzzer-cap { font-size: clamp(1.1rem, 6vw, 1.6rem); }
+.buzzer.is-lost, .buzzer.is-locked { --buzzer-color: #7a7f8c; --buzzer-shade: #454954; }
+.buzzer.is-lost .buzzer-cap, .buzzer.is-locked .buzzer-cap { font-size: clamp(1rem, 5vw, 1.35rem); }
+@keyframes buzzer-glow {
+  50% { box-shadow: 0 12px 0 var(--buzzer-shade), 0 18px 18px rgba(0, 0, 0, .4), inset 0 3px 6px rgba(255, 255, 255, .35), 0 0 0 14px rgba(224, 45, 31, .18); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .buzzer-cap { animation: none !important; transition: none; }
+}
 .team-page .team-classic-progress {
   margin: 12px 0 0;
   color: var(--text);
@@ -154,3 +212,19 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* While the button is live, keep it on the first screen of the phone. */
+.team-page.is-duel .team-room-nav,
+.team-page.is-duel .team-identity .eyebrow { display: none; }
+.team-page.is-duel .team-identity { margin-bottom: 8px; }
+.team-page.is-duel .team-identity h1 { font-size: 1.25rem; margin-bottom: 2px; }
+.team-page.is-duel .team-question { font-size: 1.1rem; }
+.team-page.is-duel .team-duel { margin-top: 8px; padding: 12px; scroll-margin-top: 8px; }
+/* Phone: keep the room navigation on one line so the game starts higher. */
+@media (max-width: 560px) {
+  .team-page .team-room-nav { flex-wrap: nowrap; gap: 2px; margin-bottom: 14px; padding-bottom: 10px; }
+  .team-page .team-room-nav > a, .team-page .team-room-nav > span { flex: 1 1 auto; padding-inline: 6px; white-space: nowrap; }
+  .team-page .team-room-nav svg:last-child:not(:first-child) { display: none; }
+  .team-page .team-identity h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+}
+.buzzer:disabled { opacity: 1; }
+.buzzer.is-locked, .buzzer.is-lost { filter: saturate(.7); }

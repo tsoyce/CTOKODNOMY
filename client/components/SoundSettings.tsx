@@ -1,15 +1,10 @@
 import { useState } from "react";
 import type { Brand } from "../../shared/types";
 import { api } from "../lib";
+import { soundCatalog } from "./BoardSound";
 import "./SoundSettings.css";
 
-type SoundKey = "soundCorrectUrl" | "soundWrongUrl" | "soundBankUrl" | "soundRepeatUrl";
-const sounds: Array<{ key: SoundKey; label: string }> = [
-  { key: "soundCorrectUrl", label: "Правильный ответ" },
-  { key: "soundWrongUrl", label: "Ошибка" },
-  { key: "soundBankUrl", label: "Банк присуждён" },
-  { key: "soundRepeatUrl", label: "Повтор ответа в финале" },
-];
+type SoundKey = (typeof soundCatalog)[number]["key"];
 
 export function SoundSettings({ brand, onChange, disabled, onUploading }: {
   brand: Brand;
@@ -41,35 +36,42 @@ export function SoundSettings({ brand, onChange, disabled, onUploading }: {
     }
   }
 
+  const custom = soundCatalog.filter(({ key }) => brand[key]).length;
   return (
     <section aria-labelledby="sound-settings-title" className="brand-editor sound-settings">
       <h2 id="sound-settings-title">Звуки игры</h2>
-      <p>Загрузите свои сигналы или оставьте стандартные. Поддерживаются MP3, WAV и OGG до 2 МБ.</p>
+      <p>Для каждого события можно загрузить свой сигнал или оставить стандартный. Поддерживаются MP3, WAV и OGG до 2 МБ. Своих звуков: {custom} из {soundCatalog.length}.</p>
       <p className="muted">После сохранения выключите и снова включите звук на открытом табло — новые сигналы загрузятся без пересоздания игры.</p>
-      <div className="brand-fields-grid">
-        {sounds.map(({ key, label }) => (
-          <div className="field" key={key}>
-            <strong>{label}</strong>
-            <span>{brand[key] ? "Загружен свой звук" : "Стандартный сигнал"}</span>
+      <ul className="sound-list">
+        {soundCatalog.map(({ key, label, hint }) => (
+          <li className={`sound-row ${brand[key] ? "is-custom" : ""}`} key={key}>
+            <div className="sound-row-title">
+              <strong>{label}</strong>
+              <small>{hint}</small>
+            </div>
+            <span className="sound-row-state">{loading === key ? "Загрузка…" : brand[key] ? "Свой звук" : "Стандартный"}</span>
             {brand[key] && <audio controls preload="none" src={brand[key]} aria-label={`Прослушать: ${label}`} />}
-            <label>
-              <span>{loading === key ? "Загрузка…" : brand[key] ? "Заменить файл" : "Выбрать файл"}</span>
-              <input
-                type="file"
-                accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,.mp3,.wav,.ogg"
-                disabled={disabled || Boolean(loading)}
-                aria-label={`Загрузить звук: ${label}`}
-                onChange={(event) => {
-                  const file = event.currentTarget.files?.[0];
-                  event.currentTarget.value = "";
-                  if (file) void upload(key, file);
-                }}
-              />
-            </label>
-            {brand[key] && <button type="button" className="button button-ghost" disabled={disabled || Boolean(loading)} onClick={() => onChange({ ...brand, [key]: "" })}>Вернуть стандартный</button>}
-          </div>
+            <div className="sound-row-actions">
+              <label className="button button-secondary sound-upload">
+                <span>{brand[key] ? "Заменить" : "Загрузить"}</span>
+                <input
+                  type="file"
+                  className="sr-only"
+                  accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,.mp3,.wav,.ogg"
+                  disabled={disabled || Boolean(loading)}
+                  aria-label={`Загрузить звук: ${label}`}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) void upload(key, file);
+                  }}
+                />
+              </label>
+              {brand[key] && <button type="button" className="button button-ghost" disabled={disabled || Boolean(loading)} onClick={() => onChange({ ...brand, [key]: "" })} aria-label={`Вернуть стандартный: ${label}`}>Сбросить</button>}
+            </div>
+          </li>
         ))}
-      </div>
+      </ul>
       {error && <p className="error" role="alert">{error}</p>}
     </section>
   );

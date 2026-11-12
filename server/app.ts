@@ -127,6 +127,14 @@ const brandSchema = z.object({
   soundWrongUrl: soundUrl,
   soundBankUrl: soundUrl,
   soundRepeatUrl: soundUrl,
+  soundStartUrl: soundUrl,
+  soundRoundUrl: soundUrl,
+  soundBuzzUrl: soundUrl,
+  soundStealUrl: soundUrl,
+  soundTimerUrl: soundUrl,
+  soundTimeUpUrl: soundUrl,
+  soundFinishUrl: soundUrl,
+  soundPrizeUrl: soundUrl,
 });
 const usernameSchema = z
   .string()
@@ -143,6 +151,10 @@ const normalizeBrand = (brand: Partial<Brand>): Brand => ({
 const dummyPasswordHash = `scrypt:${"0".repeat(32)}:${"0".repeat(128)}`;
 const rulesSchema = z.object({
   mode: z.enum(["standard", "classic"]).optional(),
+  finalPlayers: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  finalTarget: z.number().int().min(0).max(10_000).optional(),
+  finalSeconds: z.tuple([z.number().int().min(0).max(600), z.number().int().min(0).max(600)]).optional(),
+  reverseSeconds: z.number().int().min(0).max(600).optional(),
   multipliers: z.array(z.number().int().min(1).max(100)).min(1).max(20),
   stealAddsPoints: z.boolean(),
 });
@@ -166,12 +178,13 @@ const hostCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("classic-final-stop") }),
   z.object({ type: z.literal("classic-final-repeat") }),
   z.object({
-    type: z.literal("classic-final-answer"),
+    type: z.literal("classic-final-pick"),
     questionIndex: z.number().int().min(0).max(4),
-    text: z.string().trim().min(1).max(200),
-    answerId: idSchema.nullable().optional(),
+    answerId: idSchema.nullable(),
   }),
-  z.object({ type: z.literal("classic-final-next") }),
+  z.object({ type: z.literal("classic-final-clear"), questionIndex: z.number().int().min(0).max(4) }),
+  z.object({ type: z.literal("classic-final-next"), complete: z.boolean().optional() }),
+  z.object({ type: z.literal("classic-final-skip") }),
   z.object({
     type: z.literal("adjust"),
     teamId: idSchema,
@@ -852,7 +865,9 @@ export async function buildApp(
       .parse(request.body);
     if (new Set(body.questionIds).size !== body.questionIds.length)
       throw new ApiError(400, "Выберите разные вопросы для раундов");
-    if (body.rules?.mode === "classic" && ![9, 10].includes(body.questionIds.length))
+    if (body.rules?.mode === "classic" && body.rules.finalPlayers === 0 && body.questionIds.length !== 4)
+      throw new ApiError(400, "Для классической игры без финала выберите 4 вопроса");
+    if (body.rules?.mode === "classic" && body.rules.finalPlayers !== 0 && ![9, 10].includes(body.questionIds.length))
       throw new ApiError(400, "Для классической игры выберите 9 вопросов и, при желании, дополнительный вопрос для ничьей");
     const state = await transaction(pool, async (client) => {
       const questionRows = await client.query(
@@ -1199,6 +1214,37 @@ export async function buildApp(
         // cannot use their phone. The game engine separately validates phase.
         if (!replay && participant.role !== "captain" && designated?.id !== participant.id)
           throw new ApiError(403, `Кнопка сейчас доступна игроку ${playerIndex} и капитану`, "DUEL_PLAYER_REQUIRED");
+      },
+    );
+    const currentPlayers = await players(pool, id);
+    const currentSelf = currentPlayers.find((p) => p.id === self.id);
+    if (!currentSelf) throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+    return teamView(state, currentSelf, currentPlayers);
+  });
+  // The captain may rename their own team from the phone; the team is always
+  // taken from the session, never from the request.
+  app.post("/api/games/:id/team-name", async (request) => {
+    const id = gameId(request);
+    const self = await requireParticipant(request, id);
+    const body = commandEnvelope.omit({ command: true })
+      .extend({ name: z.string().trim().min(1).max(80) }).strict().parse(request.body);
+    const state = await runCommand(
+      id,
+      `participant:${self.id}`,
+      body.requestId,
+      body.revision,
+      { type: "rename-team", teamId: self.teamId, name: body.name },
+      async (client, game, replay) => {
+        const participant = await client.query(
+          "SELECT role FROM participants WHERE id=$1 AND game_id=$2",
+          [self.id, id],
+        );
+        if (!participant.rowCount)
+          throw new ApiError(403, "Присоединитесь к команде этой игры", "TEAM_REQUIRED");
+        if (participant.rows[0]?.role !== "captain")
+          throw new ApiError(403, "Название команды меняет капитан", "CAPTAIN_REQUIRED");
+        if (!replay && game.phase === "finished")
+          throw new ApiError(409, "Игра уже завершена", "GAME_RULE");
       },
     );
     const currentPlayers = await players(pool, id);

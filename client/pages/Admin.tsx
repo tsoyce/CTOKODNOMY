@@ -495,6 +495,15 @@ export function NewGamePage() {
   ]);
   const [selected, setSelected] = useState<string[]>([]);
   const [gameMode, setGameMode] = useState<"standard" | "classic">("classic");
+  const [finalPlayers, setFinalPlayers] = useState<0 | 1 | 2>(2);
+  // Empty fields keep the classic values; 0 switches a target or a timer off.
+  const [finalTarget, setFinalTarget] = useState("");
+  const [finalSeconds, setFinalSeconds] = useState(["", ""]);
+  const [reverseSeconds, setReverseSeconds] = useState("");
+  const wholeNumber = (value: string, fallback: number, max: number) => {
+    const parsed = value.trim() === "" ? fallback : Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : null;
+  };
   const [modeError, setModeError] = useState("");
   const [multiplierById, setMultiplierById] = useState<Record<string, number>>({});
   const [stealAddsPoints, setStealAddsPoints] = useState(true);
@@ -510,11 +519,22 @@ export function NewGamePage() {
   const save = async (event: FormEvent) => {
     event.preventDefault();
     setFormError("");
-    if (gameMode === "classic" && (selected.length < 9 || selected.slice(0, 9).some((id) => !id))) {
+    const noFinal = gameMode === "classic" && finalPlayers === 0;
+    if (noFinal && selected.slice(0, 4).filter(Boolean).length < 4) {
+      setFormError("Выберите вопросы для всех четырёх раундов.");
+      return;
+    }
+    if (gameMode === "classic" && !noFinal && (selected.length < 9 || selected.slice(0, 9).some((id) => !id))) {
       setFormError("Выберите вопросы для всех четырёх раундов и пяти вопросов финала. Тай-брейк необязателен.");
       return;
     }
-    const selectedQuestions = selected.filter(Boolean);
+    const selectedQuestions = (noFinal ? selected.slice(0, 4) : selected).filter(Boolean);
+    const target = wholeNumber(finalTarget, finalPlayers * 100, 10_000);
+    const timers = [wholeNumber(finalSeconds[0]!, 15, 600), wholeNumber(finalSeconds[1]!, 20, 600), wholeNumber(reverseSeconds, 20, 600)];
+    if (gameMode === "classic" && (target === null || timers.some((value) => value === null))) {
+      setFormError("Цель финала — целое число от 0 до 10000, таймеры — от 0 до 600 секунд. Ноль отключает цель или таймер.");
+      return;
+    }
     if (!selectedQuestions.length) {
       setFormError("Выберите хотя бы один вопрос для игры.");
       return;
@@ -540,7 +560,10 @@ export function NewGamePage() {
               ? selectedQuestions.map((_, index) => index < 3 ? index + 1 : 1)
               : selectedQuestions.map((id) => multiplierById[id] || 1),
             stealAddsPoints: gameMode === "classic" ? true : stealAddsPoints,
-            ...(gameMode === "classic" ? { mode: "classic" } : {}),
+            ...(gameMode === "classic" ? {
+              mode: "classic", finalPlayers, reverseSeconds: timers[2],
+              ...(finalPlayers !== 0 ? { finalTarget: target, finalSeconds: [timers[0], timers[1]] } : {}),
+            } : {}),
           },
         }),
       );
@@ -603,6 +626,48 @@ export function NewGamePage() {
               <option value="classic">Классическая игра · 4 раунда и финал</option>
             </select>
           </label>
+          {gameMode === "classic" && (
+            <label className="field">
+              Большая игра (финал)
+              <select value={finalPlayers} onChange={(event) => setFinalPlayers(Number(event.target.value) as 0 | 1 | 2)}>
+                <option value={2}>Два игрока · цель 200 очков</option>
+                <option value={1}>Один игрок · один тур, цель 100 очков</option>
+                <option value={0}>Без финала · победитель по счёту раундов</option>
+              </select>
+              <small className="muted">Финал можно пропустить или закончить на первом игроке и прямо во время игры — с пульта ведущего.</small>
+            </label>
+          )}
+          {gameMode === "classic" && (
+            <fieldset className="classic-tuning">
+              <legend>Цель и таймеры</legend>
+              <p className="muted">Пустое поле — классическое значение. Ноль отключает цель или таймер. Таймер только подаёт сигнал: ведущий может принимать ответы и после него.</p>
+              <div className="classic-tuning-grid">
+                {finalPlayers !== 0 && (
+                  <label className="field">
+                    Цель финала, очков
+                    <input type="number" inputMode="numeric" min={0} max={10000} step={1} value={finalTarget} placeholder={`${finalPlayers * 100}`} onChange={(event) => setFinalTarget(event.target.value)} />
+                    <small className="muted">0 — играть финал без цели</small>
+                  </label>
+                )}
+                {finalPlayers !== 0 && (
+                  <label className="field">
+                    Таймер {finalPlayers === 2 ? "первого финалиста" : "финалиста"}, с
+                    <input type="number" inputMode="numeric" min={0} max={600} step={1} value={finalSeconds[0]} placeholder="15" onChange={(event) => setFinalSeconds([event.target.value, finalSeconds[1]!])} />
+                  </label>
+                )}
+                {finalPlayers === 2 && (
+                  <label className="field">
+                    Таймер второго финалиста, с
+                    <input type="number" inputMode="numeric" min={0} max={600} step={1} value={finalSeconds[1]} placeholder="20" onChange={(event) => setFinalSeconds([finalSeconds[0]!, event.target.value])} />
+                  </label>
+                )}
+                <label className="field">
+                  Таймер игры наоборот, с
+                  <input type="number" inputMode="numeric" min={0} max={600} step={1} value={reverseSeconds} placeholder="20" onChange={(event) => setReverseSeconds(event.target.value)} />
+                </label>
+              </div>
+            </fieldset>
+          )}
           {modeError && <ErrorMessage message={modeError} />}
           <div className="form-grid">
             {teams.map((team, index) => (
@@ -659,7 +724,7 @@ export function NewGamePage() {
               <h2>
                 <span className="step-number">02</span> Вопросы и раунды
               </h2>
-              <span className="badge">Выбрано: {selected.filter(Boolean).length}</span>
+              <span className="badge">Выбрано: {(gameMode === "classic" && finalPlayers === 0 ? selected.slice(0, 4) : selected).filter(Boolean).length}</span>
             </div>
           }
         >
@@ -690,6 +755,7 @@ export function NewGamePage() {
               selected={selected}
               multiplierById={multiplierById}
               mode={gameMode}
+              classicFinal={finalPlayers !== 0}
               onSelectionChange={changeSelection}
               onMultiplierChange={(id, multiplier) => setMultiplierById((current) => ({ ...current, [id]: multiplier }))}
             />

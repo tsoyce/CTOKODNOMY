@@ -2443,12 +2443,16 @@ test("organizer uploads, previews and restores custom game sounds", async ({ pag
   wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32);
   wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(samples * 2, 40);
   await section.getByLabel("Загрузить звук: Правильный ответ").setInputFiles({ name: "signal.wav", mimeType: "audio/wav", buffer: wav });
+  // Signals that used to have no setting can carry their own sound as well.
+  await section.getByLabel("Загрузить звук: Красная кнопка").setInputFiles({ name: "buzz.wav", mimeType: "audio/wav", buffer: wav });
+  await expect(section.getByLabel("Прослушать: Красная кнопка")).toHaveAttribute("src", /^\/media\/.+\.wav$/);
   const player = section.getByLabel("Прослушать: Правильный ответ");
   await expect(player).toBeVisible();
   await expect(player).toHaveAttribute("src", /^\/media\/.+\.wav$/);
   await page.getByRole("button", { name: "Сохранить оформление" }).click();
   await expect(page.getByRole("status")).toContainText("сохранены");
   expect((await (await page.request.get("/api/settings")).json()).soundCorrectUrl).toMatch(/^\/media\/.+\.wav$/);
+  expect((await (await page.request.get("/api/settings")).json()).soundBuzzUrl).toMatch(/^\/media\/.+\.wav$/);
   await page.reload();
   await expect(section.getByLabel("Прослушать: Правильный ответ")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 844 });
@@ -2456,7 +2460,7 @@ test("organizer uploads, previews and restores custom game sounds", async ({ pag
   await section.scrollIntoViewIfNeeded();
   await mkdir(path.resolve("test-results"), { recursive: true });
   await page.screenshot({ path: "test-results/sound-settings-mobile.png", fullPage: true });
-  await section.getByRole("button", { name: "Вернуть стандартный" }).click();
+  await section.getByRole("button", { name: "Вернуть стандартный: Правильный ответ" }).click();
   await page.getByRole("button", { name: "Сохранить оформление" }).click();
   await expect.poll(async () => (await (await page.request.get("/api/settings")).json()).soundCorrectUrl).toBe("");
 });
@@ -2492,7 +2496,7 @@ test("classic host console handles a duel and the two-player final on a phone", 
     title: "Классическая игра",
     questionIds: questions.map((question) => question.id),
     teams: [{ name: "Исследователи", color: "#1646a0" }, { name: "Аналитики", color: "#8146c3" }],
-    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true },
+    rules: { mode: "classic", multipliers: [1, 2, 3], stealAddsPoints: true, finalTarget: 150, finalSeconds: [30, 25] },
   } });
   expect(created.ok()).toBe(true);
   const game = await created.json() as HostGame;
@@ -2501,6 +2505,11 @@ test("classic host console handles a duel and the two-player final on a phone", 
   await page.getByRole("button", { name: "Начать игру", exact: true }).click();
   const duel = page.getByRole("region", { name: "Розыгрыш права хода", exact: true });
   await expect(duel).toBeVisible();
+  // The pencil next to a score renames the team without leaving the console.
+  await page.getByRole("button", { name: "Переименовать команду Аналитики", exact: true }).click();
+  await page.getByLabel("Новое название команды Аналитики", { exact: true }).fill("Статистики");
+  await page.getByLabel("Новое название команды Аналитики", { exact: true }).press("Enter");
+  await expect(page.getByRole("button", { name: "Переименовать команду Статистики", exact: true })).toBeVisible();
   await duel.getByRole("button", { name: "Исследователи нажала первой", exact: true }).click();
   await page.locator(".host-answer").first().getByRole("button", { name: "Открыть", exact: true }).click();
   await expect(page.locator(".host-answer").first().getByRole("button", { name: "Открыт", exact: true })).toBeDisabled();
@@ -2530,25 +2539,26 @@ test("classic host console handles a duel and the two-player final on a phone", 
 
   const final = page.getByRole("region", { name: "Большая игра", exact: true });
   await expect(final).toBeVisible();
-  await expect(final.getByRole("list", { name: "Вопросы финала" }).locator("li")).toHaveCount(5);
-  await final.getByRole("button", { name: "Начать: 15 секунд", exact: true }).click();
-  let first = final.locator("form.host-final-answer").first();
-  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[0]!.text);
-  await first.getByLabel("Ответ игрока", { exact: true }).press("Enter");
-  await expect(final.locator("form.host-final-answer").nth(1).getByLabel("Ответ игрока", { exact: true })).toBeFocused();
+  await expect(final.locator(".host-final-question")).toHaveCount(5);
+  await expect(final.getByLabel("Набрано 0 из 150 очков")).toBeVisible();
+  await final.getByRole("button", { name: "Запустить таймер · 30 с", exact: true }).click();
+  // The host only taps what the finalist said; nothing is typed.
+  let first = final.getByRole("group", { name: "Вопрос 1: ответ игрока", exact: true });
+  await first.getByRole("button", { name: new RegExp(questions[4]!.answers[0]!.text) }).click();
+  await expect(first.getByRole("button", { name: new RegExp(questions[4]!.answers[0]!.text) })).toHaveAttribute("aria-pressed", "true");
+  const second = final.getByRole("group", { name: "Вопрос 2: ответ игрока", exact: true });
+  await second.getByRole("button", { name: /Нет в опросе/ }).click();
+  await expect(final.getByText("Отмечено 2 из 5", { exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/classic-final-answering-mobile.png" });
-  await final.getByRole("button", { name: "Остановить и проверить", exact: true }).click();
-  await first.getByRole("combobox", { name: "Совпадение в опросе", exact: true }).selectOption(questions[4]!.answers[0]!.id);
-  await first.getByRole("button", { name: "Сохранить ответ", exact: true }).click();
+  await final.getByRole("button", { name: "Остановить таймер", exact: true }).click();
   await final.getByRole("button", { name: "Следующий игрок", exact: true }).click();
-  await final.getByRole("button", { name: "Начать: 20 секунд", exact: true }).click();
-  first = final.locator("form.host-final-answer").first();
-  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[0]!.text);
-  await expect(first.getByRole("alert")).toContainText("уже назвал первый игрок");
-  await first.getByLabel("Ответ игрока", { exact: true }).fill(questions[4]!.answers[1]!.text);
-  await final.getByRole("button", { name: "Остановить и проверить", exact: true }).click();
-  await first.getByRole("combobox", { name: "Совпадение в опросе", exact: true }).selectOption(questions[4]!.answers[1]!.id);
-  await first.getByRole("button", { name: "Сохранить ответ", exact: true }).click();
+  await final.getByRole("button", { name: "Запустить таймер · 25 с", exact: true }).click();
+  first = final.getByRole("group", { name: "Вопрос 1: ответ игрока", exact: true });
+  // The first finalist's answer cannot be chosen again: tapping it signals a repeat.
+  await first.getByRole("button", { name: new RegExp(questions[4]!.answers[0]!.text) }).click();
+  await expect.poll(async () => ((await (await page.request.get(`/api/games/${game.id}/host`)).json()) as HostGame).events.at(-1)?.type).toBe("classic-final-repeat");
+  await first.getByRole("button", { name: new RegExp(questions[4]!.answers[1]!.text) }).click();
+  await expect(first.getByRole("button", { name: new RegExp(questions[4]!.answers[1]!.text) })).toHaveAttribute("aria-pressed", "true");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   await page.screenshot({ path: "test-results/classic-final-mobile.png" });
   await final.getByRole("button", { name: "Завершить большую игру", exact: true }).click();
@@ -2588,12 +2598,23 @@ test("classic board and captain phone follow each stage without leaking final an
     const phone = await mobile.newPage();
     await board.goto(`/board/${game.id}`);
     await phone.goto(`/team/${game.id}`);
+    // The captain renames their own team from the phone; every screen follows.
+    await phone.getByRole("button", { name: "Переименовать команду Первая", exact: true }).click();
+    await phone.getByLabel("Новое название команды Первая", { exact: true }).fill("Социологи");
+    await phone.getByRole("button", { name: "Сохранить название", exact: true }).click();
+    await expect(board.getByText("Социологи", { exact: true }).first()).toBeVisible();
+    await phone.getByRole("button", { name: "Переименовать команду Социологи", exact: true }).click();
+    await phone.getByLabel("Новое название команды Социологи", { exact: true }).fill("Первая");
+    await phone.getByLabel("Новое название команды Социологи", { exact: true }).press("Enter");
+    await expect(board.getByText("Первая", { exact: true }).first()).toBeVisible();
     await hostDecision(page, game.id, { type: "start", teamId: game.teams[0]!.id });
     await expect(board.getByText("Раунд 1 / 5", { exact: true })).toBeVisible();
-    const buzz = phone.getByRole("button", { name: "Мы готовы отвечать" });
+    const buzz = phone.getByRole("button", { name: "Красная кнопка: ответить первыми" });
     await expect(buzz).toBeVisible();
-    await expectReadablePhoneControl(buzz);
+    expect((await buzz.boundingBox())!.width).toBeGreaterThanOrEqual(180);
+    await phone.screenshot({ path: "test-results/classic-buzzer-phone.png", fullPage: true });
     await buzz.click();
+    await expect(phone.getByText("Ваша команда нажала первой!")).toBeVisible();
     await expect(board.getByText("Отвечает команда «Первая»")).toBeVisible();
     await hostDecision(page, game.id, { type: "reveal", answerId: questions[0]!.answers[0]!.id });
     await expect(phone.getByText(/отвечает игрок 2/i)).toBeVisible();
@@ -2618,10 +2639,11 @@ test("classic board and captain phone follow each stage without leaking final an
     await expect(board.getByRole("heading", { name: "Большая игра" })).toBeVisible();
     await hostDecision(page, game.id, { type: "classic-final-start" });
     await expect(board.getByRole("timer")).toBeVisible();
-    await hostDecision(page, game.id, { type: "classic-final-answer", questionIndex: 0,
-      text: questions[4]!.answers[0]!.text, answerId: questions[4]!.answers[0]!.id });
+    await hostDecision(page, game.id, { type: "classic-final-pick", questionIndex: 0, answerId: questions[4]!.answers[0]!.id });
+    // The marked answer appears on the board; the question and the rest of the survey do not.
+    await expect(board.getByLabel("Ответы финалистов").getByText(questions[4]!.answers[0]!.text, { exact: true })).toBeVisible();
     const publicState = await (await guest.request.get(`/api/games/${game.id}/public`)).json() as PublicGame;
-    for (const hidden of [questions[4]!.prompt, questions[4]!.answers[0]!.text]) {
+    for (const hidden of [questions[4]!.prompt, questions[4]!.answers[1]!.text]) {
       expect(JSON.stringify(publicState)).not.toContain(hidden);
       await expect(board.locator("body")).not.toContainText(hidden);
       await expect(phone.locator("body")).not.toContainText(hidden);
@@ -2629,7 +2651,10 @@ test("classic board and captain phone follow each stage without leaking final an
     await board.screenshot({ path: "test-results/classic-final-board.png" });
     await hostDecision(page, game.id, { type: "classic-final-stop" });
     await hostDecision(page, game.id, { type: "classic-final-next" });
-    await expect(board.getByText("Игрок 2 из 2")).toBeVisible();
+    await expect(board.getByText(/игрок 2 из 2/)).toBeVisible();
+    // While the second finalist plays, the first one's answers are masked.
+    await expect(board.locator("body")).not.toContainText(questions[4]!.answers[0]!.text);
+    expect(JSON.stringify(await (await guest.request.get(`/api/games/${game.id}/public`)).json())).not.toContain(questions[4]!.answers[0]!.text);
     await hostDecision(page, game.id, { type: "classic-final-start" });
     await hostDecision(page, game.id, { type: "classic-final-stop" });
     await hostDecision(page, game.id, { type: "classic-final-next" });

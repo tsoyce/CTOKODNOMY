@@ -75,8 +75,8 @@ function ClassicFinalResults({ final, teams }: { final: NonNullable<PublicGameRe
   return (
     <section className="results-classic-final" aria-labelledby="results-classic-final-heading">
       <div className="results-classic-final-heading">
-        <div><h2 id="results-classic-final-heading">Большая игра</h2><p>{team?.name ?? "Команда финалистов"} · {final.superPrize ? "Суперприз выигран" : "Меньше 200 очков"}</p></div>
-        <strong>{number.format(final.score)} <small>очков · цель 200</small></strong>
+        <div><h2 id="results-classic-final-heading">Большая игра</h2><p>{team?.name ?? "Команда финалистов"} · {final.superPrize ? "Суперприз выигран" : (final.target ?? 200) > 0 ? `Меньше ${final.target ?? 200} очков` : "Игра без цели по очкам"}</p></div>
+        <strong>{number.format(final.score)} <small>{(final.target ?? 200) > 0 ? `очков · цель ${final.target ?? 200}` : "очков"}</small></strong>
       </div>
       <p>Ответы на пять вопросов финала. Показаны сохранённые веса опроса; они могут отличаться от игровых очков.</p>
       <div className="results-final-questions">

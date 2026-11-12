@@ -17,6 +17,14 @@ export interface Brand {
   soundWrongUrl: string;
   soundBankUrl: string;
   soundRepeatUrl: string;
+  soundStartUrl: string;
+  soundRoundUrl: string;
+  soundBuzzUrl: string;
+  soundStealUrl: string;
+  soundTimerUrl: string;
+  soundTimeUpUrl: string;
+  soundFinishUrl: string;
+  soundPrizeUrl: string;
 }
 export const defaultBrand: Brand = {
   title: "100 к 1",
@@ -38,6 +46,14 @@ export const defaultBrand: Brand = {
   soundWrongUrl: "",
   soundBankUrl: "",
   soundRepeatUrl: "",
+  soundStartUrl: "",
+  soundRoundUrl: "",
+  soundBuzzUrl: "",
+  soundStealUrl: "",
+  soundTimerUrl: "",
+  soundTimeUpUrl: "",
+  soundFinishUrl: "",
+  soundPrizeUrl: "",
 };
 export interface Answer {
   id: string;
@@ -88,6 +104,14 @@ export interface Rules {
   stealAddsPoints: boolean;
   /** Older games omit mode and retain the original flexible rules. */
   mode?: "standard" | "classic";
+  /** Classic big final: two players, one player, or no final. Absent means two. */
+  finalPlayers?: 0 | 1 | 2;
+  /** Points for the super prize; 0 plays the final without a target. Absent: 100 per finalist. */
+  finalTarget?: number;
+  /** Seconds for the first and the second finalist; 0 switches the timer off. Absent: 15 and 20. */
+  finalSeconds?: [number, number];
+  /** Seconds per team in the reverse round; 0 switches the timer off. Absent: 20. */
+  reverseSeconds?: number;
 }
 export interface ClassicFinalEntry {
   text: string;
@@ -123,12 +147,21 @@ export interface ClassicState {
     remainingMs: number | null;
     entries: [Array<ClassicFinalEntry | null>, Array<ClassicFinalEntry | null>];
     score: number;
+    /** Number of finalists; absent in games saved before the setting existed. */
+    players?: 1 | 2;
+    /** Points needed for the super prize; 0 means no target, absent means 200. */
+    target?: number;
   } | null;
 }
+/** What the public board should signal for the latest host decision. */
+export type SoundCue =
+  | "reveal" | "strike" | "repeat" | "buzz" | "start" | "round"
+  | "steal" | "timer" | "finish" | "prize";
 export interface GameEvent {
   id: string;
   type: string;
   message: string;
+  cue?: SoundCue;
   createdAt: string;
 }
 export interface RoundResult {
@@ -219,7 +252,7 @@ export interface PublicGame {
   brand: Brand;
   teams: PublicTeam[];
   revision: number;
-  lastAction?: "reveal" | "strike" | "repeat" | null;
+  lastAction?: SoundCue | null;
   lastActionEventId?: string;
   phase: Phase;
   paused: boolean;
@@ -241,9 +274,19 @@ export interface PublicGame {
     activePlayerIndex?: number | null;
     duel: ClassicState["duel"];
     reverse: ClassicState["reverse"];
-    final: Pick<NonNullable<ClassicState["final"]>, "teamId" | "player" | "phase" | "deadlineAt" | "remainingMs" | "score"> | null;
+    final: (Pick<NonNullable<ClassicState["final"]>, "teamId" | "player" | "phase" | "deadlineAt" | "remainingMs" | "score"> & {
+      players: 1 | 2;
+      /** 0 when the final is played without a target. */
+      target: number;
+      /** Seconds on the current finalist's timer; 0 when the timer is off. */
+      duration: number;
+      /** Five rows of the finalists' answers as the host marks them. */
+      rows: Array<[PublicFinalCell | null, PublicFinalCell | null]>;
+    }) | null;
   };
 }
+/** A marked final answer; the first finalist's cells are masked while the second plays. */
+export type PublicFinalCell = { hidden: true } | { hidden?: false; text: string; points: number };
 export interface PublicGameResults {
   id: string;
   title: string;
@@ -259,6 +302,7 @@ export interface PublicGameResults {
   classicFinal?: {
     teamId: string;
     score: number;
+    target: number;
     superPrize: boolean;
     questions: PublicFinalQuestion[];
   };
@@ -300,8 +344,12 @@ export type HostCommand =
   | { type: "classic-final-start" }
   | { type: "classic-final-stop" }
   | { type: "classic-final-repeat" }
-  | { type: "classic-final-answer"; questionIndex: number; text: string; answerId?: string | null }
-  | { type: "classic-final-next" };
+  /** Mark what the finalist said: a survey answer, or null for "not in the survey". */
+  | { type: "classic-final-pick"; questionIndex: number; answerId: string | null }
+  | { type: "classic-final-clear"; questionIndex: number }
+  /** `complete` ends the final after the current finalist. */
+  | { type: "classic-final-next"; complete?: boolean }
+  | { type: "classic-final-skip" };
 export type GameCommand =
   | HostCommand
   | {

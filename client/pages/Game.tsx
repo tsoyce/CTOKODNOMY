@@ -42,13 +42,13 @@ import "./Game.css";
 import "./BoardClassic.css";
 import "./TeamRoom.css";
 
-import { Connection, GameUnavailable, TeamScores, Strikes, RoundMeta } from "../components/GameCommon";
+import { Connection, GameUnavailable, TeamNameInline, TeamScores, Strikes, RoundMeta } from "../components/GameCommon";
 
 function GameRoundMeta({ game, children }: { game: PublicGame; children?: ReactNode }) {
   if (!game.classic) return <RoundMeta game={game}>{children}</RoundMeta>;
   const label = game.classic.stage === "final" ? "Большая игра"
     : game.classic.stage === "tiebreak" ? "Дополнительный вопрос"
-    : `Раунд ${Math.min(game.questionIndex + 1, 4)} / 5`;
+    : `Раунд ${Math.min(game.questionIndex + 1, 4)} / ${game.totalRounds}`;
   return (
     <div className="round-meta">
       <span>{label}</span>
@@ -86,29 +86,83 @@ function ClassicFinalBoard({ game }: { game: PublicGame }) {
   }, [final?.deadlineAt, final?.phase]);
   if (!final) return null;
   const team = game.teams.find((candidate) => candidate.id === final.teamId);
-  const duration = final.player === 1 ? 15 : 20;
-  const seconds = final.phase === "ready" ? duration : final.remainingMs !== null
+  const duration = final.duration ?? (final.player === 1 ? 15 : 20);
+  const seconds = duration === 0 ? null : final.phase === "ready" ? duration : final.phase !== "answering" ? null : final.remainingMs !== null
     ? Math.max(0, Math.ceil(final.remainingMs / 1000))
     : final.deadlineAt !== null ? Math.max(0, Math.ceil((final.deadlineAt - now) / 1000)) : null;
-  const status = game.paused ? "Пауза" : final.phase === "ready" ? "Готовимся к старту"
+  const status = game.paused ? "Пауза" : final.phase === "ready" ? (final.player === 1 ? "Готовимся к старту" : "Приглашаем второго игрока")
     : final.phase === "answering" ? (seconds === 0 ? "Время вышло" : "Игрок отвечает")
-      : final.phase === "review" ? "Проверяем ответы" : "Ответы проверены";
+      : "Смотрим ответы";
+  const columns = final.players === 2 ? [0, 1] as const : [0] as const;
+  const reached = final.target > 0 && final.score >= final.target;
   return (
-    <section className="classic-final-board" aria-label="Финал">
-      <h1>Большая игра</h1>
-      <p className="classic-final-team">Команда «{team?.name ?? "Финалисты"}»</p>
-      <div className="classic-final-status" role="status">{status}</div>
-      <p className="classic-final-player">Игрок {final.player} из 2</p>
-      {final.player === 2 && final.phase === "ready" && (
-        <p className="classic-final-player">Первый игрок набрал {final.score} очков</p>
-      )}
-      {seconds !== null && final.phase !== "complete" && (
-        <div className="classic-final-clock" role="timer" aria-label={`Осталось ${seconds} секунд`}>
-          <span>{seconds}</span><small>секунд</small>
+    <section className="classic-final-board" aria-label="Финал" data-players={final.players}>
+      <header className="classic-final-header">
+        <div>
+          <h1>Большая игра</h1>
+          <p className="classic-final-team">Команда «{team?.name ?? "Финалисты"}»{final.players === 2 ? ` · игрок ${final.player} из 2` : ""}</p>
         </div>
-      )}
-      <p className="classic-final-goal">Цель команды — 200 очков</p>
+        <div className="classic-final-status" role="status">{status}</div>
+        {seconds !== null && (
+          <div className={`classic-final-clock ${seconds === 0 ? "is-over" : ""}`} role="timer" aria-label={`Осталось ${seconds} секунд`}>
+            <span>{seconds}</span><small>сек.</small>
+          </div>
+        )}
+      </header>
+      <ol className="classic-final-rows" aria-label="Ответы финалистов">
+        {final.rows.map((row, index) => (
+          <li key={index}>
+            <span className="classic-final-number">{index + 1}</span>
+            {columns.map((column) => {
+              const cell = row[column];
+              const active = column === final.player - 1 && final.phase !== "complete";
+              return (
+                <div
+                  key={column}
+                  className={`classic-final-cell ${cell ? (cell.hidden ? "is-masked" : cell.points > 0 ? "is-hit" : "is-miss") : "is-empty"} ${active ? "is-active" : ""}`}
+                  aria-label={!cell ? `Игрок ${column + 1}, вопрос ${index + 1}: ответа пока нет`
+                    : cell.hidden ? `Игрок ${column + 1}, вопрос ${index + 1}: ответ скрыт`
+                    : `Игрок ${column + 1}, вопрос ${index + 1}: ${cell.text}, ${cell.points} очков`}
+                >
+                  <span className="classic-final-text">{!cell ? "" : cell.hidden ? "• • •" : cell.text}</span>
+                  <strong className="classic-final-points">{cell && !cell.hidden ? cell.points : ""}</strong>
+                </div>
+              );
+            })}
+          </li>
+        ))}
+      </ol>
+      <footer className={`classic-final-total ${reached ? "is-reached" : ""}`}>
+        <span>{reached ? "Цель достигнута!" : final.target > 0 ? `Цель — ${final.target} очков` : "Набрано очков"}</span>
+        <strong>{final.score}</strong>
+      </footer>
     </section>
+  );
+}
+
+/** The red button: whichever team presses first answers first. */
+function Buzzer({ state, busy, onPress }: {
+  state: "open" | "sending" | "won" | "lost" | "locked";
+  busy: boolean;
+  onPress: () => void;
+}) {
+  const label = state === "open" ? "Жми!" : state === "sending" ? "…" : state === "won" ? "Вы первые!" : state === "lost" ? "Соперники быстрее" : "Не ваш ход";
+  return (
+    <button
+      type="button"
+      className={`buzzer is-${state}`}
+      disabled={state !== "open" || busy}
+      aria-label={state === "open" ? "Красная кнопка: ответить первыми" : label}
+      onPointerDown={(event) => {
+        // React to the touch itself rather than the delayed click.
+        if (event.button !== 0 || state !== "open" || busy) return;
+        try { navigator.vibrate?.(60); } catch { /* vibration is optional */ }
+        onPress();
+      }}
+      onClick={(event) => { if (event.detail === 0) onPress(); }}
+    >
+      <span className="buzzer-cap"><span>{label}</span></span>
+    </button>
   );
 }
 
@@ -301,8 +355,8 @@ export function BoardPage() {
             </h2>
             {game.classic?.final?.phase === "complete" && (
               <p className="classic-final-result">
-                Большая игра: <strong>{game.classic.final.score}</strong> из 200 очков
-                {game.classic.final.score >= 200 ? " · Суперприз!" : ""}
+                Большая игра: <strong>{game.classic.final.score}</strong>{game.classic.final.target > 0 ? ` из ${game.classic.final.target}` : ""} очков
+                {game.classic.final.target > 0 && game.classic.final.score >= game.classic.final.target ? " · Суперприз!" : ""}
               </p>
             )}
             <p>Спасибо за ваши идеи, азарт и командную работу.</p>
@@ -405,8 +459,14 @@ export function BoardPage() {
                   ))}
                 </div>
                 {isDuel || isReverse ? (
-                  <div className="classic-round-status" role="status">
-                    <span>{isDuel ? (duelTeam ? `Отвечает команда «${duelTeam.name}»` : "Команды готовы к розыгрышу") : `Отвечает команда «${activeTeam?.name ?? "—"}»`}</span>
+                  <div
+                    className={`classic-round-status ${isDuel ? (duelTeam ? "is-buzzed" : "is-armed") : ""}`}
+                    role="status"
+                    style={{ "--team-color": (isDuel ? duelTeam : activeTeam)?.color } as CSSProperties}
+                    key={isDuel ? duelTeam?.id ?? "armed" : "reverse"}
+                  >
+                    {isDuel && <span className="classic-buzz-lamp" aria-hidden="true" />}
+                    <span>{isDuel ? (duelTeam ? `Отвечает команда «${duelTeam.name}»` : "Кто первым нажмёт красную кнопку?") : `Отвечает команда «${activeTeam?.name ?? "—"}»`}</span>
                     {isDuel && game.classic?.duel?.playerIndex != null && <span>Игрок {game.classic.duel.playerIndex}</span>}
                     {isReverse && <Countdown deadlineAt={game.classic?.reverse?.deadlineAt} remainingMs={game.classic?.reverse?.remainingMs} />}
                   </div>
@@ -568,6 +628,7 @@ export function TeamPage() {
   const duelPlayerIndex = game.classic?.duel?.playerIndex ?? 1;
   const designatedDuelPlayer = positions.get(game.self.id) === duelPlayerIndex;
   const canBuzz = isCaptain || designatedDuelPlayer;
+  const buzzedTeamId = game.classic?.duel?.awaitingTeamId ?? game.classic?.duel?.firstTeamId ?? null;
   const isFinal = game.classic?.stage === "final";
   const individualPlay = game.classic?.stage === "play" && game.phase === "playing";
   const canSend =
@@ -628,6 +689,24 @@ export function TeamPage() {
       setBusy(null);
     }
   }
+  async function renameTeam(name: string) {
+    if (!game) return;
+    setSendError("");
+    setNotice("");
+    try {
+      await api<TeamGame>(`/games/${game.id}/team-name`, {
+        method: "POST",
+        body: JSON.stringify({ name, requestId: crypto.randomUUID(), revision: game.revision }),
+      });
+      await refresh();
+      setNotice("Название команды изменено на всех экранах.");
+    } catch (err) {
+      await refresh();
+      setSendError(err instanceof ApiError && err.status === 409
+        ? "Игра успела измениться. Попробуйте переименовать команду ещё раз."
+        : err instanceof Error ? err.message : "Не удалось изменить название команды.");
+    }
+  }
   async function buzz() {
     if (!game || !canBuzz || !buzzOpen || game.paused || !connected || !!error || sendInFlight.current) return;
     sendInFlight.current = true;
@@ -643,12 +722,12 @@ export function TeamPage() {
       });
       lastBuzz.current = null;
       await refresh();
-      setNotice("Сигнал отправлен ведущему.");
+      setNotice("");
     } catch (err) {
       if (err instanceof ApiError && err.status < 500) lastBuzz.current = null;
       await refresh();
       setSendError(err instanceof ApiError && err.status === 409
-        ? "Состояние игры изменилось. Посмотрите, какая команда отвечает."
+        ? ""
         : err instanceof Error ? err.message : "Сигнал не подтверждён. Проверьте состояние игры.");
     } finally {
       sendInFlight.current = false;
@@ -675,7 +754,7 @@ export function TeamPage() {
   const displayBrand = resolveAppearance(game.brand);
   return (
     <main
-      className="team-page"
+      className={`team-page ${isDuel ? "is-duel" : ""}`}
       style={brandStyle(displayBrand)}
       data-theme={isLightBrand(displayBrand) ? "light" : "dark"}
     >
@@ -708,7 +787,9 @@ export function TeamPage() {
           <p className="eyebrow">{game.title}</p>
           <h1 style={{ "--team-color": team?.color } as CSSProperties}>
             <span className="team-color-dot" />
-            {team?.name}
+            {isCaptain && team && game.phase !== "finished"
+              ? <TeamNameInline name={team.name} disabled={!connected || !!error} onRename={renameTeam} />
+              : team?.name}
           </h1>
           <p>
             {game.self.name}{" "}
@@ -773,6 +854,12 @@ export function TeamPage() {
             <>
               <GameRoundMeta game={game} />
               <h2 className="team-question">{isFinal ? "Большая игра" : game.prompt}</h2>
+              {isFinal && game.classic?.final && (
+                <div className="team-bank-row">
+                  <span>Набрано: <strong>{game.classic.final.score}</strong></span>
+                  {game.classic.final.target > 0 && <span>Цель: <strong>{game.classic.final.target}</strong></span>}
+                </div>
+              )}
               {!isFinal && (
                 <div className="team-bank-row">
                   <span>Банк: <strong>{game.bank}</strong></span>
@@ -787,19 +874,28 @@ export function TeamPage() {
               )}
               {isDuel && (
                 <div className="team-duel" role="region" aria-label="Розыгрыш хода">
-                  <strong>{buzzOpen ? "Кто ответит первым?" : "Сигнал получен"}</strong>
+                  <strong className="team-duel-title" role="status">
+                    {buzzOpen ? "Кто ответит первым?"
+                      : buzzedTeamId === game.self.teamId ? "Ваша команда нажала первой!"
+                      : buzzedTeamId ? `Первой нажала команда «${game.teams.find((item) => item.id === buzzedTeamId)?.name ?? "соперников"}»`
+                      : "Ждём сигнала"}
+                  </strong>
+                  <Buzzer
+                    state={game.paused || !connected || !!error ? "locked"
+                      : busy === "buzz" ? "sending"
+                      : buzzOpen ? (canBuzz ? "open" : "locked")
+                      : buzzedTeamId === game.self.teamId ? "won"
+                      : buzzedTeamId ? "lost" : "locked"}
+                    busy={!!busy}
+                    onPress={() => void buzz()}
+                  />
                   <p className="form-hint">
                     {buzzOpen
-                      ? designatedDuelPlayer ? `Ваш выход: игрок ${duelPlayerIndex} подаёт сигнал.`
-                        : isCaptain ? `Вы можете подать сигнал за игрока ${duelPlayerIndex}, если ему нужна помощь.`
-                        : `Сигнал подаёт игрок ${duelPlayerIndex}; капитан может помочь.`
-                      : "Следите за указаниями ведущего."}
+                      ? designatedDuelPlayer ? `Ваш выход: вы игрок ${duelPlayerIndex}. Жмите, как только готовы ответить!`
+                        : isCaptain ? `К кнопке выходит игрок ${duelPlayerIndex}. Как капитан, вы можете нажать за него.`
+                        : `Сейчас кнопку жмёт игрок ${duelPlayerIndex} или капитан.`
+                      : ownTurn ? "Назовите ответ ведущему." : "Следите за указаниями ведущего."}
                   </p>
-                  {canBuzz && buzzOpen && (
-                    <button className="button primary" type="button" disabled={!!busy || game.paused || !connected || !!error} onClick={() => void buzz()}>
-                      {busy === "buzz" ? "Отправляем сигнал…" : "Мы готовы отвечать"}
-                    </button>
-                  )}
                 </div>
               )}
               <p className="form-hint">
@@ -808,7 +904,7 @@ export function TeamPage() {
                   : isDuel
                     ? "Ведущий разыгрывает право первого хода."
                   : isFinal
-                    ? "Финальные ответы записывает ведущий."
+                    ? "Финалисты отвечают ведущему. Ответы и очки — на общем табло."
                   : individualPlay
                     ? "Игроки отвечают по очереди без совещания. Ведущий отмечает ответы."
                   : game.phase === "round-result"

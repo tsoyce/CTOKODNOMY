@@ -106,19 +106,32 @@ describe("Классические правила", () => {
     expect(JSON.stringify(publicView(game))).not.toContain("Ответ 5-0");
     game = play(game, { type: "classic-final-start" }, { type: "classic-final-stop" });
     for (let index = 0; index < 5; index++)
-      game = play(game, { type: "classic-final-answer", questionIndex: index, text: `Ответ ${index}`, answerId: `q${index + 5}-0` });
+      game = play(game, { type: "classic-final-pick", questionIndex: index, answerId: `q${index + 5}-0` });
     expect(game.classic?.final?.score).toBe(250);
-    game = play(game, { type: "classic-final-next" }, { type: "classic-final-start" }, { type: "classic-final-stop" });
+    expect(publicView(game).lastAction).toBe("reveal");
+    expect(publicView(game).classic?.final?.rows[0]![0]).toEqual({ text: "Ответ 5-0", points: 50 });
+    game = play(game, { type: "classic-final-pick", questionIndex: 4, answerId: null });
+    expect(game.classic?.final?.score).toBe(200);
+    expect(publicView(game).lastAction).toBe("strike");
+    game = play(game, { type: "classic-final-clear", questionIndex: 4 });
+    expect(game.classic?.final?.entries[0][4]).toBeNull();
+    game = play(game, { type: "classic-final-pick", questionIndex: 4, answerId: "q9-0" });
+    game = play(game, { type: "classic-final-next" }, { type: "classic-final-start" });
+    // While the second finalist answers, the first one's answers are masked.
+    expect(publicView(game).classic?.final?.rows[0]![0]).toEqual({ hidden: true });
     const beforeRepeat = structuredClone(game.classic?.final);
     game = play(game, { type: "classic-final-repeat" });
     expect(game.classic?.final).toEqual(beforeRepeat);
     expect(publicView(game).lastAction).toBe("repeat");
     expect(publicView(game).lastActionEventId).toBeTruthy();
     expect(JSON.stringify(publicView(game))).not.toContain("Ответ 5-0");
-    expect(() => play(game, { type: "classic-final-answer", questionIndex: 0, text: "Ответ 0", answerId: "q5-0" })).toThrow(/повторяет/);
+    expect(() => play(game, { type: "classic-final-pick", questionIndex: 0, answerId: "q5-0" })).toThrow(/уже назвал/);
     for (let index = 0; index < 5; index++)
-      game = play(game, { type: "classic-final-answer", questionIndex: index, text: `Второй ${index}`, answerId: `q${index + 5}-1` });
+      game = play(game, { type: "classic-final-pick", questionIndex: index, answerId: `q${index + 5}-1` });
+    game = play(game, { type: "classic-final-stop" });
+    expect(publicView(game).classic?.final?.rows[0]).toEqual([{ text: "Ответ 5-0", points: 50 }, { text: "Ответ 5-1", points: 30 }]);
     game = play(game, { type: "classic-final-next" });
+    expect(publicView(game).lastAction).toBe("prize");
     expect(game.classic?.final?.score).toBe(400);
     expect(game.phase).toBe("finished");
     expect(gameResults(game).rounds).toHaveLength(4);
@@ -146,8 +159,9 @@ describe("Классические правила", () => {
     game = play(game, { type: "resume" });
     expect(game.classic?.reverse?.deadlineAt).toBe(Date.now() + 15_000);
     vi.advanceTimersByTime(15_001);
-    expect(() => play(game, { type: "reveal", answerId: "q4-0" })).toThrow(/Время команды вышло/);
-    game = play(game, { type: "strike" });
+    // The timer is only a signal: the host may still accept an answer after it.
+    game = play(game, { type: "reveal", answerId: "q4-0" });
+    expect(game.teams[0]!.score).toBe(15);
     expect(game.activeTeamId).toBe("b");
     expect(game.classic?.reverse?.deadlineAt).toBe(Date.now() + 20_000);
     game = play(game, { type: "reveal", answerId: "q4-1" });
@@ -255,5 +269,81 @@ describe("Классические правила", () => {
     expect(JSON.stringify(results)).not.toContain("Секретная фраза респондента");
     expect(JSON.stringify(results)).not.toContain("Закрытый синоним");
     expect(JSON.stringify(results)).not.toContain("Закрытая заметка");
+  });
+
+  it("the final can be shortened to one finalist, skipped or switched off", () => {
+    const atReverseResult = (rules: Partial<GameState["rules"]> = {}) => {
+      const game = classic();
+      Object.assign(game.rules, rules);
+      game.questionIndex = 3;
+      game.phase = "round-result";
+      game.classic!.stage = "reverse";
+      game.teams[0]!.score = 100;
+      return game;
+    };
+    // One finalist: the target is 100 and the next step completes the game.
+    let game = play(atReverseResult({ finalPlayers: 1 }), { type: "next" });
+    expect(game.classic?.final).toMatchObject({ players: 1, target: 100, player: 1 });
+    // Marking answers needs no running timer.
+    game = play(game, { type: "classic-final-pick", questionIndex: 0, answerId: "q5-0" },
+      { type: "classic-final-pick", questionIndex: 1, answerId: "q6-0" }, { type: "classic-final-next" });
+    expect(game.phase).toBe("finished");
+    expect(gameResults(game).classicFinal).toMatchObject({ score: 100, target: 100, superPrize: true });
+
+    // The organizer sets the target and the timers; 0 switches each of them off.
+    game = play(atReverseResult({ finalTarget: 0, finalSeconds: [40, 0] }), { type: "next" });
+    expect(game.classic?.final?.target).toBe(0);
+    expect(publicView(game).classic?.final).toMatchObject({ target: 0, duration: 40 });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+    game = play(game, { type: "classic-final-start" });
+    expect(game.classic?.final?.deadlineAt).toBe(Date.now() + 40_000);
+    vi.advanceTimersByTime(90_000);
+    for (let index = 0; index < 5; index++)
+      game = play(game, { type: "classic-final-pick", questionIndex: index, answerId: `q${index + 5}-0` });
+    game = play(game, { type: "classic-final-next" });
+    expect(() => play(game, { type: "classic-final-start" })).toThrow(/отключён/);
+    game = play(game, { type: "classic-final-next" });
+    expect(publicView(game).lastAction).toBe("finish");
+    expect(gameResults(game).classicFinal).toMatchObject({ score: 250, target: 0, superPrize: false });
+    vi.useRealTimers();
+    const untimed = classic();
+    untimed.rules.reverseSeconds = 0;
+    untimed.questionIndex = 2;
+    untimed.phase = "round-result";
+    expect(play(untimed, { type: "next", teamId: "a" }).classic?.reverse?.deadlineAt).toBeNull();
+
+    // Two finalists configured, but the host stops after the first one.
+    game = play(atReverseResult(), { type: "next" }, { type: "classic-final-pick", questionIndex: 0, answerId: "q5-0" },
+      { type: "classic-final-next", complete: true });
+    expect(game.phase).toBe("finished");
+    expect(gameResults(game).classicFinal).toMatchObject({ score: 50, target: 200, superPrize: false });
+
+    // Skipping: before the final, during it, and at a tie.
+    game = play(atReverseResult(), { type: "classic-final-skip" });
+    expect(game.phase).toBe("finished");
+    expect(game.classic?.final).toBeNull();
+    expect(publicView(game).lastAction).toBe("finish");
+    game = play(atReverseResult(), { type: "next" }, { type: "classic-final-start" }, { type: "classic-final-skip" });
+    expect(game.phase).toBe("finished");
+    expect(gameResults(game).classicFinal).toBeUndefined();
+    expect(() => play(classic(), { type: "start", teamId: "a" }, { type: "classic-final-skip" })).toThrow(/после игры наоборот/);
+
+    // No final at all: four questions, and the game ends after the reverse round.
+    const short = createGame({
+      title: "Без финала", brand: defaultBrand, teams: [{ id: "a", name: "А", color: "#111111" }, { id: "b", name: "Б", color: "#222222" }],
+      questions: classic().questions.slice(0, 4), rules: { mode: "classic", finalPlayers: 0 },
+    });
+    expect(publicView(short).totalRounds).toBe(4);
+    short.questionIndex = 3;
+    short.phase = "round-result";
+    short.classic!.stage = "reverse";
+    const ended = play(short, { type: "next" });
+    expect(ended.phase).toBe("finished");
+    expect(ended.classic?.final).toBeNull();
+    expect(() => createGame({
+      title: "Без финала", brand: defaultBrand, teams: [{ name: "А", color: "#111111" }, { name: "Б", color: "#222222" }],
+      questions: classic().questions, rules: { mode: "classic", finalPlayers: 0 },
+    })).toThrow(/4 вопроса/);
   });
 });
